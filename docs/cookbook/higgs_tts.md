@@ -180,7 +180,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output.pcm
 ```
 
-`stream_format="audio"` is only valid with `response_format="pcm"` and returns `audio/pcm` 16-bit mono PCM bytes. This mode has no SSE JSON events, no final usage event, and no `[DONE]` sentinel. `initial_codec_chunk_frames` controls only the first vocoder chunk for TTFA tuning; follow-up chunks return to the normal Higgs streaming window.
+`stream_format="audio"` is only valid with `response_format="pcm"` and returns `audio/pcm` 16-bit mono PCM bytes. This mode has no SSE JSON events, no final usage event, and no `[DONE]` sentinel. The response headers report the actual stream sample rate, channel count, and bit depth. `initial_codec_chunk_frames` controls only the first vocoder chunk for TTFA tuning; follow-up chunks return to the normal Higgs streaming window.
 
 2. Use Python
 

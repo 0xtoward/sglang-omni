@@ -202,6 +202,8 @@ chunk carrying `finish_reason` followed by `data: [DONE]`.
 
 Raw PCM streaming is opt-in through `stream_format="audio"` plus
 `response_format="pcm"`. That path emits `audio/pcm` bytes directly and does
-not carry SSE metadata, usage, or a `[DONE]` sentinel. TTS chunk-timing knobs
-such as `initial_codec_chunk_frames` are forwarded as request params so model
-schedulers can consume them without changing Stage, Coordinator, or Relay.
+not carry SSE metadata, usage, or a `[DONE]` sentinel. The HTTP response
+headers are derived from the first audio chunk and subsequent chunks must keep
+the same sample rate. TTS chunk-timing knobs such as
+`initial_codec_chunk_frames` are forwarded as request params so model schedulers
+can consume them without changing Stage, Coordinator, or Relay.

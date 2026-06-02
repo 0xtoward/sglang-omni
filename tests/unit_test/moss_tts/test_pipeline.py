@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -13,6 +15,7 @@ from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.tasks.tts import (
     MOSS_TTS_TOKEN_COUNT_AUTO,
     _build_tts_payload,
+    _collect_streaming_audio,
     estimate_moss_tts_duration_tokens,
 )
 from sglang_omni.models.moss_tts.codec import split_moss_audio_segments
@@ -320,6 +323,76 @@ def test_moss_tts_benchmark_auto_token_count_uses_openmoss_estimate() -> None:
 
     assert payload["token_count"] == estimate_moss_tts_duration_tokens("hello world")
     assert payload["token_count"] == 32
+
+
+def test_tts_benchmark_payload_supports_sse_pcm_control() -> None:
+    sample = SampleInput(
+        sample_id="sample-1",
+        ref_text="reference",
+        ref_audio="ref.wav",
+        target_text="hello world",
+    )
+
+    payload = _build_tts_payload(
+        sample,
+        "OpenMOSS-Team/MOSS-TTS-v1.5",
+        stream=True,
+        stream_format="sse",
+        response_format="pcm",
+        initial_codec_chunk_frames=1,
+    )
+
+    assert payload["stream"] is True
+    assert payload["stream_format"] == "sse"
+    assert payload["response_format"] == "pcm"
+    assert payload["initial_codec_chunk_frames"] == 1
+
+
+def test_tts_benchmark_raw_audio_transport_forces_pcm_payload() -> None:
+    sample = SampleInput(
+        sample_id="sample-1",
+        ref_text="reference",
+        ref_audio="ref.wav",
+        target_text="hello world",
+    )
+
+    payload = _build_tts_payload(
+        sample,
+        "OpenMOSS-Team/MOSS-TTS-v1.5",
+        stream=True,
+        stream_format="audio",
+        response_format="wav",
+    )
+
+    assert payload["stream_format"] == "audio"
+    assert payload["response_format"] == "pcm"
+
+
+def test_tts_benchmark_sse_parser_accepts_pcm_audio_chunks() -> None:
+    pcm = b"\x00\x01" * 960
+    line = "data: " + json.dumps(
+        {
+            "audio": {
+                "data": base64.b64encode(pcm).decode("ascii"),
+                "format": "pcm",
+                "mime_type": "audio/pcm",
+                "sample_rate": 24000,
+            }
+        }
+    )
+    chunks: list[bytes] = []
+
+    stream_format, duration, usage = _collect_streaming_audio(
+        line,
+        chunks,
+        stream_format=None,
+        chunk_times_out=[],
+    )
+
+    assert chunks == [pcm]
+    assert stream_format == (24000, 1, 2)
+    assert duration == pytest.approx(0.04)
+    assert usage is None
 
 
 def test_moss_tts_preserves_explicit_standard_sampling_values() -> None:

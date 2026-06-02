@@ -277,7 +277,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `response_format` | string | `"wav"` | Output audio format |
 | `speed` | float | `1.0` | Playback speed multiplier |
 | `stream` | bool | `false` | Enable streaming via SSE |
-| `stream_format` | string | `"sse"` | Streaming transport. Use `"audio"` with `stream=true` and `response_format="pcm"` for raw PCM bytes |
+| `stream_format` | string | `"sse"` | Streaming transport. Use `"audio"` with `stream=true` and `response_format="pcm"` for raw PCM bytes; the response headers declare the stream sample rate, channel count, and bit depth |
 | `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. Higgs TTS currently consumes this parameter first |
 | `references` | list | `null` | Reference audio for voice cloning; each item has `audio_path` (local path / remote url) and `text` |
 | `ref_audio` | string | `null` | Reference audio path / URL / base64 string; equivalent to `references[0].audio_path` |

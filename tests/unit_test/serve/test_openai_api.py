@@ -91,6 +91,9 @@ def _fault_client(model_name: str) -> Client:
 
 
 class SuccessfulSpeechClient:
+    def __init__(self, *, sample_rate: int = 24000) -> None:
+        self.sample_rate = sample_rate
+
     def health(self) -> dict[str, Any]:
         return {"running": True}
 
@@ -100,7 +103,7 @@ class SuccessfulSpeechClient:
             request_id=request_id or "speech-1",
             modality="audio",
             audio_data=[0.0, 0.1, -0.1, 0.0],
-            sample_rate=24000,
+            sample_rate=self.sample_rate,
             finish_reason="stop",
         )
 
@@ -244,6 +247,30 @@ def test_speech_stream_audio_format_returns_raw_pcm_bytes() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("audio/pcm")
     assert response.headers["x-sample-rate"] == "24000"
+    assert response.headers["x-channels"] == "1"
+    assert response.headers["x-bit-depth"] == "16"
+    assert response.content == expected
+
+
+def test_speech_stream_audio_format_headers_use_chunk_sample_rate() -> None:
+    client = TestClient(
+        create_app(SuccessfulSpeechClient(sample_rate=44100), model_name="s2-pro")
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "stream": True,
+            "stream_format": "audio",
+            "response_format": "pcm",
+        },
+    )
+
+    expected = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=44100)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/pcm")
+    assert response.headers["x-sample-rate"] == "44100"
     assert response.headers["x-channels"] == "1"
     assert response.headers["x-bit-depth"] == "16"
     assert response.content == expected

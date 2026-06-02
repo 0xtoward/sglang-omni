@@ -38,7 +38,6 @@ from benchmarks.benchmarker.utils import (
     WAV_HEADER_SIZE,
     get_wav_duration,
     parse_sse_event,
-    process_sse_line,
     save_json_results,
 )
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
@@ -1444,6 +1443,7 @@ def _build_tts_payload(
     sample: SampleInput,
     model_name: str,
     *,
+    response_format: str = "wav",
     stream: bool = False,
     stream_format: str = "sse",
     initial_codec_chunk_frames: int | None = None,
@@ -1457,7 +1457,9 @@ def _build_tts_payload(
     payload: dict = {
         "model": model_name,
         "input": sample.target_text,
-        "response_format": "pcm" if stream and stream_format == "audio" else "wav",
+        "response_format": (
+            "pcm" if stream and stream_format == "audio" else response_format
+        ),
     }
     if not no_ref_audio:
         if ref_format == "references":
@@ -1549,20 +1551,20 @@ async def _handle_streaming_response(
             raw_line = bytes(buffer[:idx])
             del buffer[: idx + 1]
             line = raw_line.decode("utf-8", errors="replace").strip()
-            total_audio_duration, usage_data = process_sse_line(
-                line, total_audio_duration, usage_data
-            )
-            stream_format = _collect_streaming_audio(
+            stream_format, duration_delta, usage_update = _collect_streaming_audio(
                 line, pcm_chunks, stream_format, chunk_times
             )
+            total_audio_duration += duration_delta
+            if usage_update is not None:
+                usage_data = usage_update
     if buffer.strip():
         line = bytes(buffer).decode("utf-8", errors="replace").strip()
-        total_audio_duration, usage_data = process_sse_line(
-            line, total_audio_duration, usage_data
-        )
-        stream_format = _collect_streaming_audio(
+        stream_format, duration_delta, usage_update = _collect_streaming_audio(
             line, pcm_chunks, stream_format, chunk_times
         )
+        total_audio_duration += duration_delta
+        if usage_update is not None:
+            usage_data = usage_update
     result.audio_duration_s = total_audio_duration
     if total_audio_duration > 0:
         elapsed = time.perf_counter() - start_time
@@ -1675,30 +1677,62 @@ def _collect_streaming_audio(
     pcm_chunks: list[bytes],
     stream_format: tuple[int, int, int] | None,
     chunk_times_out: list[float] | None = None,
-) -> tuple[int, int, int] | None:
+) -> tuple[tuple[int, int, int] | None, float, dict | None]:
     event = parse_sse_event(line)
     if event is None:
-        return stream_format
+        return stream_format, 0.0, None
+
+    usage = event.get("usage")
+    usage_update = usage if isinstance(usage, dict) else None
 
     audio = event.get("audio")
     if not isinstance(audio, dict) or not audio.get("data"):
-        return stream_format
+        return stream_format, 0.0, usage_update
 
     try:
         chunk_bytes = base64.b64decode(audio["data"])
+        audio_format = str(audio.get("format") or "").lower()
+        mime_type = str(audio.get("mime_type") or "").lower()
+        if audio_format == "pcm" or mime_type == "audio/pcm":
+            sample_rate = int(audio.get("sample_rate") or 24000)
+            pcm_chunks.append(chunk_bytes)
+            if chunk_times_out is not None:
+                chunk_times_out.append(time.perf_counter())
+            chunk_format = (sample_rate, 1, 2)
+            if stream_format is None:
+                stream_format = chunk_format
+            elif stream_format != chunk_format:
+                raise ValueError(
+                    f"Streaming PCM format changed from {stream_format} "
+                    f"to {chunk_format}"
+                )
+            duration = len(chunk_bytes) / (sample_rate * 2) if sample_rate > 0 else 0.0
+            return stream_format, duration, usage_update
+
         if len(chunk_bytes) <= WAV_HEADER_SIZE:
-            return stream_format
+            return stream_format, 0.0, usage_update
         with io.BytesIO(chunk_bytes) as buf:
             with wave.open(buf, "rb") as wf:
-                pcm_chunks.append(wf.readframes(wf.getnframes()))
+                frames = wf.readframes(wf.getnframes())
+                pcm_chunks.append(frames)
                 if chunk_times_out is not None:
                     chunk_times_out.append(time.perf_counter())
-                if stream_format is not None:
-                    return stream_format
-                return (wf.getframerate(), wf.getnchannels(), wf.getsampwidth())
+                sample_rate = wf.getframerate()
+                num_channels = wf.getnchannels()
+                sample_width = wf.getsampwidth()
+                duration = wf.getnframes() / sample_rate if sample_rate > 0 else 0.0
+                chunk_format = (sample_rate, num_channels, sample_width)
+                if stream_format is None:
+                    stream_format = chunk_format
+                elif stream_format != chunk_format:
+                    raise ValueError(
+                        f"Streaming WAV format changed from {stream_format} "
+                        f"to {chunk_format}"
+                    )
+                return stream_format, duration, usage_update
     except (binascii.Error, wave.Error, EOFError) as exc:
         logger.debug(f"Skipping malformed streaming audio chunk: {exc}")
-        return stream_format
+        return stream_format, 0.0, usage_update
 
 
 def _collect_chat_streaming_audio(
@@ -1769,6 +1803,7 @@ def make_tts_send_fn(
     model_name: str,
     api_url: str,
     *,
+    response_format: str = "wav",
     stream: bool = False,
     stream_format: str = "sse",
     initial_codec_chunk_frames: int | None = None,
@@ -1792,6 +1827,7 @@ def make_tts_send_fn(
         payload = _build_tts_payload(
             sample,
             model_name,
+            response_format=response_format,
             stream=stream,
             stream_format=stream_format,
             initial_codec_chunk_frames=initial_codec_chunk_frames,

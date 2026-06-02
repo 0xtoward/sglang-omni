@@ -186,6 +186,7 @@ class TtsSeedttsBenchmarkConfig:
     # Reference payload shape for voice cloning. The default keeps the original
     # ref_audio/ref_text fields; Higgs TTS should pass --ref-format references.
     ref_format: str = "flat"
+    response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
     max_new_tokens: int | None = 2048
@@ -240,6 +241,7 @@ def _build_results_config(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
@@ -276,6 +278,7 @@ async def run_tts_seedtts_benchmark(
     send_fn = make_tts_send_fn(
         config.model,
         api_url,
+        response_format=config.response_format,
         stream=config.stream,
         stream_format=config.stream_format,
         initial_codec_chunk_frames=config.initial_codec_chunk_frames,
@@ -327,6 +330,7 @@ def run_tts_seedtts_transcribe(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
         "instructions": config.instructions,
@@ -352,6 +356,9 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
     # ``--no-ref-audio`` is preserved as a legacy CLI flag; it flips the
     # dataclass default (``voice_clone=True``) to False for plain TTS.
     voice_clone = not args.no_ref_audio
+    response_format = (
+        "pcm" if args.stream and args.stream_format == "audio" else args.response_format
+    )
     return TtsSeedttsBenchmarkConfig(
         base_url=args.base_url,
         host=args.host,
@@ -363,6 +370,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
+        response_format=response_format,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
         max_new_tokens=args.max_new_tokens,
@@ -472,6 +480,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Reference payload shape for voice cloning. The default 'flat' sends "
             "ref_audio/ref_text, preserving the original behavior for S2-Pro "
             "and similar models. Use 'references' for Higgs TTS."
+        ),
+    )
+    parser.add_argument(
+        "--response-format",
+        type=str,
+        default="wav",
+        help=(
+            "Requested audio payload format. SSE can use wav or pcm; raw "
+            "audio streaming always sends response_format=pcm."
         ),
     )
     parser.add_argument("--output-dir", type=str, default="results/tts_seedtts")

@@ -507,20 +507,21 @@ def _register_speech(app: FastAPI) -> None:
         gen_req = build_speech_generate_request(req, default_model)
         if req.stream:
             if req.stream_format == "audio":
-                return StreamingResponse(
-                    _speech_audio_stream(
+                try:
+                    return await _speech_audio_response(
                         client=client,
                         gen_req=gen_req,
                         request_id=request_id,
                         speed=req.speed,
-                    ),
-                    media_type="audio/pcm",
-                    headers={
-                        "X-Sample-Rate": str(DEFAULT_SAMPLE_RATE),
-                        "X-Channels": "1",
-                        "X-Bit-Depth": "16",
-                    },
-                )
+                    )
+                except ClientError as exc:
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                except Exception as exc:
+                    logger.exception(
+                        "Error preparing raw PCM speech stream for request %s",
+                        request_id,
+                    )
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
             return StreamingResponse(
                 _speech_stream(
                     client=client,
@@ -628,35 +629,90 @@ async def _speech_stream(
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
-async def _speech_audio_stream(
+def _speech_pcm_chunk_bytes(
+    chunk: Any,
+    *,
+    emitted_samples: int,
+    speed: float,
+) -> tuple[bytes | None, int, int]:
+    sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
+    audio_data, emitted_samples = _select_speech_audio_delta(
+        chunk.audio_data,
+        emitted_samples=emitted_samples,
+        is_terminal=chunk.finish_reason is not None,
+    )
+    if audio_data is None:
+        return None, emitted_samples, sample_rate
+
+    audio_bytes, _ = encode_audio(
+        audio_data,
+        response_format="pcm",
+        sample_rate=sample_rate,
+        speed=speed,
+    )
+    return audio_bytes, emitted_samples, sample_rate
+
+
+async def _speech_audio_response(
     client: Client,
     gen_req: GenerateRequest,
     request_id: str,
     speed: float,
-):
-    """Streaming speech generator (yields raw 16-bit PCM bytes)."""
+) -> StreamingResponse:
+    """Build a raw PCM stream after deriving headers from the first audio chunk."""
     emitted_samples = 0
+    chunk_stream = client.generate(gen_req, request_id=request_id)
+    first_audio_bytes: bytes | None = None
+    stream_sample_rate: int | None = None
 
-    async for chunk in client.generate(gen_req, request_id=request_id):
+    async for chunk in chunk_stream:
         if chunk.audio_data is None:
             continue
 
-        sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
-        audio_data, emitted_samples = _select_speech_audio_delta(
-            chunk.audio_data,
-            emitted_samples=emitted_samples,
-            is_terminal=chunk.finish_reason is not None,
+        first_audio_bytes, emitted_samples, stream_sample_rate = (
+            _speech_pcm_chunk_bytes(
+                chunk,
+                emitted_samples=emitted_samples,
+                speed=speed,
+            )
         )
-        if audio_data is None:
-            continue
+        if first_audio_bytes is not None:
+            break
 
-        audio_bytes, _ = encode_audio(
-            audio_data,
-            response_format="pcm",
-            sample_rate=sample_rate,
-            speed=speed,
-        )
-        yield audio_bytes
+    if first_audio_bytes is None or stream_sample_rate is None:
+        raise RuntimeError("No audio chunks received from raw PCM speech stream")
+
+    async def _body():
+        nonlocal emitted_samples
+        yield first_audio_bytes
+
+        async for chunk in chunk_stream:
+            if chunk.audio_data is None:
+                continue
+
+            audio_bytes, emitted_samples, sample_rate = _speech_pcm_chunk_bytes(
+                chunk,
+                emitted_samples=emitted_samples,
+                speed=speed,
+            )
+            if audio_bytes is None:
+                continue
+            if sample_rate != stream_sample_rate:
+                raise RuntimeError(
+                    "Raw PCM speech stream sample rate changed from "
+                    f"{stream_sample_rate} to {sample_rate}"
+                )
+            yield audio_bytes
+
+    return StreamingResponse(
+        _body(),
+        media_type="audio/pcm",
+        headers={
+            "X-Sample-Rate": str(stream_sample_rate),
+            "X-Channels": "1",
+            "X-Bit-Depth": "16",
+        },
+    )
 
 
 def _select_speech_audio_delta(
