@@ -199,6 +199,8 @@ class TtsSeedttsBenchmarkConfig:
     concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     stream: bool = False
+    stream_format: str = "sse"
+    initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
     # Transcribe phase
     lang: str = "en"
@@ -249,6 +251,8 @@ def _build_results_config(
         "warmup": config.warmup,
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
+        "stream_format": config.stream_format if config.stream else None,
+        "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
     }
 
 
@@ -273,6 +277,8 @@ async def run_tts_seedtts_benchmark(
         config.model,
         api_url,
         stream=config.stream,
+        stream_format=config.stream_format,
+        initial_codec_chunk_frames=config.initial_codec_chunk_frames,
         no_ref_audio=not config.voice_clone,
         ref_format=config.ref_format,
         voice=config.voice,
@@ -311,7 +317,9 @@ def run_tts_seedtts_transcribe(
 
     Returns a dict with keys: wer_summary, asr_speed, per_sample.
     """
-    generation_mode = "streaming" if config.stream else "non-streaming"
+    generation_mode = (
+        f"streaming-{config.stream_format}" if config.stream else "non-streaming"
+    )
     wer_config = {
         "model": config.model,
         "tts_model": config.model,
@@ -327,6 +335,8 @@ def run_tts_seedtts_transcribe(
         "temperature": config.temperature,
         "max_samples": config.max_samples,
         "stream": config.stream,
+        "stream_format": config.stream_format if config.stream else None,
+        "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "concurrency": config.concurrency,
         "asr_concurrency": config.asr_concurrency,
     }
@@ -366,6 +376,8 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         concurrency=args.concurrency,
         request_rate=args.request_rate,
         stream=args.stream,
+        stream_format=args.stream_format,
+        initial_codec_chunk_frames=args.initial_codec_chunk_frames,
         disable_tqdm=args.disable_tqdm,
         lang=args.lang,
         device=args.device,
@@ -502,7 +514,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stream",
         action="store_true",
-        help="Use streaming SSE for TTS generation.",
+        help="Use streaming for TTS generation.",
+    )
+    parser.add_argument(
+        "--stream-format",
+        choices=["sse", "audio"],
+        default="sse",
+        help=(
+            "Streaming transport. 'sse' reads audio chunks from SSE events; "
+            "'audio' requests raw PCM audio streaming."
+        ),
+    )
+    parser.add_argument(
+        "--initial-codec-chunk-frames",
+        type=int,
+        default=None,
+        help=(
+            "Optional model-specific first codec chunk size. With Higgs TTS "
+            "this controls only the first streaming vocoder chunk."
+        ),
     )
     parser.add_argument(
         "--save-audio",
@@ -580,6 +610,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
+    if args.stream_format == "audio" and not args.stream:
+        parser.error("--stream-format audio requires --stream")
+    if (
+        args.initial_codec_chunk_frames is not None
+        and args.initial_codec_chunk_frames < 0
+    ):
+        parser.error("--initial-codec-chunk-frames must be non-negative")
     config = _config_from_args(args)
 
     if args.save_audio:
