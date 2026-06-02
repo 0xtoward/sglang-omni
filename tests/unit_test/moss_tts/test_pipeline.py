@@ -558,35 +558,16 @@ def test_moss_delay_runner_samples_audio_and_appends_feedback() -> None:
 def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 
-    class FakeAttnBackend:
-        def __init__(self) -> None:
-            self.called = False
-
-        def init_forward_metadata(self, forward_batch) -> None:
-            del forward_batch
-            self.called = True
-
     class FakeModel:
         dtype = torch.float32
         hidden_size = 2
 
-        def __init__(self) -> None:
-            self.call_kwargs = None
-
         def _prepare_multi_modal_inputs(self, rows):
             return rows.to(torch.float32)[:, :2]
 
-        def __call__(self, **kwargs):
-            self.call_kwargs = kwargs
-            return SimpleNamespace(hidden_states=kwargs["input_embeds"])
-
-    attn_backend = FakeAttnBackend()
     model = FakeModel()
     runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
     runner.model = model
-    runner.tp_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(attn_backend=attn_backend)
-    )
     prompt_rows = torch.tensor(
         [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
         dtype=torch.long,
@@ -605,13 +586,12 @@ def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
 
     result = runner.custom_prefill_forward(forward_batch, object(), [sched_req])
 
-    assert attn_backend.called
-    assert result.can_run_cuda_graph is False
+    assert result is None
+    assert torch.equal(forward_batch.input_ids, torch.tensor([123456, 123457]))
     assert torch.equal(
-        model.call_kwargs["input_embeds"],
+        forward_batch.input_embeds,
         torch.tensor([[4.0, 5.0], [7.0, 8.0]]),
     )
-    assert torch.equal(model.call_kwargs["input_ids"], forward_batch.input_ids)
 
 
 def test_moss_decode_feedback_uses_row_id_embedding() -> None:
