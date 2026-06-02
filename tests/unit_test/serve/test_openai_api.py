@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.client import Client, GenerateChunk
+from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
@@ -202,6 +203,84 @@ def test_speech_stream_success_emits_done_sentinel() -> None:
     payload = json.loads(chunks[-2][len("data: ") :])
     assert payload["audio"] is None
     assert payload["finish_reason"] == "stop"
+
+
+def test_speech_stream_defaults_to_sse_for_compatibility() -> None:
+    client = TestClient(
+        create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "stream": True,
+            "response_format": "pcm",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "audio.speech.chunk" in response.text
+    assert response.text.endswith("data: [DONE]\n\n")
+
+
+def test_speech_stream_audio_format_returns_raw_pcm_bytes() -> None:
+    client = TestClient(
+        create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "stream": True,
+            "stream_format": "audio",
+            "response_format": "pcm",
+        },
+    )
+
+    expected = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=24000)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/pcm")
+    assert response.headers["x-sample-rate"] == "24000"
+    assert response.headers["x-channels"] == "1"
+    assert response.headers["x-bit-depth"] == "16"
+    assert response.content == expected
+
+
+def test_speech_stream_audio_format_rejects_non_pcm_response_format() -> None:
+    client = TestClient(
+        create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "stream": True,
+            "stream_format": "audio",
+            "response_format": "wav",
+        },
+    )
+
+    assert 400 <= response.status_code < 500
+    assert "stream_format" in response.text
+    assert "pcm" in response.text.lower()
+
+
+def test_speech_request_carries_initial_codec_chunk_frames() -> None:
+    req = CreateSpeechRequest(
+        input="hello",
+        stream=True,
+        response_format="pcm",
+        initial_codec_chunk_frames=4,
+    )
+
+    gen_req = build_speech_generate_request(req, default_model="higgs-audio-v2")
+
+    assert gen_req.extra_params["initial_codec_chunk_frames"] == 4
+    assert gen_req.metadata["tts_params"]["initial_codec_chunk_frames"] == 4
 
 
 def test_speech_stream_failure_closes_without_done_sentinel() -> None:

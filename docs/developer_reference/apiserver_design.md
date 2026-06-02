@@ -196,6 +196,12 @@ The speech route reuses the same internal request path rather than introducing a
 For non-streaming requests, `Client.speech()` collects audio chunks, encodes
 them, and returns raw audio bytes to the HTTP layer.
 
-For `stream=true`, the route returns SSE events. Each event carries a
+For `stream=true`, the default route returns SSE events. Each event carries a
 base64-encoded audio chunk and format metadata; the stream ends with a final
 chunk carrying `finish_reason` followed by `data: [DONE]`.
+
+Raw PCM streaming is opt-in through `stream_format="audio"` plus
+`response_format="pcm"`. That path emits `audio/pcm` bytes directly and does
+not carry SSE metadata, usage, or a `[DONE]` sentinel. TTS chunk-timing knobs
+such as `initial_codec_chunk_frames` are forwarded as request params so model
+schedulers can consume them without changing Stage, Coordinator, or Relay.

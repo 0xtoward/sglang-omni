@@ -43,6 +43,7 @@ from sglang_omni.client.audio import (
     to_numpy,
 )
 from sglang_omni.http.favicon import register_favicon
+from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.serve.protocol import (
     ChatCompletionAudio,
     ChatCompletionChoice,
@@ -505,6 +506,21 @@ def _register_speech(app: FastAPI) -> None:
 
         gen_req = build_speech_generate_request(req, default_model)
         if req.stream:
+            if req.stream_format == "audio":
+                return StreamingResponse(
+                    _speech_audio_stream(
+                        client=client,
+                        gen_req=gen_req,
+                        request_id=request_id,
+                        speed=req.speed,
+                    ),
+                    media_type="audio/pcm",
+                    headers={
+                        "X-Sample-Rate": str(DEFAULT_SAMPLE_RATE),
+                        "X-Channels": "1",
+                        "X-Bit-Depth": "16",
+                    },
+                )
             return StreamingResponse(
                 _speech_stream(
                     client=client,
@@ -612,6 +628,37 @@ async def _speech_stream(
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
+async def _speech_audio_stream(
+    client: Client,
+    gen_req: GenerateRequest,
+    request_id: str,
+    speed: float,
+):
+    """Streaming speech generator (yields raw 16-bit PCM bytes)."""
+    emitted_samples = 0
+
+    async for chunk in client.generate(gen_req, request_id=request_id):
+        if chunk.audio_data is None:
+            continue
+
+        sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
+        audio_data, emitted_samples = _select_speech_audio_delta(
+            chunk.audio_data,
+            emitted_samples=emitted_samples,
+            is_terminal=chunk.finish_reason is not None,
+        )
+        if audio_data is None:
+            continue
+
+        audio_bytes, _ = encode_audio(
+            audio_data,
+            response_format="pcm",
+            sample_rate=sample_rate,
+            speed=speed,
+        )
+        yield audio_bytes
+
+
 def _select_speech_audio_delta(
     audio_data: Any,
     *,
@@ -677,6 +724,12 @@ def build_speech_generate_request(
         tts_params["duration_tokens"] = req.duration_tokens
     if req.seed is not None:
         tts_params["seed"] = req.seed
+    if req.initial_codec_chunk_frames is not None:
+        tts_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = req.initial_codec_chunk_frames
+
+    extra_params: dict[str, Any] = {}
+    if req.initial_codec_chunk_frames is not None:
+        extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = req.initial_codec_chunk_frames
 
     # Sampling params — use S2-Pro-tuned defaults
     sampling = SamplingParams(
@@ -718,6 +771,7 @@ def build_speech_generate_request(
         prompt=prompt,
         sampling=sampling,
         stage_params=req.stage_params,
+        extra_params=extra_params,
         stream=req.stream,
         output_modalities=["audio"],
         metadata={
