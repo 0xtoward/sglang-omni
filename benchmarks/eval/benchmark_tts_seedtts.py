@@ -583,6 +583,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1200,
         help="Timeout in seconds to wait for server readiness.",
     )
+    parser.add_argument(
+        "--use-existing-server",
+        action="store_true",
+        help=(
+            "Do not start or stop a server; send requests to the configured "
+            "--base-url or --host/--port instead."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--generate-only",
@@ -617,6 +625,11 @@ def main() -> None:
         and args.initial_codec_chunk_frames < 0
     ):
         parser.error("--initial-codec-chunk-frames must be non-negative")
+    if args.use_existing_server and not (args.generate_only or args.transcribe_only):
+        parser.error(
+            "--use-existing-server currently requires --generate-only or "
+            "--transcribe-only"
+        )
     config = _config_from_args(args)
 
     if args.save_audio:
@@ -631,24 +644,30 @@ def main() -> None:
         return
 
     if args.transcribe_only:
-        with managed_omni_server(
-            model_path=config.asr_model_path,
-            port=config.port,
-            host=config.host,
-            log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
-            timeout=args.server_timeout,
-        ):
+        if args.use_existing_server:
             run_tts_seedtts_transcribe(config, asr_router_port=config.port)
+        else:
+            with managed_omni_server(
+                model_path=config.asr_model_path,
+                port=config.port,
+                host=config.host,
+                log_file=Path(config.output_dir) / "server_logs" / "asr_server.log",
+                timeout=args.server_timeout,
+            ):
+                run_tts_seedtts_transcribe(config, asr_router_port=config.port)
         return
 
-    with managed_omni_server(
-        model_path=config.model,
-        port=config.port,
-        host=config.host,
-        log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
-        timeout=args.server_timeout,
-    ):
+    if args.use_existing_server:
         asyncio.run(benchmark(config))
+    else:
+        with managed_omni_server(
+            model_path=config.model,
+            port=config.port,
+            host=config.host,
+            log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
+            timeout=args.server_timeout,
+        ):
+            asyncio.run(benchmark(config))
 
     if args.generate_only:
         return
