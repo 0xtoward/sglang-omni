@@ -412,7 +412,9 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
         emitted_initial_chunk: bool,
     ) -> int:
         if emitted_initial_chunk:
-            return max(num_codebooks, self._stream_stride)
+            return (
+                max(num_codebooks, self._stream_stride) + self._stream_followup_stride
+            )
         return delayed_count + self._stream_followup_stride
 
     def _audio_payload_from_stage_payload(
