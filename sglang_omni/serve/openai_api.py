@@ -786,9 +786,6 @@ def build_speech_generate_request(
         tts_params["duration_tokens"] = req.duration_tokens
     if req.seed is not None:
         tts_params["seed"] = req.seed
-    if initial_codec_chunk_frames is not None:
-        tts_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames
-
     extra_params: dict[str, Any] = {}
     if initial_codec_chunk_frames is not None:
         extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames
