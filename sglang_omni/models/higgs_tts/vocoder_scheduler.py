@@ -391,7 +391,11 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
             return None
 
         state.emitted_raw_frames = emit_until_raw
-        state.next_decode_rows = delayed_count + self._stream_followup_stride
+        state.next_decode_rows = self._next_decode_rows_after_emit(
+            delayed_count,
+            num_codebooks=num_codebooks,
+            emitted_initial_chunk=use_initial_chunk and not is_final,
+        )
         state.has_emitted = True
         return audio_waveform_payload(
             delta,
@@ -399,6 +403,17 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
             modality="audio",
             source_hint="Higgs TTS streaming",
         )
+
+    def _next_decode_rows_after_emit(
+        self,
+        delayed_count: int,
+        *,
+        num_codebooks: int,
+        emitted_initial_chunk: bool,
+    ) -> int:
+        if emitted_initial_chunk:
+            return max(num_codebooks, self._stream_stride)
+        return delayed_count + self._stream_followup_stride
 
     def _audio_payload_from_stage_payload(
         self, payload: StagePayload

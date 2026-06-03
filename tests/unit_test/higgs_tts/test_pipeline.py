@@ -868,6 +868,57 @@ def test_higgs_initial_codec_chunk_frames_controls_first_chunk_only() -> None:
     assert _drain_higgs_outbox(scheduler) == []
 
 
+def test_higgs_initial_chunk_resumes_at_steady_boundary() -> None:
+    raw_codes = torch.tensor(
+        [
+            [1, 2, 3],
+            [4, 5, 6],
+            [7, 8, 9],
+            [10, 11, 12],
+            [13, 14, 15],
+            [16, 17, 18],
+            [19, 20, 21],
+            [22, 23, 24],
+            [25, 26, 27],
+        ],
+        dtype=torch.long,
+    )
+    delayed = apply_delay_pattern(raw_codes)
+    scheduler = HiggsStreamingVocoderScheduler(
+        _FakeUnevenHiggsStreamingCodec(),
+        stream_stride=8,
+        stream_followup_stride=8,
+        stream_overlap_tokens=1,
+        stream_holdback_tokens=0,
+    )
+    payload = _higgs_stream_payload(
+        "req",
+        stream=True,
+        delayed_rows=delayed.tolist(),
+        codebook_size=64,
+        initial_codec_chunk_frames=1,
+    )
+
+    scheduler._on_streaming_new_request("req", payload)
+    for row in delayed[:3]:
+        scheduler._on_chunk("req", _higgs_stream_item(row, codebook_size=64))
+
+    first_streams = [
+        msg for msg in _drain_higgs_outbox(scheduler) if msg.type == "stream"
+    ]
+    assert len(first_streams) == 1
+
+    for row in delayed[3:7]:
+        scheduler._on_chunk("req", _higgs_stream_item(row, codebook_size=64))
+    assert _drain_higgs_outbox(scheduler) == []
+
+    scheduler._on_chunk("req", _higgs_stream_item(delayed[7], codebook_size=64))
+    second_streams = [
+        msg for msg in _drain_higgs_outbox(scheduler) if msg.type == "stream"
+    ]
+    assert len(second_streams) == 1
+
+
 def _drain_higgs_outbox(
     scheduler: HiggsStreamingVocoderScheduler,
 ) -> list:
