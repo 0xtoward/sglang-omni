@@ -20,7 +20,7 @@ import string
 import time
 import wave
 from dataclasses import dataclass
-from typing import Protocol
+from typing import AsyncIterator, Protocol
 
 import aiohttp
 import numpy as np
@@ -1607,6 +1607,26 @@ def _parse_pcm_response_format(
     return sample_rate, num_channels, sample_width
 
 
+async def _iter_response_http_chunks(
+    response: aiohttp.ClientResponse,
+) -> AsyncIterator[tuple[bytes, float]]:
+    pending = bytearray()
+    pending_start_s: float | None = None
+    async for data, end_of_http_chunk in response.content.iter_chunks():
+        now = time.perf_counter()
+        if data:
+            if not pending:
+                pending_start_s = now
+            pending.extend(data)
+        if end_of_http_chunk and pending:
+            yield bytes(pending), pending_start_s or now
+            pending.clear()
+            pending_start_s = None
+
+    if pending:
+        yield bytes(pending), pending_start_s or time.perf_counter()
+
+
 async def _handle_raw_pcm_streaming_response(
     response: aiohttp.ClientResponse,
     result: RequestResult,
@@ -1616,14 +1636,13 @@ async def _handle_raw_pcm_streaming_response(
     pcm_chunks: list[bytes] = []
     chunk_times: list[float] = []
     stream_format = _parse_pcm_response_format(response.headers)
-    async for chunk in response.content.iter_any():
+    async for chunk, chunk_time in _iter_response_http_chunks(response):
         if not chunk:
             continue
-        now = time.perf_counter()
         if not chunk_times:
-            result.audio_ttfp_s = now - start_time
+            result.audio_ttfp_s = chunk_time - start_time
             result.first_audio_payload_bytes = len(chunk)
-        chunk_times.append(now)
+        chunk_times.append(chunk_time)
         pcm_chunks.append(bytes(chunk))
 
     if chunk_times:

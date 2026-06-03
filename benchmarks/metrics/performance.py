@@ -42,10 +42,12 @@ Metric semantics:
     Tail percentiles of inter-chunk latency (streaming jitter).
 ``audio_chunks_mean``
     Mean number of audio chunks observed per successful streaming request.
+    For raw PCM streaming, HTTP chunk boundaries are preserved when available
+    rather than counting arbitrary client read frames.
 ``first_audio_payload_bytes_mean``
     Mean size of the first audio payload. For raw PCM streaming this is the
-    first byte chunk from the HTTP body; for SSE this is the first decoded PCM
-    payload extracted from an audio event.
+    first HTTP body chunk; for SSE this is the first decoded PCM payload
+    extracted from an audio event.
 """
 
 from __future__ import annotations

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import sys
@@ -11,11 +12,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.tasks.tts import (
     MOSS_TTS_TOKEN_COUNT_AUTO,
     _build_tts_payload,
     _collect_streaming_audio,
+    _handle_raw_pcm_streaming_response,
     estimate_moss_tts_duration_tokens,
 )
 from sglang_omni.models.moss_tts.codec import split_moss_audio_segments
@@ -393,6 +396,34 @@ def test_tts_benchmark_sse_parser_accepts_pcm_audio_chunks() -> None:
     assert stream_format == (24000, 1, 2)
     assert duration == pytest.approx(0.04)
     assert usage is None
+
+
+def test_tts_benchmark_raw_pcm_uses_http_chunk_boundaries() -> None:
+    class FakeContent:
+        async def iter_chunks(self):
+            yield b"abcd", False
+            yield b"efghij", True
+            yield b"klmnop", True
+
+    response = SimpleNamespace(
+        headers={"x-sample-rate": "4", "x-channels": "1", "x-bit-depth": "16"},
+        content=FakeContent(),
+    )
+    result = RequestResult(request_id="raw-pcm")
+
+    asyncio.run(
+        _handle_raw_pcm_streaming_response(
+            response,
+            result,
+            start_time=0.0,
+            save_audio_dir=None,
+        )
+    )
+
+    assert result.is_success
+    assert result.audio_chunk_count == 2
+    assert result.first_audio_payload_bytes == 10
+    assert result.audio_duration_s == pytest.approx(2.0)
 
 
 def test_moss_tts_preserves_explicit_standard_sampling_values() -> None:
