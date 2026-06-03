@@ -39,7 +39,9 @@ from sglang_omni.client import (
 from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
     FORMAT_MIME_TYPES,
+    apply_speed,
     encode_audio,
+    encode_pcm,
     to_numpy,
 )
 from sglang_omni.http.favicon import register_favicon
@@ -62,6 +64,7 @@ from sglang_omni.serve.protocol import (
 logger = logging.getLogger(__name__)
 MIME_TO_FORMAT = {mime: fmt for fmt, mime in FORMAT_MIME_TYPES.items()}
 STREAM_DONE_SENTINEL = "[DONE]"
+RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES = 1
 
 _BAD_REQUEST_MARKERS = (
     "longer than the model's context length",
@@ -644,13 +647,9 @@ def _speech_pcm_chunk_bytes(
     if audio_data is None:
         return None, emitted_samples, sample_rate
 
-    audio_bytes, _ = encode_audio(
-        audio_data,
-        response_format="pcm",
-        sample_rate=sample_rate,
-        speed=speed,
-    )
-    return audio_bytes, emitted_samples, sample_rate
+    if speed != 1.0:
+        audio_data, sample_rate = apply_speed(audio_data, speed, sample_rate)
+    return encode_pcm(audio_data, sample_rate), emitted_samples, sample_rate
 
 
 async def _speech_audio_response(
@@ -755,6 +754,13 @@ def build_speech_generate_request(
     explicit_generation_params = sorted(
         field for field in generation_fields if field in req.model_fields_set
     )
+    initial_codec_chunk_frames = req.initial_codec_chunk_frames
+    if (
+        initial_codec_chunk_frames is None
+        and req.stream
+        and req.stream_format == "audio"
+    ):
+        initial_codec_chunk_frames = RAW_PCM_DEFAULT_INITIAL_CODEC_CHUNK_FRAMES
 
     # Build TTS-specific parameters to pass through the pipeline
     tts_params: dict[str, Any] = {
@@ -780,12 +786,12 @@ def build_speech_generate_request(
         tts_params["duration_tokens"] = req.duration_tokens
     if req.seed is not None:
         tts_params["seed"] = req.seed
-    if req.initial_codec_chunk_frames is not None:
-        tts_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = req.initial_codec_chunk_frames
+    if initial_codec_chunk_frames is not None:
+        tts_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames
 
     extra_params: dict[str, Any] = {}
-    if req.initial_codec_chunk_frames is not None:
-        extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = req.initial_codec_chunk_frames
+    if initial_codec_chunk_frames is not None:
+        extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = initial_codec_chunk_frames
 
     # Sampling params — use S2-Pro-tuned defaults
     sampling = SamplingParams(

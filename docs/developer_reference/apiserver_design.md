@@ -206,4 +206,7 @@ not carry SSE metadata, usage, or a `[DONE]` sentinel. The HTTP response
 headers are derived from the first audio chunk and subsequent chunks must keep
 the same sample rate. TTS chunk-timing knobs such as
 `initial_codec_chunk_frames` are forwarded as request params so model schedulers
-can consume them without changing Stage, Coordinator, or Relay.
+can consume them without changing Stage, Coordinator, or Relay. Raw PCM speech
+defaults `initial_codec_chunk_frames` to `1` when the client does not provide a
+value; SSE keeps the model's normal chunking unless the client explicitly sets
+the knob.

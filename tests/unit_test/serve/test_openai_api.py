@@ -310,6 +310,48 @@ def test_speech_request_carries_initial_codec_chunk_frames() -> None:
     assert gen_req.metadata["tts_params"]["initial_codec_chunk_frames"] == 4
 
 
+def test_raw_pcm_speech_request_defaults_initial_codec_chunk_frames() -> None:
+    req = CreateSpeechRequest(
+        input="hello",
+        stream=True,
+        stream_format="audio",
+        response_format="pcm",
+    )
+
+    gen_req = build_speech_generate_request(req, default_model="higgs-audio-v2")
+
+    assert gen_req.extra_params["initial_codec_chunk_frames"] == 1
+    assert gen_req.metadata["tts_params"]["initial_codec_chunk_frames"] == 1
+
+
+def test_sse_speech_request_does_not_default_initial_codec_chunk_frames() -> None:
+    req = CreateSpeechRequest(
+        input="hello",
+        stream=True,
+        response_format="pcm",
+    )
+
+    gen_req = build_speech_generate_request(req, default_model="higgs-audio-v2")
+
+    assert "initial_codec_chunk_frames" not in gen_req.extra_params
+    assert "initial_codec_chunk_frames" not in gen_req.metadata["tts_params"]
+
+
+def test_raw_pcm_speech_request_respects_explicit_initial_zero() -> None:
+    req = CreateSpeechRequest(
+        input="hello",
+        stream=True,
+        stream_format="audio",
+        response_format="pcm",
+        initial_codec_chunk_frames=0,
+    )
+
+    gen_req = build_speech_generate_request(req, default_model="higgs-audio-v2")
+
+    assert gen_req.extra_params["initial_codec_chunk_frames"] == 0
+    assert gen_req.metadata["tts_params"]["initial_codec_chunk_frames"] == 0
+
+
 def test_speech_stream_failure_closes_without_done_sentinel() -> None:
     """A mid-stream failure must not be reported as a successful SSE finish."""
 
