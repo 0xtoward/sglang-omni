@@ -481,6 +481,15 @@ def create_vocoder_executor(
     checkpoint_dir = resolve_checkpoint(model_path)
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
 
+    # Pre-capture vocoder CUDA graphs ONCE here (startup, AR stage quiescent),
+    # then the runner is sealed and only replays during serving. Capturing live
+    # during serving collides with the co-located AR stage's graph replays
+    # (issue #581). No-op unless SGLANG_OMNI_HIGGS_VOCODER_CUDA_GRAPH is set.
+    # Streaming vocoder windows are all B=1 with a variable but bounded frame
+    # count (~16..160, clustered ~64), so we densely capture that range; rarer
+    # longer windows fall back to eager.
+    codec.warmup_cuda_graph([(1, frames) for frames in range(8, 161)])
+
     return HiggsStreamingVocoderScheduler(
         codec,
         max_batch_size=max_batch_size,
