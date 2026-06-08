@@ -107,6 +107,43 @@ from sglang_omni.models.higgs_tts.vocoder_cuda_graph import (
 )
 
 
+class _JitSnake1d(torch.nn.Module):
+    """Drop-in replacement for the DAC ``Snake1d`` backed by the fused JIT
+    kernel ``sglang.jit_kernel.snake1d``.
+
+    Tier 1 fusion (experimental): collapses the ~7 element-wise ops of eager
+    Snake (``x + 1/(alpha+1e-9) * sin(alpha*x)^2``) into one kernel. Reuses the
+    original per-channel ``alpha`` parameter (zero-copy) and falls back to eager
+    on any error so it never breaks serving.
+    """
+
+    def __init__(self, alpha: torch.Tensor) -> None:
+        super().__init__()
+        self.alpha = alpha  # original nn.Parameter, shape [1, C, 1]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.is_cuda and not torch.is_grad_enabled():
+            try:
+                from sglang.jit_kernel.snake1d import snake1d
+
+                return snake1d(x.contiguous(), self.alpha)
+            except Exception:
+                pass
+        a = self.alpha.reshape(1, -1, 1)
+        return x + (a + 1e-9).reciprocal() * torch.sin(a * x).pow(2)
+
+
+def _swap_snake_with_jit(decoder: torch.nn.Module) -> int:
+    """Replace every DAC ``Snake1d`` in ``decoder`` with :class:`_JitSnake1d`."""
+    n = 0
+    for module in decoder.modules():
+        for name, child in list(module.named_children()):
+            if type(child).__name__ == "Snake1d" and hasattr(child, "alpha"):
+                setattr(module, name, _JitSnake1d(child.alpha))
+                n += 1
+    return n
+
+
 class HiggsAudioCodec:
     """Frozen encode/decode wrapper around :class:`HiggsAudioV2TokenizerModel`."""
 
@@ -167,6 +204,30 @@ class HiggsAudioCodec:
         model = model.to(device=device)
         for p in model.parameters():
             p.requires_grad_(False)
+        # Tier 0 (experimental, env-gated): fuse the DAC decoder via
+        # torch.compile. inductor fuses the Snake-activation element-wise storm
+        # (~35 Snakes x ~7 ops) into Triton kernels, cutting the serial kernel
+        # chain inside the CUDA-graph replay. mode="default" (max-autotune adds
+        # no runtime gain here but compiles 5x slower); -no-cudagraphs leaves
+        # graph management to VocoderCudaGraphRunner. Not bit-exact -> WER gate.
+        def _env_on(name: str) -> bool:
+            return _os.environ.get(name, "0").strip().lower() not in (
+                "",
+                "0",
+                "false",
+                "no",
+            )
+
+        if device.type == "cuda" and _env_on("SGLANG_OMNI_HIGGS_VOCODER_COMPILE"):
+            # Tier 0: torch.compile fuses Snake + conv epilogues (not bit-exact).
+            model.acoustic_decoder = torch.compile(
+                model.acoustic_decoder, mode="default", dynamic=True
+            )
+        elif device.type == "cuda" and _env_on(
+            "SGLANG_OMNI_HIGGS_VOCODER_JIT_SNAKE"
+        ):
+            # Tier 1: swap each Snake1d for the fused JIT kernel (near bit-exact).
+            _swap_snake_with_jit(model.acoustic_decoder)
         codec = cls(model, device=device)
         if enable_cuda_graph is None:
             enable_cuda_graph = _os.environ.get(
