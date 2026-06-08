@@ -702,12 +702,21 @@ class HiggsAudioV2TokenizerResidualVectorQuantization(nn.Module):
         return out_indices
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
-        """Decode the given codes to their quantized representation."""
-        quantized_out = torch.tensor(0.0, device=codes.device)
+        """Decode the given codes to their quantized representation.
+
+        Accumulate from the first quantizer instead of seeding with a
+        ``torch.tensor(0.0, device=...)`` scalar: that scalar init issues a
+        host->device copy that aborts CUDA-graph stream capture. This is
+        byte-identical to the upstream form -- the 0-dim fp32 ``0.0`` is a
+        wrapped scalar that does NOT promote the bf16 accumulation, so upstream
+        also sums in bf16 -- hence the eager (graph-off) path is unchanged.
+        """
+        quantized_out = None
         for i, indices in enumerate(codes):
-            quantizer = self.quantizers[i]
-            quantized = quantizer.decode(indices)
-            quantized_out = quantized_out + quantized.to(codes.device)
+            quantized = self.quantizers[i].decode(indices).to(codes.device)
+            quantized_out = (
+                quantized if quantized_out is None else quantized_out + quantized
+            )
         return quantized_out
 
 

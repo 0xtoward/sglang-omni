@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ BOC_ID = 1024
 EOC_ID = 1025
 
 # Shared between audio_encoder + vocoder; one codec load saves ~1 GB VRAM.
-_CODEC_CACHE: dict[tuple[str, str, str], HiggsAudioCodec] = {}
+_CODEC_CACHE: dict[tuple, HiggsAudioCodec] = {}
 
 
 def apply_delay_pattern(codes_TN: torch.Tensor) -> torch.Tensor:
@@ -87,8 +88,20 @@ def resolve_checkpoint(checkpoint: str) -> str:
 
 
 def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
-    """Process-wide cached :class:`HiggsAudioCodec` per (path, device, dtype)."""
-    key = (str(path), str(device), str(dtype))
+    """Process-wide cached :class:`HiggsAudioCodec` per
+    ``(path, device, dtype, cuda_graph_enabled)``.
+
+    The CUDA-graph flag is part of the key so a no-flag load and a later flag-on
+    load don't alias to the same (un-warmed) instance. Note: a cached codec's
+    runner is warmup-sealed by its first vocoder executor, so a second executor
+    in the same process with a *larger* stream window won't extend the captured
+    range (its rarer windows eager-fall-back). The pipeline builds one vocoder
+    stage per model, so this does not arise in normal serving.
+    """
+    cuda_graph = os.environ.get(
+        "SGLANG_OMNI_HIGGS_VOCODER_CUDA_GRAPH", "0"
+    ).strip().lower() not in ("", "0", "false", "no")
+    key = (str(path), str(device), str(dtype), cuda_graph)
     cached = _CODEC_CACHE.get(key)
     if cached is not None:
         return cached

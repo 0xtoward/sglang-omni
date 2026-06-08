@@ -25,6 +25,7 @@ from sglang_omni.models.higgs_tts._vendored.higgs_audio_v2_tokenizer_hf import (
     HiggsAudioV2TokenizerConfig,
     HiggsAudioV2TokenizerModel,
 )
+from sglang_omni.models.higgs_tts.vocoder_cuda_graph import VocoderCudaGraphRunner
 
 WaveformInput = torch.Tensor | np.ndarray
 
@@ -112,6 +113,7 @@ class HiggsAudioCodec:
         self.model = model
         self.device = device
         self._dtype = next(model.parameters()).dtype
+        self._cg_runner: VocoderCudaGraphRunner | None = None
 
     @classmethod
     def from_pretrained(
@@ -120,6 +122,7 @@ class HiggsAudioCodec:
         *,
         device: str | torch.device = "cpu",
         dtype: torch.dtype = torch.float32,
+        enable_cuda_graph: bool | None = None,
     ) -> "HiggsAudioCodec":
         """Load codec from a Higgs TTS checkpoint (local dir or HF repo id).
 
@@ -159,7 +162,17 @@ class HiggsAudioCodec:
         model = model.to(device=device)
         for p in model.parameters():
             p.requires_grad_(False)
-        return cls(model, device=device)
+        codec = cls(model, device=device)
+        if enable_cuda_graph is None:
+            enable_cuda_graph = os.environ.get(
+                "SGLANG_OMNI_HIGGS_VOCODER_CUDA_GRAPH", "0"
+            ).strip().lower() not in ("", "0", "false", "no")
+        if enable_cuda_graph and device.type == "cuda":
+            # Captures only the decode path (acoustic_decoder + quantizer.decode +
+            # fc2); the audio_encoder stage's torch.compile of acoustic_encoder on
+            # the shared cached instance is disjoint, so capture stays valid.
+            codec._cg_runner = VocoderCudaGraphRunner(model)
+        return codec
 
     @torch.no_grad()
     def encode_reference(
@@ -243,6 +256,27 @@ class HiggsAudioCodec:
             error_label="encode_batch",
         )
 
+    def warmup_cuda_graph(self, shapes) -> None:
+        """Pre-capture vocoder CUDA graphs for (batch, frames) shapes (startup).
+
+        No-op when CUDA graphs are disabled. Must run once before serving.
+        """
+        if self._cg_runner is not None:
+            self._cg_runner.warmup(shapes)
+
+    @torch.no_grad()
+    def _decode_model(self, codes_BNT: torch.Tensor) -> torch.Tensor:
+        """Codec decoder forward; replays a captured CUDA graph when enabled.
+
+        The CUDA-graph fast path is B=1 only (warmup captures ``(1, frames)``);
+        the bulk ``decode_batch`` path with B>1 always misses and runs eager.
+        """
+        if self._cg_runner is not None and codes_BNT.is_cuda:
+            out = self._cg_runner.decode(codes_BNT)
+            if out is not None:
+                return out
+        return self.model.decode(codes_BNT).audio_values
+
     @torch.no_grad()
     def decode(self, codes_TN: torch.Tensor) -> torch.Tensor:
         """``[T, num_codebooks]`` → mono waveform ``[L]``."""
@@ -255,7 +289,7 @@ class HiggsAudioCodec:
             .unsqueeze(0)
             .to(device=self.device, dtype=torch.long)
         )
-        return self.model.decode(codes_BNT).audio_values.squeeze(0).squeeze(0).cpu()
+        return self._decode_model(codes_BNT).squeeze(0).squeeze(0).cpu()
 
     @torch.no_grad()
     def decode_batch(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
@@ -264,7 +298,7 @@ class HiggsAudioCodec:
         def _batch_fn(batch_items: list[torch.Tensor]) -> list[torch.Tensor]:
             stacked = torch.stack(batch_items)
             codes_BNT = stacked.transpose(1, 2).to(device=self.device, dtype=torch.long)
-            audio = self.model.decode(codes_BNT).audio_values.cpu()
+            audio = self._decode_model(codes_BNT).cpu()
             return [audio[j, 0] for j in range(len(batch_items))]
 
         return self._bucketed_batch(
