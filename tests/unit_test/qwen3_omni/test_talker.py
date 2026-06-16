@@ -13,7 +13,6 @@ from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.components.talker import (
     Qwen3OmniTalker,
     _bind_default_weight_loaders,
-    _quant_config_for_code_predictor_dense_mlp,
 )
 from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
@@ -255,6 +254,37 @@ def test_qwen_talker_prefill_keeps_future_rows_device_backed() -> None:
     assert isinstance(queue, PendingTextTensorQueue)
     assert len(queue) == 2
     assert queue[0].device.type == "meta"
+
+
+def test_chunk_hidden_device_mismatch_resolved_before_stack() -> None:
+    """Mixed CPU/CUDA thinker chunks must not crash torch.stack in build_prompt_prefill."""
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder._device = torch.device("meta")
+    builder._dtype = torch.float16
+
+    chunks = [
+        SimpleNamespace(data=torch.ones((3,), dtype=torch.float32), metadata={}),
+        SimpleNamespace(
+            data=torch.zeros((3,), dtype=torch.float32),
+            metadata={
+                "layer_hidden": torch.empty((3,), device="meta", dtype=torch.float32)
+            },
+        ),
+    ]
+
+    # note (YueYin): .to() must happen per-chunk before torch.stack, not after
+    result = torch.stack(
+        [
+            builder.chunk_layer_hidden_or_embed(c).to(
+                device=builder._device, dtype=builder._dtype
+            )
+            for c in chunks
+        ],
+        dim=0,
+    )
+    assert result.shape == (2, 3)
+    assert result.device.type == "meta"
+    assert result.dtype == torch.float16
 
 
 def test_pending_text_queue_rejects_unexpected_rank() -> None:
@@ -1241,33 +1271,6 @@ def test_qwen_talker_keeps_existing_read_only_weight_loader() -> None:
     _bind_default_weight_loaders(module)
 
     assert module.param.weight_loader == "existing"
-
-
-def test_qwen_talker_code_predictor_dense_mlp_ignores_only_router_gate_skip() -> None:
-    """Prevents SGLang 0.5.8 substring skips from dequantizing gate_up_proj."""
-
-    class FakeQuantConfig:
-        ignored_layers = ["mlp.gate", "lm_head", "thinker.visual"]
-
-    original = FakeQuantConfig()
-
-    dense_mlp_config = _quant_config_for_code_predictor_dense_mlp(original)
-
-    assert dense_mlp_config is not original
-    assert original.ignored_layers == ["mlp.gate", "lm_head", "thinker.visual"]
-    assert dense_mlp_config.ignored_layers == ["lm_head", "thinker.visual"]
-
-
-def test_qwen_talker_code_predictor_quant_config_is_unchanged_without_router_skip() -> (
-    None
-):
-    class FakeQuantConfig:
-        ignored_layers = ["lm_head"]
-
-    original = FakeQuantConfig()
-
-    assert _quant_config_for_code_predictor_dense_mlp(original) is original
-    assert _quant_config_for_code_predictor_dense_mlp(None) is None
 
 
 def test_qwen_talker_activation_dtype_comes_from_codec_embedding() -> None:

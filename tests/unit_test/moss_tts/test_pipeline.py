@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 import sys
 import types
 from types import SimpleNamespace
@@ -17,7 +15,6 @@ from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.tasks.tts import (
     MOSS_TTS_TOKEN_COUNT_AUTO,
     _build_tts_payload,
-    _collect_streaming_audio,
     _handle_raw_pcm_streaming_response,
     estimate_moss_tts_duration_tokens,
 )
@@ -129,6 +126,7 @@ def test_moss_tts_config_and_registry_contracts() -> None:
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert {stage.process for stage in config.stages} == {"pipeline"}
+    assert config.supports_uploaded_voice_references() is True
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("MossTTSDelayModel")
         is MossTTSPipelineConfig
@@ -328,7 +326,7 @@ def test_moss_tts_benchmark_auto_token_count_uses_openmoss_estimate() -> None:
     assert payload["token_count"] == 32
 
 
-def test_tts_benchmark_payload_supports_sse_pcm_control() -> None:
+def test_tts_benchmark_payload_supports_streaming_pcm_control() -> None:
     sample = SampleInput(
         sample_id="sample-1",
         ref_text="reference",
@@ -340,13 +338,11 @@ def test_tts_benchmark_payload_supports_sse_pcm_control() -> None:
         sample,
         "OpenMOSS-Team/MOSS-TTS-v1.5",
         stream=True,
-        stream_format="sse",
         response_format="pcm",
         initial_codec_chunk_frames=1,
     )
 
     assert payload["stream"] is True
-    assert payload["stream_format"] == "sse"
     assert payload["response_format"] == "pcm"
     assert payload["initial_codec_chunk_frames"] == 1
 
@@ -363,39 +359,10 @@ def test_tts_benchmark_raw_audio_transport_forces_pcm_payload() -> None:
         sample,
         "OpenMOSS-Team/MOSS-TTS-v1.5",
         stream=True,
-        stream_format="audio",
         response_format="wav",
     )
 
-    assert payload["stream_format"] == "audio"
     assert payload["response_format"] == "pcm"
-
-
-def test_tts_benchmark_sse_parser_accepts_pcm_audio_chunks() -> None:
-    pcm = b"\x00\x01" * 960
-    line = "data: " + json.dumps(
-        {
-            "audio": {
-                "data": base64.b64encode(pcm).decode("ascii"),
-                "format": "pcm",
-                "mime_type": "audio/pcm",
-                "sample_rate": 24000,
-            }
-        }
-    )
-    chunks: list[bytes] = []
-
-    stream_format, duration, usage = _collect_streaming_audio(
-        line,
-        chunks,
-        stream_format=None,
-        chunk_times_out=[],
-    )
-
-    assert chunks == [pcm]
-    assert stream_format == (24000, 1, 2)
-    assert duration == pytest.approx(0.04)
-    assert usage is None
 
 
 def test_tts_benchmark_raw_pcm_uses_http_chunk_boundaries() -> None:
@@ -406,7 +373,12 @@ def test_tts_benchmark_raw_pcm_uses_http_chunk_boundaries() -> None:
             yield b"klmnop", True
 
     response = SimpleNamespace(
-        headers={"x-sample-rate": "4", "x-channels": "1", "x-bit-depth": "16"},
+        headers={
+            "Content-Type": "audio/pcm",
+            "x-sample-rate": "4",
+            "x-channels": "1",
+            "x-bit-depth": "16",
+        },
         content=FakeContent(),
     )
     result = RequestResult(request_id="raw-pcm")
@@ -424,6 +396,59 @@ def test_tts_benchmark_raw_pcm_uses_http_chunk_boundaries() -> None:
     assert result.audio_chunk_count == 2
     assert result.first_audio_payload_bytes == 10
     assert result.audio_duration_s == pytest.approx(2.0)
+
+
+def test_tts_benchmark_raw_pcm_rejects_sse_response() -> None:
+    class FakeContent:
+        async def iter_chunks(self):
+            yield b"data: [DONE]\n\n", True
+
+    response = SimpleNamespace(
+        headers={"Content-Type": "text/event-stream"},
+        content=FakeContent(),
+    )
+    result = RequestResult(request_id="raw-pcm")
+
+    asyncio.run(
+        _handle_raw_pcm_streaming_response(
+            response,
+            result,
+            start_time=0.0,
+            save_audio_dir=None,
+        )
+    )
+
+    assert not result.is_success
+    assert "audio/pcm" in result.error
+
+
+def test_tts_benchmark_raw_pcm_rejects_partial_frame() -> None:
+    class FakeContent:
+        async def iter_chunks(self):
+            yield b"abc", True
+
+    response = SimpleNamespace(
+        headers={
+            "Content-Type": "audio/pcm",
+            "x-sample-rate": "4",
+            "x-channels": "1",
+            "x-bit-depth": "16",
+        },
+        content=FakeContent(),
+    )
+    result = RequestResult(request_id="raw-pcm")
+
+    asyncio.run(
+        _handle_raw_pcm_streaming_response(
+            response,
+            result,
+            start_time=0.0,
+            save_audio_dir=None,
+        )
+    )
+
+    assert not result.is_success
+    assert "partial audio frame" in result.error
 
 
 def test_moss_tts_preserves_explicit_standard_sampling_values() -> None:
