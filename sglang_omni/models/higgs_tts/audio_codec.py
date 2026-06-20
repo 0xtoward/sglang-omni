@@ -168,9 +168,6 @@ class HiggsAudioCodec:
                 "SGLANG_OMNI_HIGGS_VOCODER_CUDA_GRAPH", "0"
             ).strip().lower() not in ("", "0", "false", "no")
         if enable_cuda_graph and device.type == "cuda":
-            # Captures only the decode path (acoustic_decoder + quantizer.decode +
-            # fc2); the audio_encoder stage's torch.compile of acoustic_encoder on
-            # the shared cached instance is disjoint, so capture stays valid.
             codec._cg_runner = VocoderCudaGraphRunner(model)
         return codec
 
@@ -257,20 +254,13 @@ class HiggsAudioCodec:
         )
 
     def warmup_cuda_graph(self, shapes) -> None:
-        """Pre-capture vocoder CUDA graphs for (batch, frames) shapes (startup).
-
-        No-op when CUDA graphs are disabled. Must run once before serving.
-        """
+        """Pre-capture vocoder CUDA graphs at startup (no-op when disabled)."""
         if self._cg_runner is not None:
             self._cg_runner.warmup(shapes)
 
     @torch.no_grad()
     def _decode_model(self, codes_BNT: torch.Tensor) -> torch.Tensor:
-        """Codec decoder forward; replays a captured CUDA graph when enabled.
-
-        The CUDA-graph fast path is B=1 only (warmup captures ``(1, frames)``);
-        the bulk ``decode_batch`` path with B>1 always misses and runs eager.
-        """
+        """Codec decode; replays a captured CUDA graph on a B=1 hit, else eager."""
         if self._cg_runner is not None and codes_BNT.is_cuda:
             out = self._cg_runner.decode(codes_BNT)
             if out is not None:

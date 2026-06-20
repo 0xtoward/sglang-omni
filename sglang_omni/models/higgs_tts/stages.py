@@ -496,18 +496,9 @@ def create_vocoder_executor(
     checkpoint_dir = resolve_checkpoint(model_path)
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
 
-    # Pre-capture vocoder CUDA graphs ONCE here (startup, AR stage quiescent),
-    # then the runner is sealed and only replays during serving. Capturing live
-    # during serving collides with the co-located AR stage's graph replays
-    # (issue #581). The vocoder stage is serial (StreamingSimpleScheduler drains
-    # on one loop), so the runner's shared replay buffers are never re-entered.
-    # No-op unless SGLANG_OMNI_HIGGS_VOCODER_CUDA_GRAPH is set.
-    #
-    # Streaming windows are all B=1 with frame count T in [1, max(stride,
-    # followup+holdback+overlap)] (87 at default params): held-back / final-flush
-    # tails reach down to 1, the steady window sits near followup+overlap. Derive
-    # the captured range from the actual stream params so it auto-scales when they
-    # change; larger windows and the B>1 bulk path fall back to eager.
+    # Pre-capture vocoder CUDA graphs once at startup (no-op unless enabled).
+    # Streaming windows are B=1 with T in [1, max(stride, followup+holdback+overlap)];
+    # derive the range from the stream params so it tracks config changes.
     vocoder_cg_max_frames = max(
         stream_stride,
         stream_followup_stride + stream_holdback_tokens + stream_overlap_tokens,
