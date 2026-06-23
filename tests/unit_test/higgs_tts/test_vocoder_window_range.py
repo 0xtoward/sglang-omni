@@ -31,13 +31,14 @@ def _derived_cap(stride, followup, overlap, holdback):
     return max(stride, followup + holdback + overlap)
 
 
-def _windows(stride, followup, overlap, holdback, n_tokens):
+def _windows(stride, followup, overlap, holdback, n_tokens, *, initial_chunk=0):
     """Drive the real _decode_delta for one utterance; return every window's T."""
     sched = HiggsStreamingVocoderScheduler.__new__(HiggsStreamingVocoderScheduler)
     sched._stream_stride = stride
     sched._stream_followup_stride = followup
     sched._stream_overlap_tokens = overlap
     sched._stream_holdback_tokens = holdback
+    sched._vocoder_cg_max_frames = _derived_cap(stride, followup, overlap, holdback)
     sched._samples_per_frame = _SPF
     sched._sample_rate = 24000
 
@@ -53,7 +54,7 @@ def _windows(stride, followup, overlap, holdback, n_tokens):
     state = _HiggsStreamState()
     state.num_codebooks = _N
     state.codebook_size = 1026
-    state.initial_codec_chunk_frames = 0
+    state.initial_codec_chunk_frames = initial_chunk
     row = torch.zeros(_N, dtype=torch.long)
     for _ in range(n_tokens):
         state.delayed_rows.append(row)
@@ -109,6 +110,26 @@ def test_steady_window_and_cap_track_stride_change():
     assert max(bumped) > 87, "bumping stride should push a window past the old cap"
     # ...but the derived cap grew to 162 and still covers everything.
     assert max(bumped) <= _derived_cap(150, 75, 8, 4)  # 162
+
+
+@pytest.mark.parametrize("stride,followup,overlap,holdback", CONFIGS)
+def test_catch_up_after_initial_chunk_stays_capped(
+    stride, followup, overlap, holdback
+):
+    # Fast-first-audio (initial_codec_chunk_frames > 0) emits a tiny first window, so
+    # the next decode catches up all buffered frames at once -- the window that used to
+    # reach 139 > 87 and miss the CUDA graph. The window cap must keep every catch-up
+    # window inside the captured range. Without the cap this fails (e.g. T=139 > 87).
+    cap = _derived_cap(stride, followup, overlap, holdback)
+    seen: set[int] = set()
+    for n in range(_N, 3 * max(stride, followup) + 3 * _N):
+        seen.update(_windows(stride, followup, overlap, holdback, n, initial_chunk=1))
+    assert seen, "no decode windows emitted"
+    assert max(seen) <= cap, (
+        f"catch-up window T={max(seen)} exceeds derived cap {cap} for "
+        f"(stride={stride}, followup={followup}, overlap={overlap}, holdback={holdback}); "
+        f"the CG range would miss it -> silent eager fallback."
+    )
 
 
 if __name__ == "__main__":

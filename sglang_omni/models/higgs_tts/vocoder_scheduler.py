@@ -46,6 +46,7 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
         stream_holdback_tokens: int = 4,
         max_batch_size: int = 4,
         max_batch_wait_ms: int = 2,
+        vocoder_cg_max_frames: int | None = None,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream_stride and stream_followup_stride must be > 0")
@@ -59,6 +60,20 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
         self._stream_followup_stride = int(stream_followup_stride)
         self._stream_overlap_tokens = int(stream_overlap_tokens)
         self._stream_holdback_tokens = int(stream_holdback_tokens)
+        # Largest streaming window T captured as a CUDA graph at warmup; bound each
+        # decode window to it so every replay hits a captured shape. Passed in from
+        # the warmup site (stages.py) as the single source; fall back to the same
+        # derivation when constructed directly (e.g. tests).
+        self._vocoder_cg_max_frames = int(
+            vocoder_cg_max_frames
+            if vocoder_cg_max_frames is not None
+            else max(
+                self._stream_stride,
+                self._stream_followup_stride
+                + self._stream_holdback_tokens
+                + self._stream_overlap_tokens,
+            )
+        )
         self._sample_rate = HiggsAudioCodec.SAMPLE_RATE
         self._stream_states: dict[str, _HiggsStreamState] = {}
         self._samples_per_frame = self._resolve_samples_per_frame(codec)
@@ -177,12 +192,15 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
         payload = self._stream_payloads[request_id]
         state = self._stream_states.setdefault(request_id, _HiggsStreamState())
-        output = self._decode_delta(state, is_final=True)
-        if output is None and not state.has_emitted:
-            output = self._audio_payload_from_stage_payload(payload)
-
         messages: list[OutgoingMessage] = []
-        if output is not None:
+        # Drain the tail in capped windows so each final decode also replays a graph
+        # instead of one oversized eager decode (a short utterance emits its whole tail
+        # here). Each call advances emitted_raw_frames by one captured-size window until
+        # the tail clears.
+        while True:
+            output = self._decode_delta(state, is_final=True)
+            if output is None:
+                break
             messages.append(
                 OutgoingMessage(
                     request_id=request_id,
@@ -191,6 +209,17 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
                     metadata={"modality": "audio"},
                 )
             )
+        if not messages and not state.has_emitted:
+            output = self._audio_payload_from_stage_payload(payload)
+            if output is not None:
+                messages.append(
+                    OutgoingMessage(
+                        request_id=request_id,
+                        type="stream",
+                        data=output,
+                        metadata={"modality": "audio"},
+                    )
+                )
 
         final_data: dict[str, Any] = {
             "modality": "audio",
@@ -366,6 +395,15 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
         window_start_raw = max(
             0, state.emitted_raw_frames - self._stream_overlap_tokens
         )
+        # The fast-first-audio initial chunk emits a tiny first window, so the catch-up
+        # (and the on_stream_done tail) decode many buffered frames in one window whose
+        # length can exceed the warmup-captured range [1, vocoder_cg_max_frames] (e.g.
+        # 139 > 87), missing the CUDA graph and falling back to eager. Cap every window
+        # to the captured max (same overlap-stitch as steady-state); streaming drains the
+        # leftover on the next chunk and on_stream_done loops until the tail clears.
+        emit_until_raw = min(
+            emit_until_raw, window_start_raw + self._vocoder_cg_max_frames
+        )
         rows_end = emit_until_raw + num_codebooks - 1
         rows = state.delayed_rows[window_start_raw:rows_end]
         audio = self._decode_delayed_rows(
@@ -396,6 +434,12 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
             num_codebooks=num_codebooks,
             emitted_initial_chunk=use_initial_chunk and not is_final,
         )
+        # If the window was capped above, more frames are already buffered; drain them
+        # on the next chunk instead of waiting a full follow-up stride.
+        if not is_final and emit_until_raw < max(
+            0, raw_total - self._stream_holdback_tokens
+        ):
+            state.next_decode_rows = delayed_count
         state.has_emitted = True
         return audio_waveform_payload(
             delta,

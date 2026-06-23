@@ -513,6 +513,7 @@ def create_vocoder_executor(
         stream_followup_stride=stream_followup_stride,
         stream_overlap_tokens=stream_overlap_tokens,
         stream_holdback_tokens=stream_holdback_tokens,
+        vocoder_cg_max_frames=vocoder_cg_max_frames,
     )
 
 
