@@ -13,6 +13,7 @@ it is **not** evidence that the model currently runs on NPU.
 - Target image: CANN 9.0.0, torch/torch_npu 2.10.0, aarch64
 
 See `BASELINE.lock.json` for machine-readable values.
+See `TAKEOVER.md` for a server-loss-safe restore and handoff procedure.
 
 ## Current red lines
 
