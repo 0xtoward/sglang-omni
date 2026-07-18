@@ -17,6 +17,13 @@ host names, ports, tokens, or private model URLs.
 It does **not** claim that MiniCPM-o 4.5 currently runs in SGLang-Omni on
 Ascend.  The branch is an integration baseline.
 
+The public-safe `takeover/` directory keeps the read-only audit, locked remote
+bootstrap, and environment-manifest generator off the disposable server.  The
+local orchestration wrapper and bundle SHA-256 lock live outside the bundle to
+avoid a self-referential hash; pass those locked hashes to
+`takeover/bootstrap_remote.sh` through `OMNI_BUNDLE_SHA256` and
+`CORE_BUNDLE_SHA256`.
+
 ## Locked repositories
 
 | Role | Repository | Branch | Required ancestor |
