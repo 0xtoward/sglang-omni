@@ -80,7 +80,16 @@ class ModelRunner:
     def __init__(self, tp_worker: Any, output_processor: Any):
         self.tp_worker = tp_worker
         self.output_processor = output_processor
-        self.device = torch.device(f"cuda:{tp_worker.gpu_id}")
+        # The wrapped SGLang worker owns platform selection.  Keeping its
+        # device here preserves CUDA behaviour and also lets the generic AR
+        # path run on backends such as Ascend NPU instead of recreating a CUDA
+        # device unconditionally.
+        worker_device = tp_worker.device
+        self.device = (
+            worker_device
+            if isinstance(worker_device, torch.device)
+            else torch.device(worker_device)
+        )
         self.model = tp_worker.model_runner.model
 
         # Async decode (one-step lookahead). Inert unless ``_async_enabled`` is set.

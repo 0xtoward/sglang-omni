@@ -4,7 +4,27 @@
 import asyncio
 import logging
 
-import msgpack
+try:
+    import msgpack
+except ModuleNotFoundError:  # pragma: no cover - exercised in minimal CANN images
+    # Some vendor images provide ``msgspec`` but omit the optional ``msgpack``
+    # wheel.  The control plane only needs this narrow binary encode/decode
+    # surface, so keep the normal dependency preferred while retaining a
+    # compatible path for an otherwise self-contained runtime.
+    import msgspec
+
+    class _MsgpackCompat:
+        @staticmethod
+        def packb(obj, *, use_bin_type: bool = True) -> bytes:
+            del use_bin_type
+            return msgspec.msgpack.encode(obj)
+
+        @staticmethod
+        def unpackb(data: bytes, *, raw: bool = False):
+            del raw
+            return msgspec.msgpack.decode(data)
+
+    msgpack = _MsgpackCompat()
 import zmq
 import zmq.asyncio
 
