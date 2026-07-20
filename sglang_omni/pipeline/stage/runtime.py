@@ -167,10 +167,24 @@ class Stage:
                     if self.gpu_id is not None:
                         import torch
 
-                        torch.cuda.set_device(int(self.gpu_id))
+                        if torch.cuda.is_available():
+                            torch.cuda.set_device(int(self.gpu_id))
+                            platform = "CUDA"
+                        elif (
+                            getattr(torch, "npu", None) is not None
+                            and torch.npu.is_available()
+                        ):
+                            torch.npu.set_device(int(self.gpu_id))
+                            platform = "NPU"
+                        else:
+                            raise RuntimeError(
+                                f"Stage {self.name} requests device {self.gpu_id}, but "
+                                "no supported accelerator backend is available."
+                            )
                         logger.info(
-                            "Scheduler thread for stage %s set CUDA device to %s",
+                            "Scheduler thread for stage %s set %s device to %s",
                             self.name,
+                            platform,
                             self.gpu_id,
                         )
                     self.scheduler.start()

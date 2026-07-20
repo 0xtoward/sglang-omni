@@ -575,8 +575,23 @@ def _construct_stage(
     if gpu_id is not None:
         import torch
 
-        torch.cuda.set_device(int(gpu_id))
-        log.info("Set current CUDA device to %s for stage %s", gpu_id, spec.stage_name)
+        if torch.cuda.is_available():
+            torch.cuda.set_device(int(gpu_id))
+            platform = "CUDA"
+        elif getattr(torch, "npu", None) is not None and torch.npu.is_available():
+            torch.npu.set_device(int(gpu_id))
+            platform = "NPU"
+        else:
+            raise RuntimeError(
+                f"Stage {spec.stage_name} requests device {gpu_id}, but no supported "
+                "accelerator backend is available."
+            )
+        log.info(
+            "Set current %s device to %s for stage %s",
+            platform,
+            gpu_id,
+            spec.stage_name,
+        )
 
     # --- Build scheduler via factory ---
     log.info(
