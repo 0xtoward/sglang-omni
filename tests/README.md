@@ -102,7 +102,8 @@ tests/
     │   ├── test_stream_output_builder.py
     │   └── test_transcription_adapter.py
     ├── qwen3_tts/
-    │   └── test_pipeline.py
+    │   ├── test_pipeline.py
+    │   └── test_predictor_cuda_graph.py
     ├── higgs_tts/
     │   ├── test_async_decode_runner.py
     │   ├── test_batched_step.py
@@ -461,7 +462,9 @@ that happened to contain an older version of the test.
   - model-owned default preservation for language and sampling parameters
   - Base, CustomVoice, and VoiceDesign request validation
   - voice-clone reference validation
-  - pipeline payload state serialization.
+  - pipeline payload state serialization
+  - code-predictor CUDA-graph bit-identity, capture-failure fallback, top-k
+    ladder masking, and enablement gating (env, `disable_cuda_graph`, TP).
 
 - `unit_test/higgs_tts/`: Higgs TTS unit tests:
   - OmniScheduler-backed AR stage factory wiring
