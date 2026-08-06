@@ -125,6 +125,7 @@ MAX_VOICE_UPLOAD_BODY_BYTES = (
 )
 
 _BAD_REQUEST_MARKERS = (
+    "Unsupported language:",
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
     "accepts audio up to",

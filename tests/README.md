@@ -387,6 +387,8 @@ that happened to contain an older version of the test.
     and `--decode-mode async|sync` CLI overrides
   - single-source audio token length formula used by both processor and
     request builder paths
+  - all 30 language-code/name mappings, Chinese compatibility aliases,
+    canonical forced-language prompts, and early unsupported-language rejection
   - token-level result adapter marker handling, avoiding decode/encode
     text round-trips for byte-level BPE output.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
