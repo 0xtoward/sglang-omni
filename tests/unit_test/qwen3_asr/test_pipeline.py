@@ -31,6 +31,13 @@ def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     assert config.stages[0].factory_args["max_running_requests"] == 64
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 32
+    assert config.stages[0].factory_args["prefill_coalesce_requests"] == 16
+    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 24
+    assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is True
+    assert (
+        config.stages[0].factory_args["prefill_coalesce_requires_pending_builds"]
+        is True
+    )
     assert "request_build_max_backlog" not in config.stages[0].factory_args
     assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
     assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 4096
@@ -49,6 +56,12 @@ def test_qwen3_asr_stage_default_allows_64_running_requests() -> None:
     assert signature.parameters["max_running_requests"].default == 64
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 32
+    assert signature.parameters["prefill_coalesce_requests"].default == 16
+    assert signature.parameters["prefill_coalesce_wait_ms"].default == 24.0
+    assert signature.parameters["prefill_coalesce_when_idle"].default is True
+    assert (
+        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
+    )
     assert "request_build_max_backlog" not in signature.parameters
 
 
@@ -223,4 +236,8 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     assert adapter_kwargs["context_length"] == 2048
     assert scheduler.enable_async_decode is False
     assert scheduler.async_decode_min_batch_size == 4
+    assert scheduler.prefill_coalesce_requests == 16
+    assert scheduler.prefill_coalesce_wait_ms == 24.0
+    assert scheduler.prefill_coalesce_when_idle is True
+    assert scheduler.prefill_coalesce_requires_pending_builds is True
     assert scheduler.shutdown_callback is fake_encoder_service.close
