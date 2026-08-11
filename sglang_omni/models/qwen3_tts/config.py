@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import re
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from sglang_omni.config import PipelineConfig, StageConfig
 
@@ -56,6 +56,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         }
 
     model_path: str
+    enable_deterministic_inference: bool = False
     stages: list[StageConfig] = [
         StageConfig(
             name="preprocessing",
@@ -82,6 +83,18 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             can_accept_stream_before_payload=True,
         ),
     ]
+
+    def model_post_init(self, __context: Any = None) -> None:
+        super().model_post_init(__context)
+        if not self.enable_deterministic_inference:
+            return
+
+        tts_engine = self.runtime_overrides.setdefault("tts_engine", {})
+        server_args = tts_engine.setdefault("server_args_overrides", {})
+        server_args["enable_deterministic_inference"] = True
+        self.runtime_overrides.setdefault("vocoder", {})[
+            "enable_deterministic_inference"
+        ] = True
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:
         return _is_qwen3_tts_base_model(self.model_path)
