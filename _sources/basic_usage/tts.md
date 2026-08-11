@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, and MOSS-TTS.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as the example. The same `/v1/audio/speech` endpoint also serves Higgs TTS, Voxtral TTS, Qwen3-TTS, Ming-Omni-TTS, MOSS-TTS, MOSS-TTS Local, dots.tts, and ZONOS2.
 
 ## Prerequisites
 
@@ -10,13 +10,27 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download fishaudio/s2-pro
 ```
 
+Fish Audio requires its model-specific DAC dependencies. Complete the
+[Fish Audio S2-Pro prerequisites](../cookbook/fishaudio_s2_pro.md#prerequisites)
+before starting the server.
+
 Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
-so the SGLang-Omni Transformers 5.6 / SGLang 0.5.12.post1 stack remains in place:
+so the SGLang-Omni Transformers 5.12 / SGLang 0.5.16 stack remains in place:
 
 ```bash
-uv pip install --upgrade sox einops
+apt-get update && apt-get install -y sox
+uv pip install --no-deps sox einops
 uv pip install --no-deps qwen-tts==0.1.1
 ```
+
+`--no-deps` is required on both lines. `qwen-tts` 0.1.1 pins Transformers 4.57.3,
+and letting it install that pin replaces the stack the rest of SGLang-Omni is
+built against; resolving `sox` normally pulls `numpy` past the ceiling
+`numba==0.65.1` imposes, which breaks `librosa` and with it `import qwen_tts`.
+SGLang-Omni shims the API differences between the two Transformers versions in
+`sglang_omni/models/qwen3_tts/compat.py`, so the pinned 5.12 stack is the
+supported configuration — see the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md)
+for details.
 
 ## Supported TTS Models
 
@@ -27,9 +41,17 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`. `language` defaults to `auto` |
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table. Set `voice` to the desired checkpoint speaker |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
+| [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; TP1 is supported and the provided config uses TP2 |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
+| [MOSS-TTS Local](../cookbook/moss_tts_local.md) | `examples/configs/moss_tts_local.yaml` | 48 kHz stereo local-transformer MOSS-TTS; voice cloning / reference-less; streaming |
+| [Higgs TTS](../cookbook/higgs_tts.md) | `--model-path` only | Voice cloning, streaming; no example YAML required |
+| [dots.tts](../cookbook/dots_tts.md) | `examples/configs/dots_tts.yaml` (MeanFlow), `examples/configs/dots_tts_soar.yaml` (SOAR) | 48 kHz continuous-latent TTS with reference audio. MeanFlow (`dots.tts-mf`) uses continuous batching (`max_running_requests=16` by default) with engine-wide `num_steps=4` and Euler. SOAR (`dots.tts-soar`) and base (`dots.tts-base`) are flow matching and run the single-request solver with CFG at `max_running_requests=1`; both use the SOAR config. All require `ref_audio` + `ref_text`. TP1 only |
+| [ZONOS2](../cookbook/zonos2.md) | `--model-path Zyphra/zonos2` | MoE TTS, 9 DAC codebooks, voice cloning; needs Descript DAC extras (see cookbook) |
 
 ## Launch the Server
+
+See [TTS Process Topology](tts_process_topology.md) for model defaults,
+`--isolate-stage`, and same-GPU memory requirements.
 
 The reference-audio examples below fetch clips from Hugging Face, so the
 commands include the Hugging Face host and its current download redirect host.
@@ -113,6 +135,46 @@ sgl-omni serve \
   --port 8000
 ```
 
+For dots.tts MeanFlow:
+
+```bash
+sgl-omni serve \
+  --model-path dots-studio/dots.tts-mf \
+  --config examples/configs/dots_tts.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
+  --allowed-media-domain us.aws.cdn.hf.co \
+  --port 8000
+```
+
+For dots.tts SOAR:
+
+```bash
+sgl-omni serve \
+  --model-path dots-studio/dots.tts-soar \
+  --config examples/configs/dots_tts_soar.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
+  --allowed-media-domain us.aws.cdn.hf.co \
+  --port 8000
+```
+
+`dots.tts-base` uses the same config; pass `--model-path dots-studio/dots.tts-base`.
+
+SOAR and base are flow-matching checkpoints, so they run the single-request solver
+(`max_running_requests=1`) with classifier-free guidance. Continuous batching is
+MeanFlow-only for now. `rednote-hilab/dots.tts-*` is the old org name and redirects to
+`dots-studio/dots.tts-*`; both work as `--model-path`.
+
+For Ming-Omni-TTS on two 80 GB GPUs:
+
+```bash
+sgl-omni serve \
+  --model-path inclusionAI/Ming-omni-tts-16.8B-A3B \
+  --config examples/configs/ming_omni_tts.yaml \
+  --port 8000
+```
+
 ## Use Curl
 
 Generate speech from text without any reference audio. This is valid for
@@ -157,6 +219,23 @@ curl -X POST http://localhost:8000/v1/audio/speech \
       "instructions": "A warm, natural young adult voice."
     }' \
     --output output.wav
+```
+
+dots.tts accepts the same reference fields. The MeanFlow checkpoint is tuned
+for four flow steps:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dots-studio/dots.tts-mf",
+    "voice": "default",
+    "input": "Get the trust fund to the bank early.",
+    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+    "ref_text": "We asked over twenty different people, and they all said it was his.",
+    "stage_params": {"latent_engine": {"num_steps": 4}}
+  }' \
+  --output dots-output.wav
 ```
 
 For natural-sounding Fish Speech S2-Pro results, use Voice Cloning with a reference audio clip.
@@ -207,9 +286,9 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata
 in response headers. It does not include in-band JSON events, final usage, or a
 terminal sentinel. When the client does not set `initial_codec_chunk_frames`,
-streaming requests default to a 1-frame first vocoder chunk for lower
-first-audio latency. Set `initial_codec_chunk_frames` to `0` to use the model's
-steady chunk size from the start.
+the model selects a continuity-safe first vocoder chunk. Set the field explicitly
+to override that default, or set it to `0` to use the model's steady chunk size
+from the start.
 
 ### Batch Speech
 
@@ -476,7 +555,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw PCM streaming. When true, `response_format` must be `pcm` |
-| `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. Higgs TTS currently consumes this parameter first. Raw PCM speech requests default this to `1` unless the client sets a value, including `0` |
+| `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA tuning. When omitted, each model applies its own default: Higgs TTS uses `20`, MOSS-TTS Local uses `5`, and ZONOS2 uses `40`. An explicit `0` uses the model's steady chunk size from the start |
 | `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path / file URL / data URL / remote URL) and `text` |
 | `ref_audio` | string | `null` | Reference audio path / URL / base64 string. Equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`. Equivalent to `references[0].text` |

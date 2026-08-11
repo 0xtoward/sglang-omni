@@ -157,7 +157,8 @@ print(result["choices"][0]["message"]["content"])
 
 ## Speech Mode
 
-Speech mode runs the full 9-stage pipeline across multiple GPUs. It produces both text (from the thinker) and audio (from the talker) output.
+Speech mode runs the full eight-stage pipeline on one or more GPUs. It produces
+both text (from the thinker) and audio (from the talker) output.
 
 ### Launch the Server
 
@@ -173,10 +174,31 @@ sgl-omni serve \
 
 Use `examples/configs/qwen3_omni_colocated_h200.yaml` on single-H200 workers.
 
+Exact-shape CUDA Graph replay is enabled by default for Qwen3-Omni Code2Wav.
+The default stage config supplies a 2% typed GPU memory budget; colocated
+example configs override it with their hardware-specific budget.
+
+To disable replay, add this runtime override to the YAML config:
+
+```yaml
+runtime_overrides:
+  code2wav:
+    enable_cuda_graph: false
+```
+
+When replay is enabled, a custom Code2Wav stage must define
+`runtime.resources.total_gpu_memory_fraction`; startup rejects a missing typed
+budget before loading the model.
+
+The feature derives the exact `B=1` threshold windows from
+`stream_chunk_size` and `left_context_size`; the defaults capture
+`T{10,20,30,35}`. Unsupported shapes and final stream tails run eagerly.
+Capture-time incompatibilities also fall back to eager execution.
+
 For manual multi-GPU placement, use the example script:
 
 ```bash
-python examples/run_qwen3_omni_speech_server.py \
+python examples/run_omni.py qwen3-speech-server \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --gpu-thinker 0 \
   --gpu-talker 1 \
@@ -217,7 +239,7 @@ sgl-omni serve \
 The speech server launcher exposes the same per-stage controls:
 
 ```bash
-python examples/run_qwen3_omni_speech_server.py \
+python examples/run_omni.py qwen3-speech-server \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --gpu-thinker 0 \
   --gpu-talker 1 \
@@ -231,6 +253,67 @@ python examples/run_qwen3_omni_speech_server.py \
 `--mem-fraction-static` applies to both Qwen AR stages. Per-stage flags override
 the global value for that stage. Values must be greater than `0` and less than
 `1`.
+
+The thinker admits up to 64 running requests by default. Use the
+thinker-specific flag to lower or raise that limit in either text-only or
+speech mode:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --thinker-max-running-requests 16
+```
+
+`--max-running-requests` continues to target the generation stage, which is the
+talker in the Qwen3-Omni speech pipeline. To configure the thinker through a
+pipeline YAML file instead, use the stage runtime override:
+
+```yaml
+runtime_overrides:
+  thinker:
+    server_args_overrides:
+      max_running_requests: 16
+```
+
+### Realtime Speech with Server VAD
+
+The speech pipeline can stream spoken responses over `/v1/realtime`. Enable the
+WebSocket endpoint on the standard speech pipeline:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008 \
+  --enable-realtime
+```
+
+After connecting to `ws://localhost:8008/v1/realtime`, request text and audio
+output:
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "modalities": ["text", "audio"],
+    "input_audio_format": "pcm16",
+    "output_audio_format": "pcm16"
+  }
+}
+```
+
+Stream mono 16 kHz PCM16 input with `input_audio_buffer.append`. Server VAD
+automatically commits each utterance and starts generation. Text arrives in
+`response.text.delta` events; spoken output arrives as base64-encoded mono
+24 kHz PCM16 in `response.audio.delta` events, followed by
+`response.audio.done` and `response.done`.
+
+Audio output is opt-in: sessions remain text-only unless both modalities are
+requested. A thinker-only server rejects audio negotiation because it has no
+`code2wav` stage.
+
+The browser example in `playground/qwen-omni/realtime` captures microphone
+input and lets the user select text-only output or text plus streamed PCM16
+audio playback.
 
 ## Single-GPU FP8 on H100/H20
 

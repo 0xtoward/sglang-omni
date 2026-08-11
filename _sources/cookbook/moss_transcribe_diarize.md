@@ -144,7 +144,7 @@ for segment in payload.get("segments", []):
     )
 ```
 
-For longer multi-speaker audio, raise `max_new_tokens` so the decoder can finish the full diarized transcript. The example below uses a repo-local clip with two speakers:
+When a request omits `max_new_tokens`, the server sizes the output budget from the audio duration. The default is `max(5120, 10 tokens per audio second)`, so a 60 minute recording gets a 36000 token budget without any client changes. Operators can pin a fixed `max_new_tokens` in the stage config, which disables duration scaling for requests that omit the field. An explicit `max_new_tokens` in the request always wins over both defaults. The scheduler clamps the final value to the context remaining after the audio prompt, so large explicit values are safe to send. Set the field explicitly when you want a hard cap or a larger budget than the default, as in this example with a clip from the repo that has two speakers:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
@@ -163,7 +163,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 | `language` | string | unset | Optional language hint |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | model default (`0.0`) | Sampling temperature |
-| `max_new_tokens` | int | `5120` | Max generated tokens; raise for long audio (e.g. `65536`) |
+| `max_new_tokens` | int | duration scaled | Max generated tokens. Omitted requests default to `max(5120, 10 * audio seconds)`, or to the fixed stage value when the operator configured one. Explicit values always win and are clamped to the remaining model context |
 | `prompt` | string | unset | Optional instruction override; omit to use the built-in transcribe+diarize prompt |
 
 `verbose_json` parses the model markup into OpenAI-style `segments` with
@@ -172,7 +172,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 ## Benchmarking
 
-Thanks to the Moss team for providing the benchmark datasets, we prepare movies800times and aishell4_long as benchmark datasets for multi-speaker ASR. movies800times is a short-sequence dataset with 800 dialog clips, and aishell4_long is a long-sequence dataset with 20 long-form meeting audio. These two datasets are right now under private license, and you can contact the Moss team for access.
+Thanks to the Moss team for providing the benchmark datasets, we prepare movies800times, aishell4_long, and googletime as benchmark datasets for multi-speaker ASR. movies800times is a short-sequence dataset with 800 dialog clips, aishell4_long with googletime are long-sequence dataset of long-form meeting audio, and English podcasts. These datasets are right now under private license, and you can contact the Moss team for access.
 
 
 ```bash
@@ -195,6 +195,17 @@ python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
   --max-new-tokens 65536 \
   --request-timeout-s 1800 \
   --output-dir results/moss_transcribe_diarize_aishell4_long
+
+# Long-sequence English podcast ASR / diarization
+python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
+  --dataset googletime \
+  --concurrency 16 \
+  --max-running-requests 16 \
+  --cuda-graph-max-bs 16 \
+  --mem-fraction-static 0.80 \
+  --max-new-tokens 65536 \
+  --request-timeout-s 1800 \
+  --output-dir results/moss_transcribe_diarize_googletime
 ```
 
 ## Benchmark Results
