@@ -250,17 +250,19 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
     )
 
 
-def test_qwen3_tts_deterministic_inference_configures_tts_engine_and_vocoder() -> None:
-    """Propagate deterministic inference to both generation stages."""
+def test_qwen3_tts_deterministic_inference_configures_pipeline() -> None:
+    """Propagate deterministic inference across the pipeline."""
     config = Qwen3TTSPipelineConfig(
         model_path="model",
         enable_deterministic_inference=True,
     )
     stages = {stage.name: stage for stage in config.stages}
 
+    preprocessing = resolve_stage_static_factory_args(stages["preprocessing"], config)
     tts_engine = resolve_stage_static_factory_args(stages["tts_engine"], config)
     vocoder = resolve_stage_static_factory_args(stages["vocoder"], config)
 
+    assert preprocessing["max_concurrency"] == 1
     assert tts_engine["server_args_overrides"]["enable_deterministic_inference"]
     assert vocoder["enable_deterministic_inference"]
 

@@ -89,6 +89,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         if not self.enable_deterministic_inference:
             return
 
+        self.runtime_overrides.setdefault("preprocessing", {})["max_concurrency"] = 1
         tts_engine = self.runtime_overrides.setdefault("tts_engine", {})
         server_args = tts_engine.setdefault("server_args_overrides", {})
         server_args["enable_deterministic_inference"] = True
