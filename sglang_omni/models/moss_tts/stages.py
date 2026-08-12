@@ -594,7 +594,7 @@ class _MossTTSVocoder(BatchVocoderBase):
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "float32",
     codec_model_path: str | None = None,
@@ -606,8 +606,10 @@ def create_vocoder_executor(
     stream_holdback_tokens: int = 1,
     initial_chunk_frames: int = 0,
 ) -> MossStreamingVocoderScheduler:
-    if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
+    # An explicit device is a model policy/user override; gpu_id is only the
+    # placement-derived fallback. This matches preprocessing resolution and
+    # permits a CPU-vocoder escape hatch on especially constrained hardware.
+    device = _resolve_codec_device(device, gpu_id)
     processor = _load_moss_processor(model_path)
     audio_tokenizer = load_moss_tts_audio_tokenizer(
         _resolve_audio_tokenizer_model_path(processor, codec_model_path),
