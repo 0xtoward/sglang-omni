@@ -265,6 +265,7 @@ def test_qwen3_tts_deterministic_inference_configures_pipeline() -> None:
     assert preprocessing["max_concurrency"] == 1
     assert tts_engine["server_args_overrides"]["enable_deterministic_inference"]
     assert vocoder["enable_deterministic_inference"]
+    assert vocoder["initial_cuda_graph"] is False
 
 
 @pytest.mark.parametrize(
@@ -3954,11 +3955,15 @@ def test_qwen3_tts_stream_prune_matches_full_history_windows() -> None:
     assert len(state.code_chunks) < len(full_history)
 
 
-def test_qwen3_tts_decode_isolates_rows_with_out_of_range_codes() -> None:
+@pytest.mark.parametrize("deterministic", [False, True])
+def test_qwen3_tts_decode_isolates_rows_with_out_of_range_codes(
+    deterministic: bool,
+) -> None:
     """A bad row fails alone and the decoder only ever sees in-range ids."""
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
+        enable_deterministic_inference=deterministic,
     )
     seen: list[torch.Tensor] = []
 
@@ -3981,6 +3986,5 @@ def test_qwen3_tts_decode_isolates_rows_with_out_of_range_codes() -> None:
     assert excinfo.value.indices == (1,)
     assert seen == [], "decoder must not run while a row is out of range"
 
-    scheduler._run_decode_plans([_plan(7)], stream=None)
-    assert len(seen) == 1
-    assert int(seen[0].max()) < 2048
+    scheduler._run_decode_plans([_plan(7), _plan(8)], stream=None)
+    assert [int(item.max()) for item in seen] == ([7, 8] if deterministic else [8])

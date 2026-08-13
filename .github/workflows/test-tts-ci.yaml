@@ -35,6 +35,7 @@ env:
 # Note (Jiaxin Deng): Stage 5 is a reusable MPS validation boundary after the
 # canonical DAG, so future model families can join it without perturbing Stage 1-4.
 #   stage-4-serving -> stage-5-mps
+# Qwen3-TTS determinism runs independently from the canonical TTS stages.
 
 jobs:
   stage-1-non-streaming:
@@ -394,3 +395,62 @@ jobs:
           # Evidence is uploaded above; leaving the generated audio behind
           # accumulates one attempt-sized copy per rerun in the CI home.
           rm -rf "${TTS_MPS_OUTPUT_ROOT}" "${TTS_MPS_STATE_ROOT}"
+
+  qwen3-tts-determinism:
+    name: Qwen3-TTS determinism
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 20
+    container:
+      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Prepare Qwen3-TTS runtime
+        shell: bash
+        run: |
+          source .github/scripts/pin_to_ci_cpuset.sh
+          source omni/bin/activate
+          command -v sox >/dev/null || { apt-get update && apt-get install -y sox; }
+          overlay="${RUNNER_TEMP}/qwen3-tts-overlay"
+          uv pip install --target "${overlay}" --no-deps sox einops qwen-tts==0.1.1
+          echo "PYTHONPATH=${overlay}:${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
+
+      - name: Prepare Qwen3-TTS model
+        shell: bash
+        run: |
+          bash .github/scripts/ensure_hf_models.sh omni \
+            Qwen/Qwen3-TTS-12Hz-0.6B-Base
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+      - name: Run Qwen3-TTS batch invariance checks
+        shell: bash
+        run: |
+          source omni/bin/activate
+          bash .github/scripts/run_flaky_pytest.sh pytest \
+            tests/test_model/test_qwen3_tts_batch_invariance.py \
+            -m benchmark -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Qwen3-TTS determinism

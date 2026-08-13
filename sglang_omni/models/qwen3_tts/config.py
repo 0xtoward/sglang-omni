@@ -93,9 +93,9 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         tts_engine = self.runtime_overrides.setdefault("tts_engine", {})
         server_args = tts_engine.setdefault("server_args_overrides", {})
         server_args["enable_deterministic_inference"] = True
-        self.runtime_overrides.setdefault("vocoder", {})[
-            "enable_deterministic_inference"
-        ] = True
+        vocoder = self.runtime_overrides.setdefault("vocoder", {})
+        vocoder["enable_deterministic_inference"] = True
+        vocoder["initial_cuda_graph"] = False
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:
         return _is_qwen3_tts_base_model(self.model_path)

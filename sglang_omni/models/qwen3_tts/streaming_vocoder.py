@@ -540,6 +540,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         stream: torch.cuda.Stream | None,
     ) -> list[torch.Tensor]:
         if self._deterministic_inference and len(plans) > 1:
+            decoder_input = torch.cat([plan.decoder_input for plan in plans], dim=0)
+            bad_rows = self._screen_out_of_range_codes(decoder_input)
+            self._raise_for_bad_rows(bad_rows, len(plans))
             waveforms = []
             for plan in plans:
                 waveforms.extend(self._run_decode_plans([plan], stream=stream))
