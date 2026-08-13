@@ -42,6 +42,11 @@ dependencies = [
     "logger",
     "httpx",
     "xxhash>=3.0.0",
+    # Note: (Jiaxin Deng) the documented install line for the Qwen3-TTS model
+    # package is `--no-deps qwen-tts==0.1.1`, and --no-deps is exactly what drops
+    # sox, so `import qwen_tts` raises ModuleNotFoundError before a worker binds
+    # a port.
+    "sox>=1.4.1",
     "av>=16.1.0",
     "qwen-vl-utils==0.0.11",
     "numba==0.65.1",  # Match SGLang 0.5.16
