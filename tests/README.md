@@ -407,6 +407,11 @@ that happened to contain an older version of the test.
     text round-trips for byte-level BPE output.
   - invalid encoded-audio classification versus operational loader failures,
     including transcription-route HTTP 400/500 mapping.
+- `unit_test/arkasr/`: ARK-ASR-3B unit tests:
+  - pipeline config, stage factory concurrency defaults, deferred CUDA-graph
+    capture, async-decode default, and `--decode-mode async|sync` CLI overrides
+  - audio-token count formula, audio-tower forward shape, marker-token
+    suppression, and the fp16 encoder residual clamp.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
   - pipeline config and stage factory: single `asr` stage, `max_running_requests=32`,
     auto static KV budget, pre-LM encoder/cache defaults, scheduler-owned
