@@ -470,15 +470,22 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
 ) -> None:
     cache = get_speaker_artifact_cache()
     cache.clear()
+    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
     calls = 0
+    block_encode = False
+    encode_started = threading.Event()
+    release_encode = threading.Event()
 
     class FakePrompt:
         ref_text = "reference"
 
     class FakeWrapper:
         def create_voice_clone_prompt(self, **kwargs):
-            nonlocal calls
+            nonlocal calls, block_encode
             calls += 1
+            if block_encode:
+                encode_started.set()
+                assert release_encode.wait(timeout=5.0)
             return [FakePrompt()]
 
         def _prompt_items_to_voice_clone_prompt(self, prompt_items):
@@ -505,6 +512,20 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
         model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+        speaker_encoder_sample_rate = 24000
+
+        class FakeSpeechTokenizer:
+            def encode(self, *args, **kwargs):
+                del args, kwargs
+                raise AssertionError(
+                    "uploaded voice must preserve the wrapper encode path"
+                )
+
+        speech_tokenizer = FakeSpeechTokenizer()
+
+        def extract_speaker_embedding(self, **kwargs):
+            del kwargs
+            raise AssertionError("uploaded voice must preserve the wrapper encode path")
 
         def build_voice_clone_inputs(self, **kwargs):
             assert kwargs["voice_clone_prompt"]["icl_mode"] == [True]
@@ -538,10 +559,13 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
             },
         )
 
+    model = FakeModel()
+    wrapper = FakeWrapper()
+
     qwen3_request_builders._prepare_qwen3_tts_request(
         make_uploaded_payload(7),
-        model=FakeModel(),
-        wrapper=FakeWrapper(),
+        model=model,
+        wrapper=wrapper,
     )
     cached = cache.get(
         SpeakerCacheKey("qwen3_tts_icl", "guide", 7, "voice_clone_prompt")
@@ -553,22 +577,61 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
 
     qwen3_request_builders._prepare_qwen3_tts_request(
         make_uploaded_payload(7),
-        model=FakeModel(),
-        wrapper=FakeWrapper(),
+        model=model,
+        wrapper=wrapper,
     )
     qwen3_request_builders._prepare_qwen3_tts_request(
         make_uploaded_payload(8),
-        model=FakeModel(),
-        wrapper=FakeWrapper(),
+        model=model,
+        wrapper=wrapper,
     )
     cache.clear_voice("guide")
     qwen3_request_builders._prepare_qwen3_tts_request(
         make_uploaded_payload(8),
-        model=FakeModel(),
-        wrapper=FakeWrapper(),
+        model=model,
+        wrapper=wrapper,
     )
 
     assert calls == 3
+
+    # A cold uploaded voice is keyed by its registry identity. The leader keeps
+    # the wrapper encode busy while the second request joins the same future.
+    block_encode = True
+    errors: list[BaseException] = []
+
+    def prepare_uploaded_voice() -> None:
+        try:
+            qwen3_request_builders._prepare_qwen3_tts_request(
+                make_uploaded_payload(9),
+                model=model,
+                wrapper=wrapper,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=prepare_uploaded_voice) for _ in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        assert encode_started.wait(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        service = qwen3_request_builders._ADHOC_REFERENCE_SERVICE_ENTRY[1]
+        while service.stats()["merged"] < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert service.stats()["merged"] == 1
+    finally:
+        release_encode.set()
+        for thread in threads:
+            thread.join(timeout=5.0)
+        qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert not errors
+    assert calls == 4
+    assert isinstance(
+        cache.get(SpeakerCacheKey("qwen3_tts_icl", "guide", 9, "voice_clone_prompt")),
+        dict,
+    )
 
 
 def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
@@ -1010,6 +1073,7 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
         model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+        speech_tokenizer = SimpleNamespace()
 
         def build_voice_clone_inputs(self, **kwargs):
             assert kwargs["voice_clone_prompt"]["icl_mode"] == [False]

@@ -30,6 +30,7 @@ from sglang_omni.sampling.seed import (
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.reference_encoder import (
     KeyedReferenceEncodeHook,
+    ReferenceEncodeKey,
     ReferenceEncodeService,
 )
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
@@ -577,6 +578,8 @@ class _Qwen3TTSAdhocReferenceInput:
     ref_audio: Any
     ref_text: str | None
     x_vector_only_mode: bool
+    uploaded_voice_name: str | None = None
+    uploaded_voice_created_at: int | None = None
 
 
 def _new_cuda_encode_stream(device: Any) -> torch.cuda.Stream | None:
@@ -768,12 +771,26 @@ class _Qwen3TTSAdhocReferenceHook(
             ref_audio=raw_input.ref_audio,
             ref_text=raw_input.ref_text,
             x_vector_only_mode=raw_input.x_vector_only_mode,
+            uploaded_voice_name=raw_input.uploaded_voice_name,
+            uploaded_voice_created_at=raw_input.uploaded_voice_created_at,
         )
 
     def close(self) -> None:
         self._ref_code_batcher.close()
 
     def input_key(self, item: _Qwen3TTSAdhocReferenceInput) -> str | None:
+        if (
+            item.uploaded_voice_name is not None
+            and item.uploaded_voice_created_at is not None
+        ):
+            return json.dumps(
+                {
+                    "uploaded_voice_name": item.uploaded_voice_name,
+                    "uploaded_voice_created_at": int(item.uploaded_voice_created_at),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
         return _qwen3_tts_ref_audio_input_key(item.ref_audio)
 
     def options_key(self, item: _Qwen3TTSAdhocReferenceInput) -> str:
@@ -786,12 +803,44 @@ class _Qwen3TTSAdhocReferenceHook(
             separators=(",", ":"),
         )
 
+    def revalidate(
+        self,
+        item: _Qwen3TTSAdhocReferenceInput,
+        key: ReferenceEncodeKey,
+    ) -> bool:
+        if (
+            item.uploaded_voice_name is not None
+            and item.uploaded_voice_created_at is not None
+        ):
+            # Uploaded voices are persisted only in SpeakerArtifactCache, whose
+            # voice-version invalidation is owned by the upload/delete API. Keep
+            # this service key for same-key in-flight merging, but do not create
+            # a second cache that could resurrect a cleared voice.
+            return False
+        return super().revalidate(item, key)
+
     def encode_one(
         self, item: _Qwen3TTSAdhocReferenceInput
     ) -> tuple[dict[str, Any], str | None]:
         if not item.x_vector_only_mode and not item.ref_text:
             raise ValueError(
                 "ref_text is required when x_vector_only_mode=False (ICL mode)"
+            )
+        if (
+            item.uploaded_voice_name is not None
+            and item.uploaded_voice_created_at is not None
+        ):
+            with torch.no_grad():
+                prompt_items = self._wrapper.create_voice_clone_prompt(
+                    ref_audio=item.ref_audio,
+                    ref_text=item.ref_text,
+                    x_vector_only_mode=item.x_vector_only_mode,
+                )
+            if len(prompt_items) != 1:
+                raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
+            return (
+                self._wrapper._prompt_items_to_voice_clone_prompt(prompt_items),
+                prompt_items[0].ref_text,
             )
         with torch.no_grad():
             normalized = self._wrapper._normalize_audio_inputs([item.ref_audio])
@@ -962,30 +1011,24 @@ def _prepare_qwen3_tts_base_request(
     )
     if cached_prompt is not None:
         voice_clone_prompt, ref_text = cached_prompt
-    elif cache_key is None:
+    else:
         reference_service = _get_qwen3_tts_adhoc_reference_service(model, wrapper)
         voice_clone_prompt, ref_text = reference_service.get_or_encode(
             state,
-            desc="Qwen3-TTS ad-hoc reference",
-        )
-    else:
-        with torch.no_grad():
-            prompt_items = wrapper.create_voice_clone_prompt(
-                ref_audio=state.ref_audio,
-                ref_text=state.ref_text,
-                x_vector_only_mode=state.x_vector_only_mode,
-            )
-        if len(prompt_items) != 1:
-            raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
-        voice_clone_prompt = wrapper._prompt_items_to_voice_clone_prompt(prompt_items)
-        ref_text = prompt_items[0].ref_text
-        speaker_cache.put(
-            cache_key,
-            _cacheable_qwen3_tts_voice_prompt(
-                voice_clone_prompt,
-                ref_text=ref_text,
+            desc=(
+                "Qwen3-TTS uploaded voice"
+                if cache_key is not None
+                else "Qwen3-TTS ad-hoc reference"
             ),
         )
+        if cache_key is not None:
+            speaker_cache.put(
+                cache_key,
+                _cacheable_qwen3_tts_voice_prompt(
+                    voice_clone_prompt,
+                    ref_text=ref_text,
+                ),
+            )
 
     input_id = wrapper._tokenize_texts([wrapper._build_assistant_text(state.text)])[0]
     ref_id = (
