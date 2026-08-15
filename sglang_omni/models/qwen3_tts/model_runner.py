@@ -370,6 +370,9 @@ class Qwen3TTSModelRunner(ModelRunner):
                 )
                 combined = self.model.get_input_embeddings()(token_id).reshape(-1)
             rows.append(combined)
+            # Retain the exact projected embed fed at this generated position so a
+            # later retraction can re-prefill it (see generated_input_embeds).
+            sched_req.data.generated_input_embeds.append(combined.detach())
         with torch.no_grad():
             torch.stack(rows, dim=0, out=decode_feedback_embedding.weight[:batch_size])
         # During graph decode, input_ids carries staged embedding row ids.
@@ -396,6 +399,8 @@ class Qwen3TTSModelRunner(ModelRunner):
         forward_batch: Any,
         requests: list,
     ) -> torch.Tensor:
+        device = forward_batch.input_ids.device
+        dtype = next(self.model.parameters()).dtype
         pieces = []
         for sched_req in requests:
             data = sched_req.data
@@ -405,11 +410,50 @@ class Qwen3TTSModelRunner(ModelRunner):
             prompt_embeds = data.prompt_input_embeds
             if prompt_embeds is None:
                 raise RuntimeError("Qwen3-TTS prefill requires prompt_input_embeds")
-            pieces.append(prompt_embeds[prefix_len : prefix_len + req_len])
-        return torch.cat(pieces, dim=0).to(
-            device=forward_batch.input_ids.device,
-            dtype=next(self.model.parameters()).dtype,
-        )
+            prompt_len = int(prompt_embeds.shape[0])
+            # Absolute position span recomputed by this (re)prefill: [prefix_len, seq_len).
+            seq_len = prefix_len + req_len
+            if seq_len <= prompt_len:
+                # First prefill (or a cached prefix wholly inside the prompt):
+                # every position maps to a prompt embed.
+                pieces.append(
+                    prompt_embeds[prefix_len:seq_len].to(device=device, dtype=dtype)
+                )
+                continue
+            # Retraction re-prefill: positions past the prompt are generated
+            # tokens whose projected embeds are NOT in prompt_input_embeds. Rebuild
+            # them from generated_input_embeds, first draining any feedback the
+            # decode loop had queued but not yet fed, so the list covers every
+            # produced frame in order (mirrors the decode-time consumption).
+            gen_end = seq_len - prompt_len
+            gen_list = data.generated_input_embeds
+            while len(gen_list) < gen_end:
+                combined = QwenTalkerModelRunner._take_next_decode_input_embed(
+                    sched_req=sched_req,
+                    device=device,
+                    dtype=dtype,
+                )
+                if combined is None:
+                    break
+                gen_list.append(combined.detach())
+            if len(gen_list) < gen_end:
+                raise RuntimeError(
+                    "Qwen3-TTS re-prefill cannot rebuild generated input embeds: "
+                    f"need {gen_end}, have {len(gen_list)} "
+                    f"(rid={req.rid}, prompt_len={prompt_len}, "
+                    f"prefix_len={prefix_len}, req_len={req_len})"
+                )
+            gen_start = max(prefix_len - prompt_len, 0)
+            if prefix_len < prompt_len:
+                pieces.append(
+                    prompt_embeds[prefix_len:prompt_len].to(device=device, dtype=dtype)
+                )
+            pieces.append(
+                torch.stack(gen_list[gen_start:gen_end], dim=0).to(
+                    device=device, dtype=dtype
+                )
+            )
+        return torch.cat(pieces, dim=0)
 
     def _forward_with_input_embeds(
         self,
