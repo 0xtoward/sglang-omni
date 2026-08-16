@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 
 import torch
@@ -10,6 +12,8 @@ import torch
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.fishaudio_s2_pro.sglang_model import _NO_SEED
 from sglang_omni.sampling.seed import resolve_row_seed
+
+logger = logging.getLogger(__name__)
 
 
 def collect_s2pro_step_outputs(
@@ -187,7 +191,15 @@ class FishS2ProModelRunner(ModelRunner):
                 vq_mask = vq_mask.squeeze(0)
 
             prefix_len = len(req.prefix_indices)
-            mask_slice = vq_mask[prefix_len : prefix_len + req_len]
+            # vq_mask_tokens covers ONLY the prompt. A retraction re-prefill
+            # extends past it into already-generated frames, so slicing the mask
+            # by the full extend length truncates it to the prompt length while
+            # req_embeds keeps the full length -> embed_text_dim indexes a
+            # [1, extend] tensor with a [1, prompt] mask -> shape-mismatch crash.
+            # Clamp the reference overlay to the prompt slice; the generated
+            # frames are rebuilt by the generated-tail loop below.
+            ref_len = max(0, min(req_len, int(vq_mask.shape[0]) - prefix_len))
+            mask_slice = vq_mask[prefix_len : prefix_len + ref_len]
             if not bool(mask_slice.any()):
                 offset += req_len
                 continue
@@ -204,7 +216,7 @@ class FishS2ProModelRunner(ModelRunner):
             num_vq_in_slice = int(mask_slice.sum().item())
             vq_slice = vq_parts_flat[vq_before : vq_before + num_vq_in_slice]
 
-            req_embeds = text_embeds[offset : offset + req_len]
+            req_embeds = text_embeds[offset : offset + ref_len]
             vq_embeds = self.model._audio_decoder.embed_text_dim(
                 req_embeds.unsqueeze(0),
                 vq_slice,
@@ -214,7 +226,85 @@ class FishS2ProModelRunner(ModelRunner):
             text_embeds[mask_indices] = vq_embeds.to(text_embeds.dtype)
             offset += req_len
 
+        # Rebuild ALREADY-GENERATED positions with their VQ-fused embedding. Fish
+        # fuses the acoustic codebooks (cb1..N) into each generated frame during
+        # decode ((semantic + sum(vq_codebook_embeddings)) / sqrt(N+1)); a
+        # retraction re-prefill only writes get_embed_tokens(cb0) for those
+        # positions, dropping the acoustic codebooks -> silent audio drift. Replay
+        # the exact same fusion (embed_text_dim == the decode formula) from the
+        # stored generated codes. The extend always ends at the sequence end, so
+        # the generated frames are the last min(extend_len, n_gen) rows, mapping
+        # 1:1 onto the output_codes tail. output_codes is populated only during
+        # decode, so this is a no-op on a fresh prefill (retract-only cost).
+        offset = 0
+        for sched_req in requests:
+            data = sched_req.data
+            ext_len = int(data.req.extend_range.length)
+            codes = self._generated_codes_tail(data, ext_len, device)
+            if codes is not None:
+                k = int(codes.shape[0])
+                lo = offset + ext_len - k
+                req_embeds = text_embeds[lo : offset + ext_len]
+                gmask = torch.ones(k, dtype=torch.bool, device=device)
+                fused = self.model._audio_decoder.embed_text_dim(
+                    req_embeds.unsqueeze(0), codes[:, 1:], gmask.unsqueeze(0)
+                )
+                text_embeds[lo : offset + ext_len] = fused.to(text_embeds.dtype)
+            offset += ext_len
+
+        if os.environ.get("FISH_REPREFILL_DIAG") == "1":
+            self._reprefill_drift_probe(requests, text_embeds, device)
         return text_embeds
+
+    @staticmethod
+    def _generated_codes_tail(data: Any, ext_len: int, device: Any):
+        """Last min(ext_len, n_gen) generated frames' codes as [k, num_cb+1]
+        (semantic in col 0, acoustic in cols 1:), or None. output_codes entries
+        are [num_cb+1, 1]; populated only during decode."""
+        oc = getattr(data, "output_codes", None)
+        if not oc or ext_len <= 0:
+            return None
+        n_gen = len(oc)
+        k = min(ext_len, n_gen)
+        rows = [oc[j].reshape(-1) for j in range(n_gen - k, n_gen)]
+        return torch.stack(rows, dim=0).to(device=device, dtype=torch.long)
+
+    def _reprefill_drift_probe(
+        self, requests: list, text_embeds: Any, device: Any
+    ) -> None:
+        """Env-gated (FISH_REPREFILL_DIAG=1) acceptance/observability probe. On
+        the generated positions rebuilt by a re-prefill, report the FINAL
+        embedding's distance to (a) the VQ-fused target and (b) semantic-only.
+        Unfixed: dist_to_fused~large, dist_to_semantic~0. Fixed: dist_to_fused~0,
+        dist_to_semantic~large -- the flip proves the overlay. Deterministic."""
+        offset = 0
+        for sched_req in requests:
+            data = sched_req.data
+            ext_len = int(data.req.extend_range.length)
+            codes = self._generated_codes_tail(data, ext_len, device)
+            if codes is not None:
+                k = int(codes.shape[0])
+                lo = offset + ext_len - k
+                rows = text_embeds[lo : offset + ext_len]
+                gmask = torch.ones(k, dtype=torch.bool, device=device)
+                with torch.no_grad():
+                    sem = self.model.get_embed_tokens()(codes[:, 0]).to(rows.dtype)
+                    tgt = self.model._audio_decoder.embed_text_dim(
+                        sem.unsqueeze(0), codes[:, 1:], gmask.unsqueeze(0)
+                    ).to(rows.dtype)
+                    denom = tgt.norm(dim=-1).clamp_min(1e-6)
+                    d_fused = ((rows - tgt).norm(dim=-1) / denom).mean()
+                    d_sem = ((rows - sem).norm(dim=-1) / denom).mean()
+                logger.warning(
+                    "FISH_REPREFILL_DIAG rid=%s gen_in_extend=%d n_generated=%d "
+                    "dist_to_fused=%.4f dist_to_semantic=%.4f",
+                    sched_req.request_id,
+                    k,
+                    len(data.output_codes),
+                    float(d_fused),
+                    float(d_sem),
+                )
+            offset += ext_len
 
     def _collect_step_outputs(self, result: Any, requests: list) -> None:
         collect_s2pro_step_outputs(
