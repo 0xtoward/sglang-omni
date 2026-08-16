@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import logging
-import os
 from typing import Any
 
 import torch
@@ -12,8 +10,6 @@ import torch
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.fishaudio_s2_pro.sglang_model import _NO_SEED
 from sglang_omni.sampling.seed import resolve_row_seed
-
-logger = logging.getLogger(__name__)
 
 
 def collect_s2pro_step_outputs(
@@ -252,8 +248,6 @@ class FishS2ProModelRunner(ModelRunner):
                 text_embeds[lo : offset + ext_len] = fused.to(text_embeds.dtype)
             offset += ext_len
 
-        if os.environ.get("FISH_REPREFILL_DIAG") == "1":
-            self._reprefill_drift_probe(requests, text_embeds, device)
         return text_embeds
 
     @staticmethod
@@ -268,43 +262,6 @@ class FishS2ProModelRunner(ModelRunner):
         k = min(ext_len, n_gen)
         rows = [oc[j].reshape(-1) for j in range(n_gen - k, n_gen)]
         return torch.stack(rows, dim=0).to(device=device, dtype=torch.long)
-
-    def _reprefill_drift_probe(
-        self, requests: list, text_embeds: Any, device: Any
-    ) -> None:
-        """Env-gated (FISH_REPREFILL_DIAG=1) acceptance/observability probe. On
-        the generated positions rebuilt by a re-prefill, report the FINAL
-        embedding's distance to (a) the VQ-fused target and (b) semantic-only.
-        Unfixed: dist_to_fused~large, dist_to_semantic~0. Fixed: dist_to_fused~0,
-        dist_to_semantic~large -- the flip proves the overlay. Deterministic."""
-        offset = 0
-        for sched_req in requests:
-            data = sched_req.data
-            ext_len = int(data.req.extend_range.length)
-            codes = self._generated_codes_tail(data, ext_len, device)
-            if codes is not None:
-                k = int(codes.shape[0])
-                lo = offset + ext_len - k
-                rows = text_embeds[lo : offset + ext_len]
-                gmask = torch.ones(k, dtype=torch.bool, device=device)
-                with torch.no_grad():
-                    sem = self.model.get_embed_tokens()(codes[:, 0]).to(rows.dtype)
-                    tgt = self.model._audio_decoder.embed_text_dim(
-                        sem.unsqueeze(0), codes[:, 1:], gmask.unsqueeze(0)
-                    ).to(rows.dtype)
-                    denom = tgt.norm(dim=-1).clamp_min(1e-6)
-                    d_fused = ((rows - tgt).norm(dim=-1) / denom).mean()
-                    d_sem = ((rows - sem).norm(dim=-1) / denom).mean()
-                logger.warning(
-                    "FISH_REPREFILL_DIAG rid=%s gen_in_extend=%d n_generated=%d "
-                    "dist_to_fused=%.4f dist_to_semantic=%.4f",
-                    sched_req.request_id,
-                    k,
-                    len(data.output_codes),
-                    float(d_fused),
-                    float(d_sem),
-                )
-            offset += ext_len
 
     def _collect_step_outputs(self, result: Any, requests: list) -> None:
         collect_s2pro_step_outputs(
