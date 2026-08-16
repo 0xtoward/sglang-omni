@@ -61,7 +61,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.1" />
-    <meta name="docbuild:last-update" content="Aug 14, 2026"/>
+    <meta name="docbuild:last-update" content="Aug 16, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -207,6 +207,7 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">🚀 Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_xpu.html">🚀 Installation — Intel XPU</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/release_notes.html">Release Notes</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
@@ -233,6 +234,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/qwen3_omni.html">Omni Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/audio_translations.html">Audio Translations</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts.html">TTS Model Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts_process_topology.html">TTS Process Topology</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">Omni Router Usage</a></li>
@@ -520,6 +522,7 @@
   <section class="tex2jax_ignore mathjax_ignore" id="moss-transcribe-diarize">
 <h1>MOSS-Transcribe-Diarize<a class="headerlink" href="#moss-transcribe-diarize" title="Link to this heading">#</a></h1>
 <p><a class="reference external" href="https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize">MOSS-Transcribe-Diarize</a> is a multi-speaker ASR and diarization model from the OpenMOSS team.</p>
+<p>MOSS-Transcribe-Diarize does not support <code class="docutils literal notranslate"><span class="pre">/v1/audio/translations</span></code>; that endpoint returns HTTP 400. Use <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code>.</p>
 <p><img alt="Model Architecture" src="https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize/resolve/main/Model_Architecture.png" /></p>
 <p>It transcribes speech, assigns speakers, and predicts timestamps in a single generation pass. With 128K context, it supports up to ~90-minute audio, handles meetings, interruptions, long conversations, and overlapping speech, and adds hotword boosting for names, companies, product terms, and domain vocabulary. MOSS-Transcribe-Diarize is served through the OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code> endpoint.</p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -679,7 +682,8 @@
 <h3>Optimization Strategies<a class="headerlink" href="#optimization-strategies" title="Link to this heading">#</a></h3>
 <p><img alt="Optimization Overview" src="../_images/moss-td-optimization.svg" /></p>
 <p>The optimization stack mirrors <a class="reference external" href="https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-optimization.md">what we built for TTS</a>, sharing the same core infrastructure with ASR-specific adaptations.</p>
-<p><strong>CUDA Graph.</strong> The LLM decode step pads batch size to predefined buckets (1, 2, 4, 8, …) and replays a captured CUDA graph, eliminating kernel launch overhead on every token. This is the single biggest optimization for AR Decode. The Whisper encoder gets the same treatment, bucketed over chunk count (<code class="docutils literal notranslate"><span class="pre">encoder_chunk_buckets</span></code>, default <code class="docutils literal notranslate"><span class="pre">1..8</span></code> ≈ 4 min of audio).</p>
+<p><strong>CUDA Graph.</strong> The LLM decode step pads batch size to predefined buckets (1, 2, 4, 8, …) and replays a captured CUDA graph, eliminating kernel launch overhead on every token. This is the single biggest optimization for AR Decode. Breakable prefill graphs bucket over token count instead, and the ladder starts at 1 and 2: a fully cached prefix still re-prefills its last token, and that 1-token extend would otherwise pad to the 4-token floor and exceed SGLang’s 2x padding guard, falling back to eager. The 2-token bucket sits exactly on that guard, so it replays either way and only saves the padding. The Whisper encoder gets the same treatment, bucketed over chunk count (<code class="docutils literal notranslate"><span class="pre">encoder_chunk_buckets</span></code>, default <code class="docutils literal notranslate"><span class="pre">1..8</span></code> ≈ 4 min of audio).</p>
+<p><strong>Decoder Torch Compile.</strong> The default pipeline compiles Qwen3 decoder shapes through batch size 4 and uses the eager decoder above that cap. Override the cap with <code class="docutils literal notranslate"><span class="pre">--torch-compile-max-bs</span></code>, or disable decoder compilation with <code class="docutils literal notranslate"><span class="pre">--torch-compile</span> <span class="pre">off</span></code>. Compilation runs once per captured decode bucket at startup (<code class="docutils literal notranslate"><span class="pre">max-autotune-no-cudagraphs</span></code>), so cold start pays an autotuning cost before the server accepts traffic. This setting is independent of the encoder compile option below.</p>
 <p><strong>Encoder Torch Compile (opt-in).</strong> <code class="docutils literal notranslate"><span class="pre">encoder_torch_compile=True</span></code> swaps the encoder CUDA graph for <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> (default mode) with kernel fusion. The two are mutually exclusive. Reduce-overhead mode must not be used: its cudagraph trees corrupt memory alongside the decode CUDA graphs that always run in this process (illegal memory access after ~60s of serving). The cost is a one-time per-bucket compile at startup; <code class="docutils literal notranslate"><span class="pre">dynamic=False</span></code> means only the warmed chunk counts are accelerated, anything else runs eager.</p>
 <p><strong>Async Decode.</strong> Same one-step lookahead as TTS: launch the current decode step’s GPU work, then resolve the previous step’s host-side work (D2H copy, finish detection, result dispatch) in parallel. MOSS-TD enables lookahead starting at batch size 1 by default. Set <code class="docutils literal notranslate"><span class="pre">--async-lookahead-min-batch-size</span> <span class="pre">2</span></code> to keep batch-size-1 decode synchronous, or use <code class="docutils literal notranslate"><span class="pre">--decode-mode</span> <span class="pre">sync</span></code> to disable lookahead for the stage. Two alternating pinned host buffers prevent read/write races between the GPU’s async D2H write and the CPU’s read. For the full mechanism and code pointers, see <a class="reference external" href="https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-optimization.md#asynchronous-decode--lookahead">Asynchronous Decode + Lookahead</a> in the TTS optimization guide.</p>
 <p><strong>LRU Encoder Cache.</strong> The Whisper encoder forward is deterministic for identical input audio — same waveform always produces the same embeddings. We exploit this with an LRU cache (max 64 entries, 4 GB budget) that stores encoder outputs on CPU, keyed by a content hash of the input waveform. On a cache hit the stored tensor is transferred back to GPU asynchronously, skipping the encoder entirely. On a miss the encoder runs normally and the result is moved to CPU for storage. The cache evicts by both entry count and total bytes, always dropping the least-recently-used entry first.</p>
@@ -1075,7 +1079,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Aug 14, 2026.
+  Last updated on Aug 16, 2026.
   <br/>
 </p>
   </div>
