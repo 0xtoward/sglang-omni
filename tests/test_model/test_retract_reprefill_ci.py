@@ -25,9 +25,10 @@ Assertion 1 — liveness (always; model-agnostic, black-box):
     200 (proves the decode stage survived, not just that in-flight streams drained).
 
 Assertion 2 — content WER (opt-in; black-box):
-    transcribe the returned audio through a served ASR model (openai/whisper-large-v3
-    by default, via ``benchmarks.tasks.asr`` — the same ASR the TTS WER CI uses) and
-    assert ``WER(hyp, input_text) <= budget``. Catches silent drift end-to-end with
+    transcribe the returned audio through a served ASR model via ``benchmarks.tasks.asr``
+    -- the same WER layer the TTS WER CI uses, defaulting to its Qwen3-ASR
+    (``Qwen/Qwen3-ASR-1.7B``); ``openai/whisper-large-v3`` also works over the same layer.
+    Assert ``WER(hyp, input_text) <= budget``. Catches silent drift end-to-end with
     no model internals. Requires an intelligible generation config (a reference voice
     + temperature > 0, from the per-model preset). Skipped when the model has no WER
     budget, no reference audio, or the ASR backend is unavailable.
@@ -37,8 +38,10 @@ come from ``RETRACT_MODEL_PATH`` (a local path or an HF id).
 
 Usage:
     RETRACT_MODEL_PATH=/models/zonos2 RETRACT_CI_MODEL=zonos2 \
-    RETRACT_REF_AUDIO=/path/ref.wav RETRACT_ASR_MODEL=openai/whisper-large-v3 \
+    RETRACT_REF_AUDIO=/path/ref.wav \
     pytest tests/test_model/test_retract_reprefill_ci.py -s -x
+    # ASR defaults to Qwen3-ASR; point RETRACT_ASR_PORT at the CI's qwen3_asr_wer_router
+    # to reuse it, or set RETRACT_ASR_MODEL=openai/whisper-large-v3 for a whisper server.
 """
 
 from __future__ import annotations
@@ -81,7 +84,9 @@ RETRACT_CI_PRESETS: dict[str, RetractPreset] = {
 MODEL_PATH = os.environ.get("RETRACT_MODEL_PATH")
 CI_MODEL = os.environ.get("RETRACT_CI_MODEL")
 REF_AUDIO = os.environ.get("RETRACT_REF_AUDIO")
-ASR_MODEL = os.environ.get("RETRACT_ASR_MODEL", "openai/whisper-large-v3")
+# The TTS WER CI transcribes via a served Qwen3-ASR router (benchmarks.tasks.asr);
+# default to that model. whisper-large-v3 also works over the same load_router_asr path.
+ASR_MODEL = os.environ.get("RETRACT_ASR_MODEL", "Qwen/Qwen3-ASR-1.7B")
 REUSE_ASR_PORT = os.environ.get("RETRACT_ASR_PORT")  # reuse an already-running ASR
 RUN_WER = os.environ.get("RETRACT_RUN_WER", "1") != "0"
 
