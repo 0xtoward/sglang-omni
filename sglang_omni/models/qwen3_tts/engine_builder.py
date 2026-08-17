@@ -93,6 +93,13 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         )
 
     def compile_model(self, model: Any, server_args: Any) -> None:
+        if server_args.enable_deterministic_inference:
+            override_server_args(
+                server_args,
+                "sglang_omni.qwen3_tts.deterministic_inference",
+                enable_torch_compile=False,
+            )
+            return
         if bool(server_args.enable_torch_compile):
             qwen3_stages._compile_qwen3_tts_backbone(model)
             override_server_args(

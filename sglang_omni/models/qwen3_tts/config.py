@@ -63,6 +63,10 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         }
 
     model_path: str
+    # note (0xtoward): Keep deterministic inference opt-in because it serializes
+    # preprocessing and vocoder decoding and disables Talker compilation and the
+    # initial vocoder CUDA Graph, reducing throughput.
+    enable_deterministic_inference: bool = False
     stages: list[StageConfig] = [
         StageConfig(
             name="preprocessing",
@@ -89,6 +93,19 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             can_accept_stream_before_payload=True,
         ),
     ]
+
+    def model_post_init(self, __context: Any = None) -> None:
+        super().model_post_init(__context)
+        if not self.enable_deterministic_inference:
+            return
+
+        self.runtime_overrides.setdefault("preprocessing", {})["max_concurrency"] = 1
+        tts_engine = self.runtime_overrides.setdefault("tts_engine", {})
+        server_args = tts_engine.setdefault("server_args_overrides", {})
+        server_args["enable_deterministic_inference"] = True
+        vocoder = self.runtime_overrides.setdefault("vocoder", {})
+        vocoder["enable_deterministic_inference"] = True
+        vocoder["initial_cuda_graph"] = False
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:
         return _is_qwen3_tts_base_model(self.model_path)
