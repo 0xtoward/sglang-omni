@@ -107,13 +107,6 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
 
     enforce_request_limits: bool = True
     output_codes: list[torch.Tensor] = field(default_factory=list)
-    # Projected input embed actually fed at each generated position, kept in
-    # order so a retracted request can be re-prefilled: prompt_input_embeds only
-    # covers the prompt, so without this the re-prefill slice is silently
-    # truncated by the number of generated tokens and the KV-write kernel
-    # asserts (out_cache_loc has N more slots than the model produces k/v rows).
-    # Mirrors ming_tts.feedback_embeddings / dots_tts.decoded_latent_patches.
-    generated_input_embeds: list[torch.Tensor] = field(default_factory=list)
     latest_stream_code_chunk: torch.Tensor | None = None
     stream_ref_sent: bool = False
     stream_codec_output: bool = False

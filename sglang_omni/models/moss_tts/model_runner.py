@@ -88,24 +88,7 @@ class MossTTSModelRunner(ModelRunner):
                 raise RuntimeError("MOSS-TTS prefill requires prompt_rows")
             req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
-            # Under KV pressure the scheduler retracts a running request and
-            # re-prefills an extend region that spans the already-generated
-            # frames. Those frames live in output_rows, not prompt_rows, so a
-            # prompt-only slice is silently truncated by the generated-frame
-            # count and the backbone KV-write kernel then asserts. Rebuild the
-            # full frame sequence before slicing (mirrors moss_tts_local) so the
-            # projected embeds keep one row per extend token.
-            if data.output_rows:
-                generated = torch.stack(data.output_rows, dim=0).to(rows.device)
-                rows = torch.cat([rows, generated], dim=0)
             current_rows = rows[prefix_len : prefix_len + req_len]
-            if int(current_rows.shape[0]) != req_len:
-                raise RuntimeError(
-                    "MOSS-TTS prefill row/token mismatch: got "
-                    f"{int(current_rows.shape[0])} rows, need {req_len} "
-                    f"(prefix={prefix_len}, prompt={int(data.prompt_rows.shape[0])}, "
-                    f"generated={len(data.output_rows)})"
-                )
             embeds = self.model._prepare_multi_modal_inputs(
                 current_rows.to(device=forward_batch.input_ids.device)
             )
