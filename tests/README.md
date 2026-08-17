@@ -224,9 +224,6 @@ Relevant model CI ownership:
   router at TTS generation concurrency 16 and verifies both colocated workers
   receive traffic. WER reuses saved audio after the Qwen3-Omni server is
   stopped, then transcribes through Qwen3-ASR at concurrency 32.
-- `test_qwen3_tts_batch_invariance.py`: checks deterministic Qwen3-TTS output
-  across physical Talker batch sizes with cached and uncached references. TTS
-  CI runs this file with `pytest -m benchmark`.
 - `test_qwen3_omni_realtime.py` keeps the lower-cost thinker-only VAD/text
   path covered; `test_qwen3_omni_realtime_audio.py` separately launches the
   speech topology and verifies VAD-driven raw PCM16 response streaming.

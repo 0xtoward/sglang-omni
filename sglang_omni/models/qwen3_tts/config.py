@@ -56,6 +56,9 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         }
 
     model_path: str
+    # note (0xtoward): Keep deterministic inference opt-in because it serializes
+    # preprocessing and vocoder decoding and disables Talker compilation and the
+    # initial vocoder CUDA Graph, reducing throughput.
     enable_deterministic_inference: bool = False
     stages: list[StageConfig] = [
         StageConfig(
