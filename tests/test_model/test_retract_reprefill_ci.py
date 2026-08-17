@@ -12,8 +12,12 @@ Trigger (unified, model-agnostic):
     admin ``POST /pause_generation {"mode":"retract"}`` retracts *every* running
     request (bypassing the "evict least-generated" policy of SGLANG_TEST_RETRACT),
     then ``/continue_generation`` forces the re-prefill. ``SGLANG_RADIX_FORCE_MISS=1``
-    forces the full re-prefill (radix miss) so the generated tail is recomputed.
-    Requests are long + uniform, so every retracted request carries a big tail.
+    forces the full re-prefill (radix miss) so the generated tail is recomputed. The
+    retract is paced by GENERATED PROGRESS, not wall-clock: a streaming pacer request
+    generates in lockstep with the batch and the retract fires once it has produced
+    ``RETRACT_MIN_STREAM_BYTES`` of audio, so it lands at the same generation depth on a
+    1x-realtime model (fishaudio) and a 4x one (qwen3/higgs) alike -- a fixed wall-clock
+    wait fired too early on slow models and too late on fast ones (which finished first).
 
 Assertion 1 — liveness (always; model-agnostic, black-box):
     no fatal signature in the server log after the retract, every in-flight request
@@ -40,6 +44,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import subprocess
@@ -86,12 +91,23 @@ MAX_TOTAL_TOKENS = int(os.environ.get("RETRACT_MAX_TOTAL_TOKENS", "8192"))
 STARTUP_TIMEOUT = int(os.environ.get("RETRACT_STARTUP_TIMEOUT", "600"))
 N_REQUESTS = int(os.environ.get("RETRACT_N_REQUESTS", "4"))
 MAX_NEW_TOKENS = int(os.environ.get("RETRACT_MAX_NEW_TOKENS", "1500"))
-RETRACT_WAIT_S = float(os.environ.get("RETRACT_WAIT_S", "6"))
+
+# Retract fires on GENERATED PROGRESS, not wall-clock. A streaming "pacer" request
+# runs alongside the batch; we retract once it has produced RETRACT_MIN_STREAM_BYTES
+# of audio -- a generation-speed-independent proxy for generated-frame depth, so the
+# retract lands at the same generation depth whether the model runs at 1x or 4x
+# realtime (a fixed wall-clock wait fired too early on slow models and too late on
+# fast ones, which finish before it). RETRACT_MAX_WAIT_S caps it so a short/stalled
+# generation cannot hang the test.
+RETRACT_MIN_STREAM_BYTES = int(
+    os.environ.get("RETRACT_MIN_STREAM_BYTES", str(320 * 1024))
+)
+RETRACT_MAX_WAIT_S = float(os.environ.get("RETRACT_MAX_WAIT_S", "30"))
 
 BASE = f"http://127.0.0.1:{PORT}"
 
-# Distinct clean passages (known WER targets), each long enough that every request
-# still carries a big generated tail at RETRACT_WAIT_S.
+# Distinct clean passages (known WER targets), long enough that every request still
+# carries a big generated tail once the pacer reaches RETRACT_MIN_STREAM_BYTES.
 _TEXTS = [
     "In the quiet hours before dawn the old lighthouse keeper climbed the spiral "
     "stair, counting each worn step as the sea wind pressed against the glass, and "
@@ -206,17 +222,78 @@ async def _admin(session, path, payload):
         return r.status
 
 
+async def _warmup(session, preset, voice_ok):
+    """One short request before the concurrent batch. The vocoder captures its CUDA
+    graph lazily on the first decode; firing many requests at a cold server races
+    that capture against per-request speaker-embed forwards (beginAllocateToPool).
+    Serializing one request first avoids it. Best-effort."""
+    payload = {
+        "input": "Warm up the vocoder before the concurrent batch.",
+        "response_format": "wav",
+        "max_new_tokens": 96,
+        "temperature": preset.temperature,
+    }
+    if voice_ok:
+        payload["voice"] = "retractci"
+    elif REF_AUDIO:
+        payload["ref_audio"] = REF_AUDIO
+    with contextlib.suppress(Exception):
+        async with session.post(f"{BASE}/v1/audio/speech", json=payload) as r:
+            await r.read()
+
+
+async def _pace_until(session, text, preset, voice_ok, min_bytes, fired):
+    """Stream one request and set ``fired`` once >= ``min_bytes`` of audio has been
+    produced -- a wall-clock-independent proxy for generated-frame depth. Counts raw
+    bytes, so it is agnostic to whether the stream is PCM or SSE-framed, and tolerates
+    its own retraction. Always sets ``fired`` on exit so a short/failed generation
+    cannot deadlock the driver."""
+    payload = {
+        "input": text,
+        "response_format": "pcm",
+        "max_new_tokens": MAX_NEW_TOKENS,
+        "temperature": preset.temperature,
+        "stream": True,
+    }
+    if voice_ok:
+        payload["voice"] = "retractci"
+    elif REF_AUDIO:
+        payload["ref_audio"] = REF_AUDIO
+    total = 0
+    try:
+        async with session.post(f"{BASE}/v1/audio/speech", json=payload) as r:
+            async for chunk in r.content.iter_any():
+                total += len(chunk)
+                if total >= min_bytes and not fired.is_set():
+                    fired.set()
+    except Exception:  # noqa: BLE001 - the pacer may be retracted mid-stream
+        pass
+    finally:
+        fired.set()
+    return total
+
+
 async def _drive(preset: RetractPreset, wav_dir: Path):
-    """Fire long requests, retract-all mid-generation, continue, collect WAVs."""
+    """Fire long requests, retract-all once the batch has generated a real tail
+    (paced by streamed audio, not wall-clock), continue, collect WAVs."""
     texts = [_TEXTS[i % len(_TEXTS)] for i in range(N_REQUESTS)]
+    fired = asyncio.Event()
     timeout = aiohttp.ClientTimeout(total=900)
     async with aiohttp.ClientSession(timeout=timeout) as s:
         voice_ok = await _upload_voice(s) if preset.needs_ref else False
+        await _warmup(s, preset, voice_ok)
         tasks = [
             asyncio.create_task(_speech(s, i, texts[i], preset, voice_ok, wav_dir))
             for i in range(N_REQUESTS)
         ]
-        await asyncio.sleep(RETRACT_WAIT_S)  # let every request build a generated tail
+        # Pace the retract by generated audio, not seconds: a streaming pacer runs
+        # the same workload in lockstep with the batch; retract once it has produced
+        # RETRACT_MIN_STREAM_BYTES. Capped by RETRACT_MAX_WAIT_S so it never hangs.
+        pacer = asyncio.create_task(
+            _pace_until(s, texts[0], preset, voice_ok, RETRACT_MIN_STREAM_BYTES, fired)
+        )
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(fired.wait(), timeout=RETRACT_MAX_WAIT_S)
         await _admin(s, "pause_generation", {"mode": "retract"})  # retract ALL running
         await asyncio.sleep(1.0)
         await _admin(s, "continue_generation", {})  # -> re-prefill the generated tail
@@ -224,6 +301,9 @@ async def _drive(preset: RetractPreset, wav_dir: Path):
         # A fresh request AFTER the retract: proves the decode stage still serves,
         # not merely that the in-flight streams drained.
         fresh = await _speech(s, N_REQUESTS, texts[0], preset, voice_ok, wav_dir)
+        pacer.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await pacer
     return results, texts, fresh
 
 
