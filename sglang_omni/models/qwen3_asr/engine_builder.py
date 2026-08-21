@@ -55,6 +55,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
         prefill_coalesce_after_builds_during_decode: bool,
+        stream_emit_interval_s: float,
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 4096,
         pre_lm_cache_size_bytes: int = 2 * 1024**3,
@@ -89,6 +90,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.prefill_coalesce_after_builds_during_decode = (
             prefill_coalesce_after_builds_during_decode
         )
+        self.stream_emit_interval_s = stream_emit_interval_s
         self.enable_pre_lm_encoder = enable_pre_lm_encoder
         self.pre_lm_cache_max_entries = pre_lm_cache_max_entries
         self.pre_lm_cache_size_bytes = pre_lm_cache_size_bytes
@@ -240,6 +242,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {
+            "stream_output_builder": request_builders.make_qwen3_asr_stream_output_builder(
+                tokenizer=self.tokenizer,
+                min_emit_interval_s=self.stream_emit_interval_s,
+            ),
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,

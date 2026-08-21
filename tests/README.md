@@ -144,7 +144,8 @@ tests/
     │   └── test_request_builders.py
     ├── qwen3_asr/
     │   ├── test_pipeline.py
-    │   └── test_request_builders.py
+    │   ├── test_request_builders.py
+    │   └── test_stream_output_builder.py
     ├── fun_asr/
     │   ├── test_encoder_service.py
     │   ├── test_model.py
