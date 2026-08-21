@@ -380,7 +380,7 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flag `--tts-ci-model {higgs,moss}`: select the TTS CI model preset for
   `test_tts_ci.py` without editing source. Defaults to the `TTS_CI_MODEL`
   environment variable, then `higgs`.
-- CLI flag `--asr-ci-model {fun,qwen3}`: select the ASR CI model preset for
+- CLI flag `--asr-ci-model {fun,qwen3,whisper}`: select the ASR CI model preset for
   `test_asr_ci_seedtts.py` without editing source. Defaults to the
   `ASR_CI_MODEL` environment variable, then `fun`.
 

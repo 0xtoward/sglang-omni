@@ -76,7 +76,7 @@ def pin_omni_ci_cpuset() -> "Generator[None, None, None]":
         return
     from tests.utils.ci_cpu_contention import ContentionSampler
 
-    sampler = ContentionSampler(cpus)
+    sampler = ContentionSampler(cpus, root_pid=1)
     sampler.start()
     try:
         yield
