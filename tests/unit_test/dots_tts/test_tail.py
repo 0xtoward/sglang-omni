@@ -378,7 +378,10 @@ def test_fused_dit_builds_modulations_with_bfloat16_weights() -> None:
 
 
 @pytest.mark.accelerator
-def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
+@pytest.mark.parametrize("slots", [1, 8])
+def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order(
+    slots: int,
+) -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
     torch.manual_seed(1234)
@@ -389,7 +392,7 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     torch.manual_seed(9)
     eager = _build_tail(
         eager_model,
-        slots=8,
+        slots=slots,
         device=device,
         dtype=dtype,
         patch_capacity=33,
@@ -397,7 +400,7 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     torch.manual_seed(9)
     graph = _build_tail(
         graph_model,
-        slots=8,
+        slots=slots,
         device=device,
         dtype=dtype,
         patch_capacity=33,
@@ -416,21 +419,21 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
         eager_value = getattr(eager, name)
         eager_value.normal_(0, 0.05)
         getattr(graph, name).copy_(eager_value)
-    for slot in range(8):
+    for slot in range(slots):
         eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = 15
         eager._encoder_seq_len[slot] = graph._encoder_seq_len[slot] = 4
         eager.initialize_slot_rng(slot, 100 + slot)
         graph.initialize_slot_rng(slot, 100 + slot)
 
-    slots = [7, 2, 5, 0, 6, 1, 4, 3]
-    hidden = torch.randn(8, FM_HIDDEN, device=device, dtype=dtype)
-    eager_latent = eager.sample_patches(slots, fm_hidden_rows=hidden)
-    graph_latent = graph.sample_patches(slots, fm_hidden_rows=hidden)
+    slot_order = [0] if slots == 1 else [7, 2, 5, 0, 6, 1, 4, 3]
+    hidden = torch.randn(slots, FM_HIDDEN, device=device, dtype=dtype)
+    eager_latent = eager.sample_patches(slot_order, fm_hidden_rows=hidden)
+    graph_latent = graph.sample_patches(slot_order, fm_hidden_rows=hidden)
     torch.testing.assert_close(graph_latent, eager_latent, rtol=2e-2, atol=2e-2)
 
-    latent = torch.randn(8, PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype)
-    eager_feedback = eager.encode_feedback(slots, latent)
-    graph_feedback = graph.encode_feedback(slots, latent)
+    latent = torch.randn(slots, PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype)
+    eager_feedback = eager.encode_feedback(slot_order, latent)
+    graph_feedback = graph.encode_feedback(slot_order, latent)
     torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
     assert graph._graph_replays == {"meanflow": 1, "semantic_encoder": 1}
     assert not graph._graph_misses
