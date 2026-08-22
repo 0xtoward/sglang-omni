@@ -65,6 +65,7 @@ tests/
     │   ├── test_gpu_memory.py
     │   ├── test_ipc.py
     │   ├── test_placement.py
+    │   ├── test_replicas.py
     │   ├── test_runtime_adapter.py
     │   ├── test_runtime_schema.py
     │   ├── test_scheduler.py
@@ -406,6 +407,8 @@ that happened to contain an older version of the test.
   - runtime wiring
   - runtime schema/adapter behavior
   - coordinator behavior
+  - process replicas: whole-process stage expansion, instance naming, device
+    assignment, process-level binding, and logical-to-physical routing
   - stage routing
   - centralized comm router selection, data-reference serialization, ack
     lifecycle, and sender backpressure release
