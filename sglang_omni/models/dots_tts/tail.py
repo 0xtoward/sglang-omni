@@ -23,7 +23,7 @@ from sglang_omni.utils.graph_padding import pad_rows, select_padded_graph
 logger = logging.getLogger(__name__)
 
 _TAIL_SDPA_BACKENDS = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
-_GRAPH_BATCH_BUCKETS = (1, 8, 16)
+_GRAPH_BATCH_BUCKETS = (1, 8, 16, 32)
 _GRAPH_CONTEXT_PATCH_BUCKETS = (16, 32, 64, 128)
 
 
