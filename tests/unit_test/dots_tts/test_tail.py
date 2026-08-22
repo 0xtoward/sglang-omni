@@ -438,3 +438,76 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order(
     assert graph._graph_replays == {"meanflow": 1, "semantic_encoder": 1}
     assert not graph._graph_misses
     assert graph._dit_contiguous_view_steps == NFE
+
+
+@pytest.mark.accelerator
+def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    monkeypatch.setenv("SGLANG_OMNI_TAIL_PAD_TO_BUCKET", "1")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    eager_model = _TailModel().eval().to(device=device, dtype=dtype)
+    graph_model = copy.deepcopy(eager_model)
+    torch.manual_seed(9)
+    eager = _build_tail(
+        eager_model, slots=8, device=device, dtype=dtype, patch_capacity=33
+    )
+    torch.manual_seed(9)
+    graph = _build_tail(
+        graph_model,
+        slots=8,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=True,
+    )
+
+    for name in (
+        "_dit_k",
+        "_dit_v",
+        "_encoder_k",
+        "_encoder_v",
+        "_encoder_conv_tail",
+        "_window",
+        "_all_mods",
+    ):
+        eager_value = getattr(eager, name)
+        eager_value.normal_(0, 0.05)
+        getattr(graph, name).copy_(eager_value)
+    for slot in range(8):
+        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = 15
+        eager._encoder_seq_len[slot] = graph._encoder_seq_len[slot] = 4
+        eager.initialize_slot_rng(slot, 100 + slot)
+        graph.initialize_slot_rng(slot, 100 + slot)
+
+    # rows=5 matches no captured bucket (1, 8): today this is a guaranteed
+    # eager fallback; with padding it must replay the 8-bucket graph.
+    slot_order = [3, 0, 4, 1, 2]
+    hidden = torch.randn(5, FM_HIDDEN, device=device, dtype=dtype)
+    eager_latent = eager.sample_patches(slot_order, fm_hidden_rows=hidden)
+    graph_latent = graph.sample_patches(slot_order, fm_hidden_rows=hidden)
+    torch.testing.assert_close(graph_latent, eager_latent, rtol=2e-2, atol=2e-2)
+
+    latent = torch.randn(5, PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype)
+    eager_feedback = eager.encode_feedback(slot_order, latent)
+    graph_feedback = graph.encode_feedback(slot_order, latent)
+    torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
+    assert graph._graph_padded_replays == {"meanflow": 1, "semantic_encoder": 1}
+    assert not graph._graph_misses
+
+    # Filler rows write into the reserved pool row past the slot range, so no
+    # allocatable slot ever sees them: a real slot that sat out the padded
+    # batch must still match the eager twin exactly afterwards.
+    assert graph._pad_bin_slot == 8
+    assert graph._dit_k.shape[2] == 9  # 8 slots + 1 reserved row
+    assert eager._window.shape[0] == 9  # eager twin allocates it too (env on)
+    bystander = 7
+    assert bystander not in slot_order
+    hidden_one = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    eager_one = eager.sample_patches([bystander], fm_hidden_rows=hidden_one)
+    graph_one = graph.sample_patches([bystander], fm_hidden_rows=hidden_one)
+    torch.testing.assert_close(graph_one, eager_one, rtol=2e-2, atol=2e-2)
