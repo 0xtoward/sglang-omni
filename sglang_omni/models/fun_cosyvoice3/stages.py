@@ -31,6 +31,12 @@ from sglang_omni.utils.device import resolve_device_spec
 # batch and defers following requests to the next batch.
 _DEFAULT_FLOW_BATCH_ADMISSION_FRAMES = 2000
 
+_AUTOCAST_DTYPES: dict[str, torch.dtype | None] = {
+    "float32": None,
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+}
+
 _COSYVOICE_INSTALL_HINT = (
     "Fun-CosyVoice3 support requires the `cosyvoice` package. "
     "Clone the official repository and set PYTHONPATH, or install it "
@@ -367,7 +373,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         self,
         flow: Any,
         hift: Any,
-        fp16: bool = False,
+        compute_dtype: torch.dtype | None = None,
         flow_batch_bucket_frames: int = 50,
     ) -> None:
         if flow_batch_bucket_frames <= 0:
@@ -381,7 +387,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
             flow if isinstance(flow, FunCosyVoice3Flow) else FunCosyVoice3Flow(flow)
         )
         self._hift = hift
-        self._fp16 = fp16
+        self._compute_dtype = compute_dtype
         self._flow_batch_bucket_frames = flow_batch_bucket_frames
 
     def prepare_item(
@@ -415,16 +421,18 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
 
         for bucket in buckets.values():
             with torch.autocast(
-                device_type=current_platform.device_type, enabled=self._fp16
+                device_type=current_platform.device_type,
+                dtype=self._compute_dtype,
+                enabled=self._compute_dtype is not None,
             ):
                 mel_list = self._flow.inference(
                     [request.flow_input for request in bucket]
                 )
-            for request, mel in zip(bucket, mel_list, strict=True):
-                results[request.index] = (
-                    self._mel2wav(mel),
-                    request.sample_rate,
-                )
+                for request, mel in zip(bucket, mel_list, strict=True):
+                    results[request.index] = (
+                        self._mel2wav(mel),
+                        request.sample_rate,
+                    )
 
         if any(result is None for result in results):
             raise RuntimeError("Fun-CosyVoice3 vocoder did not decode every request")
@@ -529,6 +537,12 @@ def create_vocoder_executor(
         raise ValueError("flow_batch_admission_frames must be greater than zero")
     device = resolve_device_spec(device, gpu_id)
     checkpoint_dir = resolve_checkpoint(model_path)
+    if dtype not in _AUTOCAST_DTYPES:
+        raise ValueError(
+            f"Unsupported Fun-CosyVoice3 vocoder dtype {dtype!r}; "
+            f"expected one of {sorted(_AUTOCAST_DTYPES)}"
+        )
+    compute_dtype = _AUTOCAST_DTYPES[dtype]
     flow, hift = _load_cosyvoice3_flow_hift(
         checkpoint_dir,
         device=device,
@@ -538,7 +552,7 @@ def create_vocoder_executor(
     vocoder = _CosyVoice3Vocoder(
         flow,
         hift,
-        fp16=(dtype == "float16"),
+        compute_dtype=compute_dtype,
         flow_batch_bucket_frames=flow_batch_bucket_frames,
     )
 
