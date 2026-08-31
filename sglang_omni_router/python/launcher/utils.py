@@ -13,7 +13,7 @@ from collections.abc import Sequence
 
 import httpx
 
-from sglang_omni_router.launcher.config import LocalLauncherConfig
+from sglang_omni_router.python.launcher.config import LocalLauncherConfig
 
 
 def worker_connect_host(host: str) -> str:

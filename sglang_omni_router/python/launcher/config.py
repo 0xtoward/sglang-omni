@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from sglang_omni_router.config import Capability
+from sglang_omni_router.python.config import Capability
 
 
 class LocalLauncherConfig(BaseModel):

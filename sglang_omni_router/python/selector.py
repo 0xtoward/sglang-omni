@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import random
 
-from sglang_omni_router.config import Capability, RoutingPolicy
-from sglang_omni_router.worker import Worker
+from sglang_omni_router.python.config import Capability, RoutingPolicy
+from sglang_omni_router.python.worker import Worker
 
 
 class NoEligibleWorkerError(RuntimeError):

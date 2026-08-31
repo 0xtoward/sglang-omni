@@ -22,24 +22,24 @@ from sglang_omni.http.admin_auth import (
     resolve_admin_api_key,
 )
 from sglang_omni.http.favicon import register_favicon
-from sglang_omni_router.config import (
+from sglang_omni_router.python.config import (
     MIN_CONNECTIONS_PER_WORKER,
     RouterConfig,
     WorkerConfig,
     can_own_uploaded_voices,
 )
-from sglang_omni_router.health import HealthChecker
-from sglang_omni_router.proxy import ProxyHandler, filter_request_headers
-from sglang_omni_router.selector import WorkerSelector
-from sglang_omni_router.update_journal import (
+from sglang_omni_router.python.health import HealthChecker
+from sglang_omni_router.python.proxy import ProxyHandler, filter_request_headers
+from sglang_omni_router.python.selector import WorkerSelector
+from sglang_omni_router.python.update_journal import (
     JournalUnreadableError,
     JournalUnwritableError,
     UpdateJournal,
     build_journal,
 )
-from sglang_omni_router.voice_routing import VoiceRoutingState
-from sglang_omni_router.websocket_proxy import TTSWebSocketProxy
-from sglang_omni_router.worker import (
+from sglang_omni_router.python.voice_routing import VoiceRoutingState
+from sglang_omni_router.python.websocket_proxy import TTSWebSocketProxy
+from sglang_omni_router.python.worker import (
     HEALTH_STATE_UNHEALTHY,
     HEALTH_STATE_UNKNOWN,
     Worker,

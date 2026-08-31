@@ -50,7 +50,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-logger = logging.getLogger("sglang_omni_router.admission_shm")
+logger = logging.getLogger("sglang_omni_router.python.admission_shm")
 
 _PLATFORM_WARNED = False
 

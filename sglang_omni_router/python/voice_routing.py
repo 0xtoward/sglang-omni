@@ -12,8 +12,8 @@ from typing import Any, Literal
 
 import httpx
 
-from sglang_omni_router.config import can_own_uploaded_voices
-from sglang_omni_router.worker import Worker
+from sglang_omni_router.python.config import can_own_uploaded_voices
+from sglang_omni_router.python.worker import Worker
 
 logger = logging.getLogger(__name__)
 

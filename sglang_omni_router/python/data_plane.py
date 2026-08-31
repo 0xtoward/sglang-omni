@@ -28,22 +28,22 @@ from fastapi.responses import JSONResponse, Response
 
 from sglang_omni import __version__
 from sglang_omni.http.admin_auth import resolve_admin_api_key
-from sglang_omni_router.app import (
+from sglang_omni_router.python.app import (
     _merge_models,
     _worker_pool_status_response,
     register_data_routes,
 )
-from sglang_omni_router.config import RouterConfig, WorkerConfig
-from sglang_omni_router.internal_channel import (
+from sglang_omni_router.python.config import RouterConfig, WorkerConfig
+from sglang_omni_router.python.internal_channel import (
     FORWARD_CHANNEL_CONNECTIONS,
     INTERNAL_TOKEN_HEADER,
 )
-from sglang_omni_router.proxy import HOP_BY_HOP_HEADERS, ProxyHandler
-from sglang_omni_router.selector import WorkerSelector
-from sglang_omni_router.snapshot import SnapshotReader, WorkerSnapshot
-from sglang_omni_router.worker import Worker
+from sglang_omni_router.python.proxy import HOP_BY_HOP_HEADERS, ProxyHandler
+from sglang_omni_router.python.selector import WorkerSelector
+from sglang_omni_router.python.snapshot import SnapshotReader, WorkerSnapshot
+from sglang_omni_router.python.worker import Worker
 
-logger = logging.getLogger("sglang_omni_router.data_plane")
+logger = logging.getLogger("sglang_omni_router.python.data_plane")
 
 DEFAULT_DP_REFRESH_INTERVAL_SECS = 0.2
 DEFAULT_SNAPSHOT_MAX_AGE_SECS = 10.0
@@ -711,15 +711,18 @@ def create_dp_app_from_env() -> FastAPI:
     """uvicorn factory entry point for a supervisor-spawned data plane."""
     import mmap as mmap_module
 
-    from sglang_omni_router.admission_shm import SharedAdmission, admission_file_size
-    from sglang_omni_router.app_factory import load_config_from_env
-    from sglang_omni_router.internal_channel import (
+    from sglang_omni_router.python.admission_shm import (
+        SharedAdmission,
+        admission_file_size,
+    )
+    from sglang_omni_router.python.app_factory import load_config_from_env
+    from sglang_omni_router.python.internal_channel import (
         CONTROL_CHANNEL_CONNECTIONS,
         CONTROL_CHANNEL_TIMEOUT_SECS,
         FORWARD_CHANNEL_CONNECTIONS,
         INTERNAL_TOKEN_ENV,
     )
-    from sglang_omni_router.supervisor import (
+    from sglang_omni_router.python.supervisor import (
         ADMISSION_SHM_ENV,
         DP_GENERATION_ENV,
         DP_INDEX_ENV,

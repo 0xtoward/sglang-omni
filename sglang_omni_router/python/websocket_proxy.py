@@ -37,21 +37,24 @@ from sglang_omni.serve.speech_limits import (
     MAX_SPEECH_WS_TEXT_MESSAGE_BYTES,
     SPEECH_WS_CONFIG_TIMEOUT_S,
 )
-from sglang_omni_router.config import Capability, RouterConfig
-from sglang_omni_router.proxy import WORKER_EVICTION_STATUS_CODES, AdmissionController
-from sglang_omni_router.route_metadata import (
+from sglang_omni_router.python.config import Capability, RouterConfig
+from sglang_omni_router.python.proxy import (
+    WORKER_EVICTION_STATUS_CODES,
+    AdmissionController,
+)
+from sglang_omni_router.python.route_metadata import (
     ROUTE_HEADER_NAMES,
     RouteKind,
     SpeechRouteFacts,
     extract_speech_route_facts,
 )
-from sglang_omni_router.selector import (
+from sglang_omni_router.python.selector import (
     NoEligibleWorkerError,
     WorkerSelector,
     require_eligible_worker,
 )
-from sglang_omni_router.voice_routing import VoiceRoutingState
-from sglang_omni_router.worker import Worker
+from sglang_omni_router.python.voice_routing import VoiceRoutingState
+from sglang_omni_router.python.worker import Worker
 
 logger = logging.getLogger(__name__)
 

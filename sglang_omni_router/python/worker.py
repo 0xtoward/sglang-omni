@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Iterator, Literal
 from urllib.parse import quote, urlsplit
 
-from sglang_omni_router.config import Capability, WorkerConfig
+from sglang_omni_router.python.config import Capability, WorkerConfig
 
 WorkerState = Literal["dead", "healthy", "unknown", "unhealthy"]
 ServiceClass = Literal[

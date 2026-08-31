@@ -19,8 +19,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from sglang_omni.serve.speech_errors import openai_error_payload
 from sglang_omni.serve.speech_limits import MAX_VOICE_UPLOAD_BODY_BYTES
-from sglang_omni_router.config import Capability, RouterConfig
-from sglang_omni_router.route_metadata import (
+from sglang_omni_router.python.config import Capability, RouterConfig
+from sglang_omni_router.python.route_metadata import (
     ROUTE_HEADER_NAMES,
     RouteKind,
     RouteMetadata,
@@ -28,13 +28,13 @@ from sglang_omni_router.route_metadata import (
     classify_route,
     extract_route_metadata,
 )
-from sglang_omni_router.selector import (
+from sglang_omni_router.python.selector import (
     NoEligibleWorkerError,
     WorkerSelector,
     require_eligible_worker,
 )
-from sglang_omni_router.voice_routing import VoiceMutation, VoiceRoutingState
-from sglang_omni_router.worker import Worker
+from sglang_omni_router.python.voice_routing import VoiceMutation, VoiceRoutingState
+from sglang_omni_router.python.worker import Worker
 
 logger = logging.getLogger(__name__)
 

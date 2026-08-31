@@ -38,21 +38,21 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Callable, Protocol
 
-from sglang_omni_router.admission_shm import (
+from sglang_omni_router.python.admission_shm import (
     SeqlockUnstableError,
     SlotCodec,
     admission_file_size,
     create_admission_file,
 )
-from sglang_omni_router.app_factory import CONFIG_FILE_ENV
-from sglang_omni_router.config import RouterConfig
-from sglang_omni_router.internal_channel import (
+from sglang_omni_router.python.app_factory import CONFIG_FILE_ENV
+from sglang_omni_router.python.config import RouterConfig
+from sglang_omni_router.python.internal_channel import (
     CONTROL_CHANNEL_CONNECTIONS,
     FORWARD_CHANNEL_CONNECTIONS,
     INTERNAL_TOKEN_ENV,
 )
 
-logger = logging.getLogger("sglang_omni_router.supervisor")
+logger = logging.getLogger("sglang_omni_router.python.supervisor")
 
 SOCKET_FD_ENV = "SGLANG_OMNI_ROUTER_SOCKET_FD"
 DEATH_PIPE_FD_ENV = "SGLANG_OMNI_ROUTER_DEATH_PIPE_FD"
@@ -189,7 +189,7 @@ def _default_spawn_dp(
     env[DP_INDEX_ENV] = str(index)
     env[DP_GENERATION_ENV] = str(generation)
     return subprocess.Popen(
-        [sys.executable, "-m", "sglang_omni_router.dp_runner"],
+        [sys.executable, "-m", "sglang_omni_router.python.dp_runner"],
         env=env,
         pass_fds=(ctx.socket_fd, ctx.death_pipe_fd),
     )
@@ -197,7 +197,7 @@ def _default_spawn_dp(
 
 def _default_spawn_cp(ctx: SupervisorContext) -> ChildProcess:
     return subprocess.Popen(
-        [sys.executable, "-m", "sglang_omni_router.cp_runner"],
+        [sys.executable, "-m", "sglang_omni_router.python.cp_runner"],
         env=ctx.child_env(),
         pass_fds=(ctx.death_pipe_fd,),
     )

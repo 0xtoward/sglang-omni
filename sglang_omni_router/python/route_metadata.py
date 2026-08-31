@@ -11,8 +11,8 @@ from typing import Any, cast
 
 from fastapi import Request
 
-from sglang_omni_router.config import DEFAULT_CAPABILITIES, Capability
-from sglang_omni_router.worker import ServiceClass
+from sglang_omni_router.python.config import DEFAULT_CAPABILITIES, Capability
+from sglang_omni_router.python.worker import ServiceClass
 
 ROUTE_METADATA_JSON_LIMIT_BYTES = 1024 * 1024
 MULTIPART_PART_HEADER_LIMIT_BYTES = 8 * 1024

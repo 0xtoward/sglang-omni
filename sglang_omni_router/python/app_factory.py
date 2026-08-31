@@ -13,8 +13,8 @@ import os
 
 from fastapi import FastAPI
 
-from sglang_omni_router.app import create_app
-from sglang_omni_router.config import RouterConfig
+from sglang_omni_router.python.app import create_app
+from sglang_omni_router.python.config import RouterConfig
 
 CONFIG_FILE_ENV = "SGLANG_OMNI_ROUTER_CONFIG_FILE"
 

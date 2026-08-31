@@ -13,15 +13,15 @@ import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 
-from sglang_omni_router.launcher.config import LocalLauncherConfig
-from sglang_omni_router.launcher.utils import (
+from sglang_omni_router.python.launcher.config import LocalLauncherConfig
+from sglang_omni_router.python.launcher.utils import (
     build_gpu_assignments,
     build_worker_url,
     reserve_worker_ports,
     wait_for_worker_health,
 )
 
-logger = logging.getLogger("sglang_omni_router.launcher")
+logger = logging.getLogger("sglang_omni_router.python.launcher")
 _CLEANUP_MANIFEST_ENV = "SGLANG_OMNI_ROUTER_CLEANUP_MANIFEST"
 
 

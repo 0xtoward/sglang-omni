@@ -29,12 +29,12 @@ from pydantic import Field as PydanticField
 
 from sglang_omni import __version__
 from sglang_omni.http.admin_auth import resolve_admin_api_key
-from sglang_omni_router.admission_shm import (
+from sglang_omni_router.python.admission_shm import (
     AdmissionAggregateView,
     SeqlockUnstableError,
     admission_file_size,
 )
-from sglang_omni_router.app import (
+from sglang_omni_router.python.app import (
     _error_response,
     _find_worker,
     _pool_summary,
@@ -43,23 +43,27 @@ from sglang_omni_router.app import (
     register_admin_routes,
     register_public_metadata_routes,
 )
-from sglang_omni_router.config import RouterConfig, WorkerConfig
-from sglang_omni_router.health import HealthChecker
-from sglang_omni_router.internal_channel import (
+from sglang_omni_router.python.config import RouterConfig, WorkerConfig
+from sglang_omni_router.python.health import HealthChecker
+from sglang_omni_router.python.internal_channel import (
     InternalChannelState,
     make_internal_token_dependency,
     register_internal_routes,
 )
-from sglang_omni_router.observability import (
+from sglang_omni_router.python.observability import (
     CounterReport,
     DataPlaneCounterLedger,
     StaleCounterGenerationError,
 )
-from sglang_omni_router.snapshot import SnapshotReader, SnapshotWorker, SnapshotWriter
-from sglang_omni_router.update_journal import build_journal
-from sglang_omni_router.worker import Worker, WorkerState, build_workers
+from sglang_omni_router.python.snapshot import (
+    SnapshotReader,
+    SnapshotWorker,
+    SnapshotWriter,
+)
+from sglang_omni_router.python.update_journal import build_journal
+from sglang_omni_router.python.worker import Worker, WorkerState, build_workers
 
-logger = logging.getLogger("sglang_omni_router.control_plane")
+logger = logging.getLogger("sglang_omni_router.python.control_plane")
 
 DEFAULT_DP_ACK_TIMEOUT_SECS = 10.0
 DEFAULT_DP_LIVENESS_SECS = 6.0

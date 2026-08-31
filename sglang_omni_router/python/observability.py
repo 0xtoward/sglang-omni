@@ -32,7 +32,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-from sglang_omni_router.worker import ServiceClass
+from sglang_omni_router.python.worker import ServiceClass
 
 _COUNTER_KEYS = ("routed_total", "successful_total", "failed_total")
 _CLASS_COUNTER_KEYS = (

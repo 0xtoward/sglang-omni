@@ -13,10 +13,10 @@ import os
 
 import uvicorn
 
-from sglang_omni_router.app_factory import load_config_from_env
-from sglang_omni_router.control_plane import create_control_plane_app
-from sglang_omni_router.internal_channel import INTERNAL_TOKEN_ENV
-from sglang_omni_router.supervisor import (
+from sglang_omni_router.python.app_factory import load_config_from_env
+from sglang_omni_router.python.control_plane import create_control_plane_app
+from sglang_omni_router.python.internal_channel import INTERNAL_TOKEN_ENV
+from sglang_omni_router.python.supervisor import (
     ADMISSION_SHM_ENV,
     CHILD_GRACEFUL_SHUTDOWN_SECS,
     CP_EPOCH_ENV,

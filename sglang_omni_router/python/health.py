@@ -10,8 +10,8 @@ from typing import Callable
 
 import httpx
 
-from sglang_omni_router.config import RouterConfig
-from sglang_omni_router.worker import Worker
+from sglang_omni_router.python.config import RouterConfig
+from sglang_omni_router.python.worker import Worker
 
 logger = logging.getLogger(__name__)
 

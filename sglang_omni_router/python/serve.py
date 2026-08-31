@@ -15,8 +15,8 @@ from typing import Any, get_args
 import uvicorn
 from pydantic import ValidationError
 
-from sglang_omni_router.app import create_app
-from sglang_omni_router.config import (
+from sglang_omni_router.python.app import create_app
+from sglang_omni_router.python.config import (
     DEFAULT_CAPABILITIES,
     Capability,
     RouterConfig,
@@ -25,22 +25,22 @@ from sglang_omni_router.config import (
     build_router_config,
     load_worker_configs,
 )
-from sglang_omni_router.launcher import (
+from sglang_omni_router.python.launcher import (
     LocalLauncher,
     LocalLauncherConfig,
     load_launcher_config,
 )
-from sglang_omni_router.supervisor import (
+from sglang_omni_router.python.supervisor import (
     RouterSupervisor,
     validate_multiprocess_settings,
 )
-from sglang_omni_router.update_journal import (
+from sglang_omni_router.python.update_journal import (
     JournalUnwritableError,
     ensure_state_dir,
     resolve_state_dir,
 )
 
-logger = logging.getLogger("sglang_omni_router.serve")
+logger = logging.getLogger("sglang_omni_router.python.serve")
 
 # Note (Jiaxin Deng): each in-flight request holds a client and an upstream
 # socket; the headroom covers listeners, health checks, and log files.
@@ -101,7 +101,7 @@ def normalize_log_level(log_level: str) -> str:
 def build_log_config(log_level: str) -> dict[str, Any]:
     normalized_level = normalize_log_level(log_level)
     log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
-    log_config["loggers"]["sglang_omni_router"] = {
+    log_config["loggers"]["sglang_omni_router.python"] = {
         "handlers": ["default"],
         "level": normalized_level,
         "propagate": False,
