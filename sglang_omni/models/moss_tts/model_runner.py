@@ -711,7 +711,11 @@ class MossTTSModelRunner(ModelRunner):
         active = (top_p_row > 0.0) & (top_p_row < 1.0)
         if not skip_inactive_check and not bool(active.any()):
             return scores
-        sorted_scores, sorted_indices = torch.sort(scores, descending=True, dim=-1)
+        # Note (Jiaxin Deng): input order on ties is the one contract the graphed,
+        # branchless and eager paths share; an unstable sort breaks it per backend.
+        sorted_scores, sorted_indices = torch.sort(
+            scores, descending=True, dim=-1, stable=True
+        )
         probs = torch.softmax(sorted_scores, dim=-1)
         cumulative = torch.cumsum(probs, dim=-1)
         remove = cumulative > top_p_row.unsqueeze(1)
