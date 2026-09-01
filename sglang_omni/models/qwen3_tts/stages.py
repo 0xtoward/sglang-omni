@@ -166,6 +166,7 @@ def create_vocoder_executor(
     initial_cuda_graph: bool = True,
     enable_deterministic_inference: bool = False,
     followup_cuda_graph: bool = True,
+    enable_stateful_codec_decoder: bool = False,
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
     tokenizer = _load_qwen3_tts_tokenizer(
@@ -193,6 +194,7 @@ def create_vocoder_executor(
         initial_cuda_graph=initial_cuda_graph,
         enable_deterministic_inference=enable_deterministic_inference,
         followup_cuda_graph=followup_cuda_graph,
+        enable_stateful_codec_decoder=enable_stateful_codec_decoder,
     )
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work
