@@ -42,7 +42,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=1a9ffd16"></script>
+    <script src="../_static/documentation_options.js?v=23027dbc"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -51,17 +51,17 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'get_started/installation_xpu';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <script src="../_static/js/qwen3_omni_server_generator.js?v=66f6ff63"></script>
-    <script src="../_static/js/ming_omni_server_generator.js?v=694b1473"></script>
+    <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
+    <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Release Notes" href="release_notes.html" />
-    <link rel="prev" title="🚀 Installation" href="installation.html" />
+    <link rel="next" title="🚀 Installation — Intel CPU" href="installation_cpu.html" />
+    <link rel="prev" title="Installation — Ascend NPU" href="installation_npu.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.1.1" />
-    <meta name="docbuild:last-update" content="Aug 16, 2026"/>
+  <meta name="docsearch:version" content="0.1.4" />
+    <meta name="docbuild:last-update" content="Sep 03, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -207,8 +207,9 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">🚀 Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Installation — Ascend NPU</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">🚀 Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="release_notes.html">Release Notes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">🚀 Installation — Intel CPU</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -237,7 +238,8 @@
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/audio_translations.html">Audio Translations</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts.html">TTS Model Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts_process_topology.html">TTS Process Topology</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">Omni Router Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology_migration.html">Process Topology Migration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Rust Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Benchmarks</span></p>
@@ -250,11 +252,13 @@
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/apiserver_design.html">API Server Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/pipeline.html">Pipeline Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/config.html">Config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/adding_parameters.html">Adding a Parameter</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/communication.html">Communication</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/profiler.html">Request-level profiler</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/rl_admin_control.html">RL Admin Control</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/bump_version.html">Bumping the SGLang Pin</a></li>
 </ul>
 
     </div>
@@ -597,7 +601,7 @@ cp<span class="w"> </span>-f<span class="w"> </span>.pyproject.cuda.bak<span cla
 It cannot be pinned even as a range: every published wheel requires <code class="docutils literal notranslate"><span class="pre">flashinfer_python[cu13]</span></code> and the
 <code class="docutils literal notranslate"><span class="pre">nvidia-*</span></code> runtime, so <strong>any</strong> specifier pulls the CUDA stack over <code class="docutils literal notranslate"><span class="pre">torch+xpu</span></code>. Build from source:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>sglang
-git<span class="w"> </span>checkout<span class="w"> </span>v0.5.16<span class="w">   </span><span class="c1"># the pinned release</span>
+git<span class="w"> </span>checkout<span class="w"> </span>v0.5.18<span class="w">   </span><span class="c1"># the pinned release</span>
 <span class="nb">cd</span><span class="w"> </span>python<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cp<span class="w"> </span>pyproject_xpu.toml<span class="w"> </span>pyproject.toml
 pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.<span class="w"> </span>--no-build-isolation<span class="w"> </span>--extra-index-url<span class="w"> </span>https://download.pytorch.org/whl/xpu
 </pre></div>
@@ -611,7 +615,7 @@ selects <code class="docutils literal notranslate"><span class="pre">+xpu</span>
 <section id="verify">
 <h2>Verify<a class="headerlink" href="#verify" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># import works from anywhere now (package installed, not just cwd-on-path)</span>
-python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import sglang_omni, torch; print(sglang_omni.__file__, torch.__version__)&quot;</span>
+python<span class="w"> </span>-c<span class="w"> </span><span class="s2">"import sglang_omni, torch; print(sglang_omni.__file__, torch.__version__)"</span>
 which<span class="w"> </span>sgl-omni
 
 <span class="c1"># device-layer unit tests (CPU, no GPU) — needs pytest, which ships in the</span>
@@ -630,7 +634,7 @@ on the library path, conflicting with the bundled <code class="docutils literal 
 <p>No extra environment variables are needed — the XPU backend is auto-detected. If a Triton JIT
 build reports <code class="docutils literal notranslate"><span class="pre">fatal</span> <span class="pre">error:</span> <span class="pre">sycl/sycl.hpp:</span> <span class="pre">No</span> <span class="pre">such</span> <span class="pre">file</span> <span class="pre">or</span> <span class="pre">directory</span></code>, point the compiler at the
 <code class="docutils literal notranslate"><span class="pre">intel-sycl-rt</span></code> wheel’s headers:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">CPATH</span><span class="o">=</span><span class="s2">&quot;</span><span class="k">$(</span>python<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;import sysconfig; print(sysconfig.get_paths()[&quot;include&quot;])&#39;</span><span class="k">)</span><span class="s2">&quot;</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">CPATH</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>python<span class="w"> </span>-c<span class="w"> </span><span class="s1">'import sysconfig; print(sysconfig.get_paths()["include"])'</span><span class="k">)</span><span class="s2">"</span>
 </pre></div>
 </div>
 </section>
@@ -639,7 +643,7 @@ build reports <code class="docutils literal notranslate"><span class="pre">fatal
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>/path/to/Qwen3-ASR-1.7B<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 <span class="c1"># transcribe:</span>
 curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-F<span class="w"> </span><span class="s2">&quot;file=@sample.wav&quot;</span><span class="w"> </span>-F<span class="w"> </span><span class="s2">&quot;model=/path/to/Qwen3-ASR-1.7B&quot;</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="s2">"file=@sample.wav"</span><span class="w"> </span>-F<span class="w"> </span><span class="s2">"model=/path/to/Qwen3-ASR-1.7B"</span>
 </pre></div>
 </div>
 </section>
@@ -659,28 +663,29 @@ pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>/path/to/Qwen3-TTS-12Hz-1.7B-Base<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 <span class="c1"># Base checkpoint clones a reference voice — pass ref_audio (+ ref_text):</span>
 curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;/path/to/Qwen3-TTS-12Hz-1.7B-Base&quot;,&quot;input&quot;:&quot;Hello from Intel XPU.&quot;,</span>
-<span class="s1">       &quot;voice&quot;:&quot;default&quot;,&quot;ref_audio&quot;:&quot;/path/to/ref.wav&quot;,&quot;ref_text&quot;:&quot;reference transcript&quot;,</span>
-<span class="s1">       &quot;response_format&quot;:&quot;wav&quot;}&#39;</span><span class="w"> </span>-o<span class="w"> </span>out.wav
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"/path/to/Qwen3-TTS-12Hz-1.7B-Base","input":"Hello from Intel XPU.",</span>
+<span class="s1">       "voice":"default","ref_audio":"/path/to/ref.wav","ref_text":"reference transcript",</span>
+<span class="s1">       "response_format":"wav"}'</span><span class="w"> </span>-o<span class="w"> </span>out.wav
 </pre></div>
 </div>
 </section>
 <section id="qwen3-omni-30b-a3b-moe-multi-xpu-tensor-parallel">
 <h3>Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)<a class="headerlink" href="#qwen3-omni-30b-a3b-moe-multi-xpu-tensor-parallel" title="Link to this heading">#</a></h3>
 <p>The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.
-<code class="docutils literal notranslate"><span class="pre">--text-only</span></code> serves the thinker (chat) without the talker/speech stages:</p>
+<code class="docutils literal notranslate"><span class="pre">--text-only</span></code> serves the thinker (chat) without the talker/speech stages. The text-only config normally puts every stage in the <code class="docutils literal notranslate"><span class="pre">pipeline</span></code> process, so give the TP thinker an otherwise-unused process name before enabling TP:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># thinker across 8 cards (TP=8). Large shards over shared storage load slowly, so give</span>
 <span class="c1"># startup more headroom than the default 600 s.</span>
 <span class="nb">export</span><span class="w"> </span><span class="nv">SGLANG_OMNI_STARTUP_TIMEOUT</span><span class="o">=</span><span class="m">1800</span>
 sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>/path/to/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--text-only<span class="w"> </span>--thinker-tp-size<span class="w"> </span><span class="m">8</span><span class="w"> </span>--thinker-gpus<span class="w"> </span><span class="m">0</span>,1,2,3,4,5,6,7<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--text-only<span class="w"> </span>--thinker.process<span class="w"> </span>thinker<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.tp_size<span class="w"> </span><span class="m">8</span><span class="w"> </span>--thinker.gpu<span class="w"> </span><span class="s2">"[0, 1, 2, 3, 4, 5, 6, 7]"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 <span class="c1"># chat:</span>
 curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;/path/to/Qwen3-Omni-30B-A3B-Instruct&quot;,</span>
-<span class="s1">       &quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;What is Intel XPU?&quot;}],&quot;max_tokens&quot;:64}&#39;</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"/path/to/Qwen3-Omni-30B-A3B-Instruct",</span>
+<span class="s1">       "messages":[{"role":"user","content":"What is Intel XPU?"}],"max_tokens":64}'</span>
 </pre></div>
 </div>
 <p>Health check for any of the above: <code class="docutils literal notranslate"><span class="pre">curl</span> <span class="pre">http://localhost:8000/v1/models</span></code>.</p>
@@ -708,20 +713,20 @@ curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="installation.html"
+       href="installation_npu.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">🚀 Installation</p>
+        <p class="prev-next-title">Installation — Ascend NPU</p>
       </div>
     </a>
     <a class="right-next"
-       href="release_notes.html"
+       href="installation_cpu.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Release Notes</p>
+        <p class="prev-next-title">🚀 Installation — Intel CPU</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -791,7 +796,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Aug 16, 2026.
+  Last updated on Sep 03, 2026.
   <br/>
 </p>
   </div>
