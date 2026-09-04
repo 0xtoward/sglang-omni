@@ -61,7 +61,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.4" />
-    <meta name="docbuild:last-update" content="Sep 03, 2026"/>
+    <meta name="docbuild:last-update" content="Sep 04, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -496,6 +496,8 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deterministic-inference">Deterministic Inference</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#overload-admission-policy">Overload / admission policy</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prefill-admission-coalescing">Prefill Admission Coalescing</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#process-topology">Process topology</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -665,6 +667,80 @@ on successes only; artifacts land in <code class="docutils literal notranslate">
 comparing healthy vs past-ceiling points, but it does not hold overshoot. Each
 concurrency writes inspectable artifacts under <code class="docutils literal notranslate"><span class="pre">&lt;output-dir&gt;/c&lt;N&gt;/</span></code>.</p>
 </section>
+<section id="prefill-admission-coalescing">
+<h3>Prefill Admission Coalescing<a class="headerlink" href="#prefill-admission-coalescing" title="Link to this heading">#</a></h3>
+<p>Under concurrent load, the <code class="docutils literal notranslate"><span class="pre">tts_engine</span></code> stage can coalesce prefill admission:
+instead of admitting each prepared request into its own prefill batch, the
+scheduler can briefly hold admission so that multiple ready requests are
+prefilled together.</p>
+<p>A prefill step has a largely fixed scheduler cost, so fuller batches can reduce
+prefill overhead. The end-to-end benefit depends on whether that saving
+outweighs the extra admission delay and any resulting reduction in decode
+occupancy.</p>
+<p>Coalescing is <strong>off by default</strong> and opt-in through the <code class="docutils literal notranslate"><span class="pre">tts_engine</span></code> factory
+configuration:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-Base<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_1_7b.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.factory.prefill_coalesce_requests<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.factory.prefill_coalesce_wait_ms<span class="w"> </span><span class="m">30</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>or per-stage in YAML:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">tts_engine</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">factory</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">prefill_coalesce_requests</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">      </span><span class="nt">prefill_coalesce_wait_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30.0</span>
+</pre></div>
+</div>
+<p>The gate engages only when <code class="docutils literal notranslate"><span class="pre">prefill_coalesce_requests</span> <span class="pre">&gt;=</span> <span class="pre">2</span></code>. Once engaged,
+admission is released as soon as any of the following holds:</p>
+<ul class="simple">
+<li><p>decode is idle, so a ready request can start immediately;</p></li>
+<li><p>the waiting queue reaches <code class="docutils literal notranslate"><span class="pre">prefill_coalesce_requests</span></code>;</p></li>
+<li><p>the oldest waiting request has waited <code class="docutils literal notranslate"><span class="pre">prefill_coalesce_wait_ms</span></code>.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">prefill_coalesce_wait_ms</span></code> is therefore an upper bound on the added admission
+wait. Admission may be released earlier if the target queue size is reached.</p>
+<p>The values above are an example for the Qwen3-TTS workload and are not intended
+as universal defaults. Match both <code class="docutils literal notranslate"><span class="pre">prefill_coalesce_requests</span></code> and
+<code class="docutils literal notranslate"><span class="pre">prefill_coalesce_wait_ms</span></code> to the workload you actually serve. Coalescing is
+most useful when natural prefill batches are small and a short hold can increase
+batching without materially reducing decode occupancy. If the wait is too long,
+the reduced decode occupancy can offset the prefill savings.</p>
+<p>Leave coalescing disabled for latency-sensitive traffic or workloads where the
+added wait does not produce enough additional batching.</p>
+</section>
+<section id="process-topology">
+<h3>Process topology<a class="headerlink" href="#process-topology" title="Link to this heading">#</a></h3>
+<p>By default all three stages share one process. Per-request reference
+preprocessing (speech-tokenizer encode, speaker embedding, prompt embedding)
+then competes with the AR scheduler and the vocoder for the same interpreter,
+which caps single-replica throughput once concurrency passes ~32. Moving the
+preprocessing stage to its own process removes that contention: the stage
+loads a prompt-only frontend (embedding tables, text projection, predictor
+codec embeddings, speaker encoder) plus the speech tokenizer, together about
+2.2 GB of GPU memory for the extra process on a 1.7B checkpoint, and ships the
+prepared prompt tensors to the engine through the payload. Every GPU stage must
+then declare a memory fraction, and the engine’s static fraction has to agree
+with the one it declares:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-Base<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--preprocessing.process<span class="w"> </span>tts_frontend<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--preprocessing.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--preprocessing.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.05<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.75<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.engine.mem_fraction_static<span class="w"> </span><span class="m">0</span>.75<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vocoder.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.12
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--vocoder.process</span> <span class="pre">vocoder</span></code> composes with it (lower <code class="docutils literal notranslate"><span class="pre">tts_engine</span></code> to 0.72 and
+give the vocoder 0.15). Six SeedTTS samples at a fixed seed produced identical
+PCM in both layouts; the extra process costs its CUDA context plus the frontend
+weights.</p>
+</section>
 </section>
 <section id="synthesizing-speech">
 <h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
@@ -765,11 +841,13 @@ chunks in real time:</p>
 <p>Streaming returns <code class="docutils literal notranslate"><span class="pre">audio/pcm</span></code> 16-bit mono PCM bytes with sample-rate metadata in
 the response headers. See the <a class="reference internal" href="higgs_tts.html#streaming"><span class="std std-ref">Higgs TTS cookbook</span></a>
 for a full Python raw PCM consumer.</p>
-<p>Base/reference-cloning checkpoints use true incremental codec and vocoder
-streaming for both this HTTP endpoint and <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech/stream</span></code> WebSocket
-sessions with <code class="docutils literal notranslate"><span class="pre">stream_audio=true</span></code>. CustomVoice and VoiceDesign remain
-non-streaming.</p>
-<p>When <code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code> is omitted, Qwen3-TTS Base defaults to <code class="docutils literal notranslate"><span class="pre">8</span></code>
+<p>All three task types (Base/reference-cloning, CustomVoice and VoiceDesign) use
+true incremental codec and vocoder streaming, for both this HTTP endpoint and
+<code class="docutils literal notranslate"><span class="pre">/v1/audio/speech/stream</span></code> WebSocket sessions with <code class="docutils literal notranslate"><span class="pre">stream_audio=true</span></code>. Pass
+<code class="docutils literal notranslate"><span class="pre">&quot;stream_codec_output&quot;:</span> <span class="pre">false</span></code> on a request, or launch with
+<code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.stream_codec_output</span> <span class="pre">false</span></code>, to restore whole-utterance
+decoding.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code> is omitted, Qwen3-TTS defaults to <code class="docutils literal notranslate"><span class="pre">8</span></code>
 codec frames for the first vocoder chunk so concurrent streams stay continuous.
 Pass a smaller value only when trading continuity for lower time-to-first-audio.
 Utterances that finish in fewer than <code class="docutils literal notranslate"><span class="pre">8</span></code> generated codec frames never reach the
@@ -867,7 +945,11 @@ only the first chunk.</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">initial_codec_chunk_frames</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">8</span></code> (model default when omitted)</p></td>
-<td><p>First Base streaming vocoder chunk size in codec frames. Smaller values lower TTFA but underrun more easily; <code class="docutils literal notranslate"><span class="pre">0</span></code> uses the steady stride from the start</p></td>
+<td><p>First streaming vocoder chunk size in codec frames. Smaller values lower TTFA but underrun more easily; <code class="docutils literal notranslate"><span class="pre">0</span></code> uses the steady stride from the start</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream_codec_output</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Forward codec frames to the vocoder as they are generated. Set <code class="docutils literal notranslate"><span class="pre">false</span></code> to restore whole-utterance decoding for CustomVoice/VoiceDesign</p></td>
 </tr>
 </tbody>
 </table>
@@ -1009,6 +1091,8 @@ checkpoint is less prone.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deterministic-inference">Deterministic Inference</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#overload-admission-policy">Overload / admission policy</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prefill-admission-coalescing">Prefill Admission Coalescing</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#process-topology">Process topology</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -1061,7 +1145,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Sep 03, 2026.
+  Last updated on Sep 04, 2026.
   <br/>
 </p>
   </div>
