@@ -141,6 +141,9 @@ class Qwen3TTSPreparedRequest:
 class Qwen3TTSPreprocessingContext:
     model: Any
     wrapper: Any
+    # Note (Jiaxin Deng): True when preprocessing runs outside the engine process,
+    # so prepared tensors travel in the payload instead of the module registry.
+    standalone: bool = False
 
 
 _PREPROCESSING_CONTEXT: Qwen3TTSPreprocessingContext | None = None
@@ -151,7 +154,9 @@ _ADHOC_REFERENCE_SERVICE_ENTRY: (
 _PREPARED_REQUESTS_LOCK = threading.Lock()
 
 
-def set_qwen3_tts_preprocessing_context(*, model: Any, wrapper: Any) -> None:
+def set_qwen3_tts_preprocessing_context(
+    *, model: Any, wrapper: Any, standalone: bool = False
+) -> None:
     """Register model objects used by the preprocessing stage."""
 
     global _PREPROCESSING_CONTEXT
@@ -160,6 +165,7 @@ def set_qwen3_tts_preprocessing_context(*, model: Any, wrapper: Any) -> None:
         _PREPROCESSING_CONTEXT = Qwen3TTSPreprocessingContext(
             model=model,
             wrapper=wrapper,
+            standalone=standalone,
         )
         _PREPARED_REQUESTS.clear()
 
@@ -1186,6 +1192,8 @@ def preprocess_qwen3_tts_payload(
         wrapper=context.wrapper,
         default_stream_codec_output=default_stream_codec_output,
     )
+    if context.standalone:
+        return _store_prepared_qwen3_tts_payload(payload, prepared)
     with _PREPARED_REQUESTS_LOCK:
         _PREPARED_REQUESTS[payload.request_id] = prepared
 
@@ -1195,6 +1203,77 @@ def preprocess_qwen3_tts_payload(
         request_id=payload.request_id,
         request=payload.request,
         data=data,
+    )
+
+
+_PREPARED_PAYLOAD_FIELDS = (
+    "prepared_prompt_embeds",
+    "prepared_text_tail",
+    "prepared_ref_code",
+    "prepared_pad_embed",
+    "prepared_input_ids",
+    "prepared_gen_kwargs",
+)
+
+
+def _store_prepared_qwen3_tts_payload(
+    payload: StagePayload, prepared: Qwen3TTSPreparedRequest
+) -> StagePayload:
+    """Carry the prepared tensors in the payload for an engine in another process."""
+
+    state = prepared.state
+    state.prepared_prompt_embeds = prepared.prompt_input_embeds
+    state.prepared_text_tail = prepared.trailing_text_hidden
+    state.prepared_ref_code = prepared.ref_code
+    state.prepared_pad_embed = prepared.tts_pad_embed
+    state.prepared_input_ids = list(prepared.input_ids_list)
+    state.prepared_gen_kwargs = dict(prepared.gen_kwargs)
+    # Note (Jiaxin Deng): the reference clip is consumed here and read by nothing
+    # downstream, so it would otherwise ride every later hop as raw media.
+    state.ref_audio = None
+    return StagePayload(
+        request_id=payload.request_id,
+        request=payload.request,
+        data=state.to_dict(),
+    )
+
+
+def _load_prepared_qwen3_tts_request(
+    payload: StagePayload, *, model: Any
+) -> Qwen3TTSPreparedRequest | None:
+    """Inverse of _store_prepared_qwen3_tts_payload; clears the fields it consumed."""
+
+    data = payload.data
+    if not isinstance(data, dict) or data.get("prepared_input_ids") is None:
+        return None
+    state = Qwen3TTSState.from_dict(data)
+    feedback_buffer = model.model._feedback_buffer
+    device, dtype = feedback_buffer.device, feedback_buffer.dtype
+    prompt_input_embeds = state.prepared_prompt_embeds.to(device=device, dtype=dtype)
+    trailing_text_hidden = state.prepared_text_tail.to(device=device, dtype=dtype)
+    ref_code = (
+        state.prepared_ref_code.to(device=device, dtype=torch.long)
+        if state.prepared_ref_code is not None
+        else None
+    )
+    tts_pad_embed = state.prepared_pad_embed.to(device=device, dtype=dtype)
+    input_ids_list = [int(token) for token in state.prepared_input_ids]
+    gen_kwargs = dict(state.prepared_gen_kwargs or {})
+    for name in _PREPARED_PAYLOAD_FIELDS:
+        setattr(state, name, None)
+        data.pop(name, None)
+    return Qwen3TTSPreparedRequest(
+        state=state,
+        input_ids_list=input_ids_list,
+        input_ids=torch.tensor(input_ids_list, dtype=torch.long),
+        attention_mask=torch.ones(
+            (1, int(prompt_input_embeds.shape[0])), device=device, dtype=torch.long
+        ),
+        trailing_text_hidden=trailing_text_hidden,
+        ref_code=ref_code,
+        prompt_input_embeds=prompt_input_embeds,
+        tts_pad_embed=tts_pad_embed,
+        gen_kwargs=gen_kwargs,
     )
 
 
@@ -1210,6 +1289,8 @@ def build_sglang_qwen3_tts_request(
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     prepared = pop_prepared_qwen3_tts_request(payload)
+    if prepared is None:
+        prepared = _load_prepared_qwen3_tts_request(payload, model=model)
     if prepared is None:
         raise RuntimeError(
             "Qwen3-TTS AR request builder requires a payload prepared by "
