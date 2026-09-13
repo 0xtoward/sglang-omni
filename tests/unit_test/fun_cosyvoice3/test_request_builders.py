@@ -355,11 +355,11 @@ class _FakeModel(torch.nn.Module):
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))
         self.config = SimpleNamespace(hidden_size=4)
-        self.text_embed_tokens = (
-            lambda tokens: tokens.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4)
+        self.text_embed_tokens = lambda tokens: (
+            tokens.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4)
         )
-        self.speech_embedding = (
-            lambda tokens: tokens.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4)
+        self.speech_embedding = lambda tokens: (
+            tokens.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4)
         )
 
 
@@ -561,18 +561,18 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
                 )
             )
 
-        assert finalization_started.wait(
-            timeout=2.0
-        ), "preprocessing did not reach finalization after reference encoding"
-        assert tracking_lock.second_attempted.wait(
-            timeout=2.0
-        ), "both preprocessing workers did not reach the finalization boundary"
+        assert finalization_started.wait(timeout=2.0), (
+            "preprocessing did not reach finalization after reference encoding"
+        )
+        assert tracking_lock.second_attempted.wait(timeout=2.0), (
+            "both preprocessing workers did not reach the finalization boundary"
+        )
         outputs = [scheduler.outbox.get(timeout=3.0) for _ in request_ids]
 
         assert {output.request_id for output in outputs} == request_ids
-        assert all(
-            output.type == "result" for output in outputs
-        ), f"preprocessing errors: {outputs!r}"
+        assert all(output.type == "result" for output in outputs), (
+            f"preprocessing errors: {outputs!r}"
+        )
         assert set(reference_inputs) == {b"reference-a", b"reference-b"}
         assert tracking_lock.attempt_count == 2
         assert max_active_finalizations == 1
@@ -760,8 +760,10 @@ def test_preprocess_excludes_reference_speech_from_instruct_llm_prompt(
     assert prepared.flow_prompt_speech_token.tolist() == [[40]]
 
 
+@pytest.mark.parametrize("observed_peer", [None, False, True])
 def test_result_adapter_preserves_reference_conditioning_for_vocoder(
     monkeypatch: pytest.MonkeyPatch,
+    observed_peer: bool | None,
 ) -> None:
     state = FunCosyVoice3State(
         text="hello",
@@ -780,6 +782,7 @@ def test_result_adapter_preserves_reference_conditioning_for_vocoder(
         output_codes=[torch.tensor([50]), torch.tensor([51])],
         stage_payload=payload,
         engine_start_s=10.0,
+        ar_observed_peer=observed_peer,
     )
     monkeypatch.setattr(request_builders.time, "perf_counter", lambda: 10.5)
 
@@ -795,6 +798,8 @@ def test_result_adapter_preserves_reference_conditioning_for_vocoder(
     assert restored.completion_tokens == 2
     assert restored.sample_rate == 24000
     assert restored.engine_time_s == pytest.approx(0.5)
+    assert restored.ar_observed_peer is observed_peer
+    assert result.data.get("ar_observed_peer") is observed_peer
 
 
 def test_result_adapter_serializes_empty_generation_without_losing_state(
