@@ -228,6 +228,36 @@ Vocoder configuration controls batching, precision, and acceleration. The schedu
 
 The TTS engine stage accepts `onnx_intra_op_threads` (16) for the speech tokenizer and speaker encoder ONNX sessions. Preprocessing takes `max_concurrency` (8) to limit concurrent reference conditioning requests.
 
+### Buffered low-concurrency latency
+
+For a latency-oriented buffered deployment, the vocoder can skip its initial
+batching wait when a request never observed an AR batch peer:
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --vocoder.factory.skip_unobserved_peer_wait true \
+  --vocoder.factory.enable_dit_torch_compile true \
+  --port 8000
+```
+
+This option is off by default. It drains already-queued requests first; finding
+a second eligible request restores the normal `max_batch_wait_ms` window.
+Requests that observed an AR peer, or have no observation, keep the normal wait.
+Streaming collection is unchanged. The observation is not a global idle signal:
+other requests can be in preprocessing or waiting for AR admission. Keep the
+default for throughput-oriented deployments until measured under that load.
+
+SGLang also has an independent, experimental
+`SGLANG_ENABLE_METADATA_GLUE_GRAPH=1` environment flag. It captures attention
+metadata preparation before the existing AR forward graph; this is upstream
+SGLang functionality, not a second Cosy graph implementation. In a process that
+also runs preprocessing threads, use a SGLang version with thread-local metadata
+capture before testing this flag. The default global capture can conflict with
+CUDA transfers from those threads. Thread-local capture still requires exclusive
+ownership of the captured backend and buffers; it does not make shared state
+thread-safe. The queue option does not enable or require the graph flag.
+
 ### torch.compile for the DiT backbone
 
 `torch.compile` is off by default. Enable it when you want the lowest DiT kernel-launch overhead. The first startup with an empty Inductor cache takes about 100 s and builds one symbolic (`dynamic=True`) graph for every utterance length; later starts reuse that cache. Keep the cache so you do not pay the compile cost again (`~/.cache/torch/inductor`, or `TORCHINDUCTOR_CACHE_DIR`).

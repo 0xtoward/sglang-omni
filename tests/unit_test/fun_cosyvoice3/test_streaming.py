@@ -145,6 +145,27 @@ def _model_runner() -> FunCosyVoice3ModelRunner:
     return runner
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("hint", [None, False, True, 0, "false"])
+def test_buffered_peer_wait_requires_opt_in_and_explicit_false(enabled, hint) -> None:
+    _, scheduler = _scheduler(skip_unobserved_peer_wait=enabled)
+    payload = StagePayload(request_id="a", request=OmniRequest(inputs="hello"), data={})
+    if hint is not None:
+        payload.data["ar_observed_peer"] = hint
+    message = IncomingMessage("a", "new_request", payload)
+    assert scheduler._wait_for_batch_peer(message) is not (enabled and hint is False)
+
+
+def test_peer_wait_is_disabled_by_default() -> None:
+    _, scheduler = _scheduler()
+    payload = StagePayload(
+        request_id="a",
+        request=OmniRequest(inputs="hello"),
+        data={"ar_observed_peer": False},
+    )
+    assert scheduler._wait_for_batch_peer(IncomingMessage("a", "new_request", payload))
+
+
 def _stream_payload(
     request_id: str = "req-stream",
     *,
