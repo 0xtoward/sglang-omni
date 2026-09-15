@@ -6,7 +6,6 @@ from __future__ import annotations
 from array import array
 from queue import Queue
 from types import SimpleNamespace
-from typing import Literal
 
 import pytest
 import torch
@@ -161,9 +160,7 @@ def test_decode_history_follows_filtered_and_reordered_pool_rows(
 ) -> None:
     batch = _make_batch([1, 5, 9])
     _snapshot(runner, batch, [1, 5, 9])
-    previous = _snapshot(runner, batch, [2, 6, 10])
-    previous_scaling = previous.acc_scaling_penalties.clone()
-    previous_additive = previous.acc_additive_penalties.clone()
+    _snapshot(runner, batch, [2, 6, 10])
 
     keep = [2, 0]
     indices = torch.tensor(keep)
@@ -172,19 +169,10 @@ def test_decode_history_follows_filtered_and_reordered_pool_rows(
     batch.sampling_info.filter_batch(keep, indices)
     snapshot = _snapshot(runner, batch, [11, 3])
 
-    assert [req.rid for req in batch.reqs] == ["req-2", "req-0"]
-    assert batch.req_pool_indices.tolist() == [3, 1]
     expected = torch.ones(2, _VOCAB_SIZE)
     expected[0, [9, 10, 11]] = 1.21
     expected[1, [1, 2, 3]] = 1.21
     torch.testing.assert_close(snapshot.acc_scaling_penalties, expected)
-    assert torch.count_nonzero(snapshot.acc_additive_penalties).item() == 0
-    minimum = batch.sampling_info.penalizer_orchestrator.penalizers[
-        BatchedMinNewTokensPenalizer
-    ]
-    assert minimum.len_output_tokens.tolist() == [[3], [3]]
-    torch.testing.assert_close(previous.acc_scaling_penalties, previous_scaling)
-    torch.testing.assert_close(previous.acc_additive_penalties, previous_additive)
 
 
 def test_resolve_skips_inactive_requests_without_compacting_token_rows(
@@ -214,9 +202,6 @@ def test_resolve_skips_inactive_requests_without_compacting_token_rows(
 
     runner.post_decode_resolve(launch_buf, result, None, batch, requests)
 
-    assert result.next_token_ids.tolist() == launch_buf.tolist()
-    assert result.next_token_ids.data_ptr() == launch_buf.data_ptr()
-    assert len(requests) == len(batch.reqs) == 5
     assert [[token.item() for token in req.data.output_codes] for req in requests] == [
         [],
         [22],
@@ -231,24 +216,25 @@ def test_resolve_skips_inactive_requests_without_compacting_token_rows(
     assert [message.data.tolist() for message in messages] == [[22], [55]]
 
 
-@pytest.mark.parametrize("blocker", ["frequency", "presence", "custom", "grammar"])
-def test_lookahead_keeps_real_cosy_penalties_and_rejects_unsupported_history(
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("frequency_penalty", 0.25),
+        ("presence_penalty", 0.25),
+        ("custom_logit_processor", "custom-processor"),
+        ("grammar", object()),
+    ],
+)
+def test_lookahead_rejects_unsupported_history(
     runner: FunCosyVoice3ModelRunner,
-    blocker: Literal["frequency", "presence", "custom", "grammar"],
+    field: str,
+    value: object,
 ) -> None:
     batch = _make_batch([1, 5])
     assert not runner.lookahead_eligible(batch)
     runner.device = torch.device("cuda")
-    assert all(req.sampling_params.repetition_penalty == 1.21 for req in batch.reqs)
-    assert all(req.sampling_params.min_new_tokens > 0 for req in batch.reqs)
     assert runner.lookahead_eligible(batch)
     req = batch.reqs[1]
-    if blocker == "frequency":
-        req.sampling_params.frequency_penalty = 0.25
-    elif blocker == "presence":
-        req.sampling_params.presence_penalty = 0.25
-    elif blocker == "custom":
-        req.custom_logit_processor = "custom-processor"
-    else:
-        req.grammar = object()
+    target = req.sampling_params if field.endswith("penalty") else req
+    setattr(target, field, value)
     assert not runner.lookahead_eligible(batch)

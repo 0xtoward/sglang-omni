@@ -7,6 +7,7 @@ from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Any
 
 import torch
+from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 from sglang.srt.managers.schedule_batch import FINISH_ABORT
 from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.sampling.penaltylib import BatchedRepetitionPenalizer
@@ -98,23 +99,16 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         *,
         isolate_sampling: bool = False,
     ) -> AbstractContextManager[None]:
-        if not self._async_enabled or not schedule_batch.forward_mode.is_decode():
-            return super()._execution_context(
-                schedule_batch, isolate_sampling=isolate_sampling
-            )
-        return self._execution_bridge.forward_context(
-            schedule_batch,
-            isolate_sampling=isolate_sampling,
-            before_sampling_snapshot=self._complete_decode_repetition,
+        if self._async_enabled and schedule_batch.forward_mode.is_decode():
+            resolve_forward_inputs(schedule_batch, self._execution_bridge.future_map)
+            # note (ql): Repetition is idempotent; min-length already advanced.
+            repetition = schedule_batch.sampling_info.penalizer_orchestrator.penalizers[
+                BatchedRepetitionPenalizer
+            ]
+            repetition.cumulate_output_tokens(schedule_batch.input_ids)
+        return super()._execution_context(
+            schedule_batch, isolate_sampling=isolate_sampling
         )
-
-    @staticmethod
-    def _complete_decode_repetition(batch: ScheduleBatch) -> None:
-        # note (ql): repetition scatter is idempotent; min-length already advanced.
-        repetition = batch.sampling_info.penalizer_orchestrator.penalizers[
-            BatchedRepetitionPenalizer
-        ]
-        repetition.cumulate_output_tokens(batch.input_ids)
 
     def post_decode_resolve(
         self,

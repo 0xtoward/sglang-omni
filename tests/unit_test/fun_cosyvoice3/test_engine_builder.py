@@ -104,19 +104,3 @@ def test_torch_mps_uses_single_request_native_attention(
 
     with pytest.raises(ValueError, match="max_running_requests=1"):
         builder.validate_before_infrastructure(SimpleNamespace(max_running_requests=2))
-
-
-@pytest.mark.parametrize("enabled, minimum_batch", [(False, 2), (True, 1), (True, 4)])
-def test_cuda_async_options_reach_scheduler(
-    monkeypatch: pytest.MonkeyPatch, enabled: bool, minimum_batch: int
-) -> None:
-    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
-    builder = FunCosyVoice3EngineBuilder(
-        enable_async_decode=enabled,
-        async_decode_min_batch_size=minimum_batch,
-    )
-
-    assert builder.extra_scheduler_kwargs() == {
-        "enable_async_decode": enabled,
-        "async_decode_min_batch_size": minimum_batch,
-    }

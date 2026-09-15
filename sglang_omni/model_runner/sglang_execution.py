@@ -23,13 +23,10 @@ is deliberately single-stream: launch-current/resolve-previous on one stream.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterator
+from typing import Any
 
 import torch
-
-if TYPE_CHECKING:
-    from sglang.srt.managers.schedule_batch import ScheduleBatch
 
 
 def attn_forward_context(attn_backend: Any):
@@ -81,14 +78,11 @@ class SGLangExecutionBridge:
         batch: Any,
         *,
         isolate_sampling: bool = False,
-        before_sampling_snapshot: Callable[[ScheduleBatch], None] | None = None,
     ) -> Iterator[None]:
         """Resolve inputs and optionally isolate lookahead sampling state."""
         from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 
         resolve_forward_inputs(batch, self.future_map)
-        if before_sampling_snapshot is not None:
-            before_sampling_snapshot(batch)
 
         scheduler_sampling_info = batch.sampling_info
         if isolate_sampling and scheduler_sampling_info is not None:
