@@ -73,6 +73,7 @@ COSYVOICE_INSTALL_HINT = (
 )
 
 CHUNK_MASK_COMPILE_DISABLED = False
+CAUSAL_CONV_CACHE_PATCHED = False
 
 FLOW_CUDA_GRAPH_FRAME_BUCKET = 16
 # Note (chenyang):
@@ -903,6 +904,8 @@ def load_cosyvoice3_flow_hift(
     hift = cv.model.hift
     flow.to(device).eval()
     hift.to(device).eval()
+    _keep_hift_constants_on_device(hift, device)
+    _patch_causal_conv_cache()
     # note (Dayuxiaoshui): folding weight_norm is the only load-time step
     # batched decode needs.
     folded = 0
@@ -923,6 +926,88 @@ def load_cosyvoice3_flow_hift(
     if enable_flow_estimator_trt:
         attach_flow_estimator_trt(wrapped, checkpoint_dir, device)
     return wrapped, hift
+
+
+def _patch_chunk_mask() -> None:
+    """Build the DiT attention mask without the host sync CosyVoice's
+    add_optional_chunk_mask pays to check for empty rows; the rows are
+    filled on the device instead, which is also what graph capture needs.
+    The check is any, not sum: summing a bool mask first copies it to
+    int64, eight bytes per element of a batch by frames squared tensor.
+    """
+    try:
+        from cosyvoice.flow.DiT import dit as cosyvoice_dit
+        from cosyvoice.utils.mask import add_optional_chunk_mask as cosyvoice_chunk_mask
+        from cosyvoice.utils.mask import subsequent_chunk_mask
+    except ImportError as exc:
+        raise RuntimeError(COSYVOICE_INSTALL_HINT) from exc
+
+    def _chunk_mask(
+        xs: torch.Tensor,
+        masks: torch.Tensor,
+        use_dynamic_chunk: bool,
+        use_dynamic_left_chunk: bool,
+        decoding_chunk_size: int,
+        static_chunk_size: int,
+        num_decoding_left_chunks: int,
+        enable_full_context: bool = True,
+    ) -> torch.Tensor:
+        if use_dynamic_chunk:
+            return cosyvoice_chunk_mask(
+                xs,
+                masks,
+                use_dynamic_chunk,
+                use_dynamic_left_chunk,
+                decoding_chunk_size,
+                static_chunk_size,
+                num_decoding_left_chunks,
+                enable_full_context,
+            )
+        if static_chunk_size > 0:
+            chunk = subsequent_chunk_mask(
+                xs.size(1), static_chunk_size, num_decoding_left_chunks, xs.device
+            )
+            masks = masks & chunk.unsqueeze(0)
+        empty_rows = ~masks.any(dim=-1, keepdim=True)
+        masks.masked_fill_(empty_rows, True)
+        return masks
+
+    cosyvoice_dit.add_optional_chunk_mask = _chunk_mask
+
+
+def _patch_causal_conv_cache() -> None:
+    """Allocate CausalConv1d's zero cache on the device. CosyVoice builds it
+    on the CPU and copies it in, one host sync per conv per HiFT call.
+    """
+    global CAUSAL_CONV_CACHE_PATCHED
+    if CAUSAL_CONV_CACHE_PATCHED:
+        return
+    try:
+        from cosyvoice.transformer.convolution import CausalConv1d
+    except ImportError as exc:
+        raise RuntimeError(COSYVOICE_INSTALL_HINT) from exc
+
+    original_forward = CausalConv1d.forward
+
+    def forward(self, x: torch.Tensor, cache: torch.Tensor = torch.zeros(0, 0, 0)):
+        if cache.size(2) == 0:
+            cache = x.new_zeros(x.shape[0], x.shape[1], self.causal_padding)
+        return original_forward(self, x, cache)
+
+    CausalConv1d.forward = forward
+    CAUSAL_CONV_CACHE_PATCHED = True
+
+
+def _keep_hift_constants_on_device(hift: torch.nn.Module, device: str) -> None:
+    # note(ratish): plain attributes, not buffers, so hift.to(device) leaves
+    # them on the CPU and every HiFT call copies them to the device again.
+    hift.stft_window = hift.stft_window.to(device)
+    sine_gen = hift.m_source.l_sin_gen
+    sine_gen.rand_ini = sine_gen.rand_ini.to(device)
+    sine_gen.sine_waves = sine_gen.sine_waves.to(device)
+    # note(ratish): HiFT.inference casts the f0 predictor to float64 on every
+    # call; done once here the per-call cast finds nothing to convert.
+    hift.f0_predictor.to(torch.float64)
 
 
 def _load_cosyvoice3_flow_hift_lightweight(
@@ -1961,41 +2046,7 @@ def create_vocoder_executor(
     ):
         enable_flow_cuda_graph = False
 
-    if enable_flow_cuda_graph:
-        try:
-            from cosyvoice.flow.DiT import dit as cosyvoice_dit
-            from cosyvoice.utils.mask import (
-                add_optional_chunk_mask as cosyvoice_chunk_mask,
-            )
-        except ImportError as exc:
-            raise RuntimeError(COSYVOICE_INSTALL_HINT) from exc
-
-        def _chunk_mask(
-            xs: torch.Tensor,
-            masks: torch.Tensor,
-            use_dynamic_chunk: bool,
-            use_dynamic_left_chunk: bool,
-            decoding_chunk_size: int,
-            static_chunk_size: int,
-            num_decoding_left_chunks: int,
-            enable_full_context: bool = True,
-        ) -> torch.Tensor:
-            if use_dynamic_chunk or static_chunk_size > 0:
-                return cosyvoice_chunk_mask(
-                    xs,
-                    masks,
-                    use_dynamic_chunk,
-                    use_dynamic_left_chunk,
-                    decoding_chunk_size,
-                    static_chunk_size,
-                    num_decoding_left_chunks,
-                    enable_full_context,
-                )
-            empty_rows = masks.sum(dim=-1, keepdim=True) == 0
-            masks.masked_fill_(empty_rows, True)
-            return masks
-
-        cosyvoice_dit.add_optional_chunk_mask = _chunk_mask
+    _patch_chunk_mask()
 
     if enable_dit_torch_compile:
         compile_dit_backbone(flow, autocast_dtype=autocast_dtype)
@@ -2022,7 +2073,7 @@ def create_vocoder_executor(
         hift_max_padding_waste=hift_max_padding_waste,
     )
 
-    return FunCosyVoice3StreamingVocoderScheduler(
+    scheduler = FunCosyVoice3StreamingVocoderScheduler(
         vocoder,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
@@ -2032,3 +2083,5 @@ def create_vocoder_executor(
         token_max_hop_len=token_max_hop_len,
         disable_hop_growth=disable_hop_growth,
     )
+    scheduler.warmup_now()
+    return scheduler

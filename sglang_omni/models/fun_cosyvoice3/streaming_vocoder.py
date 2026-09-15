@@ -129,6 +129,32 @@ class FunCosyVoice3StreamingVocoderScheduler(
     def create_stream_state(self, request_id: str) -> CosyVoice3StreamState:
         return CosyVoice3StreamState(hop_len=self.token_hop_len)
 
+    def warmup_now(self) -> None:
+        # note(ratish): one hop and one final through Flow and HiFT before the
+        # stage publishes readiness, so the first request pays neither the
+        # attention kernel load nor the f0 cast.
+        flow = self.vocoder.flow
+        item = FlowBatchInput(
+            token=torch.zeros(
+                1, self.token_hop_len + PRE_LOOKAHEAD_LEN, dtype=torch.int32
+            ),
+            prompt_token=torch.zeros(1, self.token_hop_len, dtype=torch.int32),
+            prompt_feat=torch.zeros(
+                1, self.token_hop_len * TOKEN_MEL_RATIO, flow.output_size
+            ),
+            embedding=torch.zeros(1, flow.spk_embed_affine_layer.in_features),
+        )
+        started = time.monotonic()
+        mel = self.vocoder.hop_batch([item])[0]
+        self.vocoder.hift_delta(mel, hift_mel=None, speech_offset=0, finalize=False)
+        hop_s = time.monotonic() - started
+        mel = self.vocoder.leftover_batch([item])[0]
+        self.vocoder.hift_delta(mel, hift_mel=None, speech_offset=0, finalize=True)
+        final_s = time.monotonic() - started - hop_s
+        logger.info(
+            f"Fun-CosyVoice3 vocoder warmup: hop {hop_s:.1f} s, final {final_s:.1f} s"
+        )
+
     def latch_stream_contract(
         self,
         request_id: str,

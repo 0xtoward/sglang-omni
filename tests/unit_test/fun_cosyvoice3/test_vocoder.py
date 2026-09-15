@@ -24,6 +24,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage
+from tests.unit_test.fun_cosyvoice3.test_flow_batch import _FakeFlow as _PackedFlow
 
 
 class _FakeHiFT(torch.nn.Module):
@@ -47,6 +48,12 @@ class _FakeEstimator(torch.nn.Module):
     def forward(self, *args, **kwargs):
         del args, kwargs
         raise AssertionError("batch adapter should be mocked in vocoder unit tests")
+
+
+class _RunnableFakeFlow(_PackedFlow):
+    def __init__(self):
+        super().__init__(channels=80, max_frames=8192)
+        self.spk_embed_affine_layer = torch.nn.Linear(192, 80)
 
 
 def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
@@ -719,11 +726,12 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "_patch_chunk_mask", lambda: None)
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
         lambda checkpoint_dir, device, fp16, **kwargs: (
-            _BatchCapableFakeFlow(),
+            _RunnableFakeFlow(),
             _FakeHiFT(),
         ),
     )
@@ -751,11 +759,12 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "_patch_chunk_mask", lambda: None)
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
         lambda checkpoint_dir, device, fp16, **kwargs: (
-            _BatchCapableFakeFlow(),
+            _RunnableFakeFlow(),
             _FakeHiFT(),
         ),
     )
@@ -774,12 +783,13 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
 def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    fake_flow = _BatchCapableFakeFlow()
+    fake_flow = _RunnableFakeFlow()
     fake_hift = _FakeHiFT()
     monkeypatch.setattr(
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "_patch_chunk_mask", lambda: None)
 
     def fake_load(checkpoint_dir, device, fp16, **kwargs):
         captured.update(
@@ -831,6 +841,7 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "_patch_chunk_mask", lambda: None)
 
     def fake_load(checkpoint_dir, device, fp16, **kwargs):
         captured.update(
@@ -838,7 +849,7 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
                 "enable_flow_estimator_trt": kwargs.get("enable_flow_estimator_trt"),
             }
         )
-        return _BatchCapableFakeFlow(), _FakeHiFT()
+        return _RunnableFakeFlow(), _FakeHiFT()
 
     monkeypatch.setattr(stages, "load_cosyvoice3_flow_hift", fake_load)
 
@@ -859,11 +870,12 @@ def _executor_compiles(monkeypatch, **kwargs) -> bool:
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "_patch_chunk_mask", lambda: None)
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
         lambda checkpoint_dir, device, fp16, **_: (
-            _BatchCapableFakeFlow(),
+            _RunnableFakeFlow(),
             _FakeHiFT(),
         ),
     )
@@ -1002,7 +1014,7 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
 
     builder = engine_builder.FunCosyVoice3EngineBuilder(onnx_intra_op_threads=6)
     builder._checkpoint_root = "/tmp"
-    builder.setup_model(
+    builder.before_memory_pool(
         model_worker=SimpleNamespace(
             model_runner=SimpleNamespace(
                 model=_StubModel(),
