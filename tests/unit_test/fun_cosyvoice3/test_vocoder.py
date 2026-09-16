@@ -71,7 +71,7 @@ def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
             assert token.tolist() == [[11, 12]]
             return torch.ones(1, 16)
 
-    scheduler = stages._FunCosyVoice3MlxStreamingVocoderScheduler(
+    scheduler = stages.FunCosyVoice3MlxStreamingVocoderScheduler(
         _FakeMlxVocoder(), max_batch_wait_ms=0
     )
     state = FunCosyVoice3State(
@@ -108,7 +108,7 @@ def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
 
     hift = SimpleNamespace(f0_predictor=_Predictor())
 
-    stages._MpsHiFTAdapter(hift, "mps")
+    stages.MpsHiFTAdapter(hift, "mps")
 
     assert calls == [
         ((), {"device": "cpu"}),
@@ -167,7 +167,7 @@ def test_lightweight_loader_skips_llm_and_loads_flow_hift(
 
     monkeypatch.setattr(torch, "load", fake_torch_load)
 
-    loaded_flow, loaded_hift = stages._load_cosyvoice3_flow_hift_lightweight(
+    loaded_flow, loaded_hift = stages.load_cosyvoice3_flow_hift_lightweight(
         str(tmp_path),
         device="cpu",
     )
@@ -362,7 +362,7 @@ def test_mlx_vocoder_audio_payload_survives_state_storage() -> None:
     )
     waveform = np.array([[0.1, -0.2]], dtype=np.float32)
 
-    mlx_vocoder = object.__new__(stages._CosyVoice3MlxVocoderAdapter)
+    mlx_vocoder = object.__new__(stages.CosyVoice3MlxVocoderAdapter)
     stored = mlx_vocoder.store_result(_payload(state), state, waveform, 24000)
     result = Client._default_result_builder(stored.request_id, stored.data)
 
@@ -726,7 +726,7 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
-    monkeypatch.setattr(stages, "_patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
@@ -759,7 +759,7 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
-    monkeypatch.setattr(stages, "_patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
@@ -789,7 +789,7 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
-    monkeypatch.setattr(stages, "_patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
 
     def fake_load(checkpoint_dir, device, fp16, **kwargs):
         captured.update(
@@ -841,7 +841,7 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
-    monkeypatch.setattr(stages, "_patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
 
     def fake_load(checkpoint_dir, device, fp16, **kwargs):
         captured.update(
@@ -870,7 +870,7 @@ def _executor_compiles(monkeypatch, **kwargs) -> bool:
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
-    monkeypatch.setattr(stages, "_patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
