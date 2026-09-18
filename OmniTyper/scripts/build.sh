@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+APP_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIGURATION="${CONFIGURATION:-release}"
+PYTHON_BIN="${OMNITYPER_PYTHON:-$APP_ROOT/.venv/bin/python}"
+swift build --package-path "$APP_ROOT" -c "$CONFIGURATION"
+BIN_DIR="$(swift build --package-path "$APP_ROOT" -c "$CONFIGURATION" --show-bin-path)"
+APP_BUNDLE="$APP_ROOT/dist/OmniTyper.app"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources/backend"
+cp "$BIN_DIR/OmniTyper" "$APP_BUNDLE/Contents/MacOS/"
+cp "$APP_ROOT/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+cp "$APP_ROOT/backend/worker.py" "$APP_ROOT/backend/server.py" "$APP_BUNDLE/Contents/Resources/backend/"
+cp "$APP_ROOT/../LICENSE" "$APP_BUNDLE/Contents/Resources/LICENSE"
+/usr/libexec/PlistBuddy -c "Add :OmniTyperPython string $PYTHON_BIN" "$APP_BUNDLE/Contents/Info.plist"
+ICONSET="$APP_ROOT/.build/AppIcon.iconset"
+mkdir -p "$ICONSET"
+swift "$APP_ROOT/scripts/icon.swift" "$ICONSET"
+iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+codesign --force --sign "${CODE_SIGN_IDENTITY:--}" --options runtime \
+  --entitlements "$APP_ROOT/Resources/Entitlements.plist" "$APP_BUNDLE"
+codesign --verify --strict "$APP_BUNDLE"
+echo "$APP_BUNDLE"
