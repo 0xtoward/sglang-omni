@@ -9,6 +9,7 @@ struct PreferencesView: View {
     @ViewState private var microphones: [MicrophoneDevice] = []
     @ViewState private var captureMonitor: Any?
     @ViewState private var capturing = false
+    @ViewState private var capture = ShortcutCapture()
     @ViewState private var login = false
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -141,15 +142,23 @@ struct PreferencesView: View {
     }
     private func captureShortcut() {
         endCapture(); capturing = true
-        captureMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if event.keyCode == 53 { endCapture(); return nil }
-            let mask: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
-            let flags = event.modifierFlags.intersection(mask)
-            guard !flags.isEmpty || [96, 97, 98, 99, 100, 101, 109, 111].contains(event.keyCode) else { NSSound.beep(); return nil }
-            store.preferences.shortcutKeyCode = event.keyCode
-            store.preferences.shortcutModifiers = UInt64(flags.rawValue)
-            endCapture(); return nil
+        captureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+            let modifierChange = event.type == .flagsChanged
+            let outcome = modifierChange
+                ? capture.flagsChanged(keyCode: event.keyCode, flags: event.modifierFlags)
+                : capture.keyDown(keyCode: event.keyCode, flags: event.modifierFlags)
+            switch outcome {
+            case .pending: break
+            case .cancel: endCapture()
+            case .reject: NSSound.beep()
+            case let .record(keyCode, modifiers):
+                store.preferences.shortcutKeyCode = keyCode
+                store.preferences.shortcutModifiers = modifiers
+                endCapture()
+            }
+            // Note (Yifei Leng): Pass modifier changes through so AppKit keeps an accurate modifier state.
+            return modifierChange ? event : nil
         }
     }
-    private func endCapture() { if let captureMonitor { NSEvent.removeMonitor(captureMonitor) }; captureMonitor = nil; capturing = false }
+    private func endCapture() { if let captureMonitor { NSEvent.removeMonitor(captureMonitor) }; captureMonitor = nil; capturing = false; capture = ShortcutCapture() }
 }

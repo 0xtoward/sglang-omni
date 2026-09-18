@@ -91,7 +91,9 @@ final class AppModel: ObservableObject {
         if p.shortcutModifiers & CGEventFlags.maskAlternate.rawValue != 0 { label += "⌥" }
         if p.shortcutModifiers & CGEventFlags.maskShift.rawValue != 0 { label += "⇧" }
         if p.shortcutModifiers & CGEventFlags.maskCommand.rawValue != 0 { label += "⌘" }
-        return label + ([UInt16(49): L("shortcut.space"), 63: "Fn", 96: "F5", 97: "F6", 100: "F8", 101: "F9"][p.shortcutKeyCode] ?? L("shortcut.key", String(p.shortcutKeyCode)))
+        let names: [UInt16: String] = [49: L("shortcut.space"), 63: "Fn", 96: "F5", 97: "F6", 100: "F8", 101: "F9",
+                                       54: "⌘", 55: "⌘", 56: "⇧", 60: "⇧", 58: "⌥", 61: "⌥", 59: "⌃", 62: "⌃"]
+        return label + (names[p.shortcutKeyCode] ?? L("shortcut.key", String(p.shortcutKeyCode)))
     }
 
     private func configureShortcut(_ preferences: Preferences) {

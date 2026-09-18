@@ -45,7 +45,8 @@ On first launch:
    Keep the input focused until the result is inserted.
 4. Press **Esc** to cancel. To use push-to-talk, enable **Hold shortcut to talk**
    in Settings, hold the entire shortcut while speaking, and release it to
-   finish. You can also record a custom shortcut.
+   finish. You can also record a custom shortcut, including a single modifier
+   key such as **Fn**: press and release it on its own while recording.
 5. The default writing style is **verbatim**, which needs no text API. Configure
    [a text model](#text-model-api) when you want cleanup, translation, editing, or
    answers to questions.
