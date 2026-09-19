@@ -59,10 +59,10 @@ def test_encoder_loads_native_config_from_snapshot_links(
         raise ConfigLoaded
 
     if encoder == "image":
-        monkeypatch.setattr(image_encoder, "_init_sglang_tp", stop_before_weights)
+        monkeypatch.setattr(image_encoder, "init_sglang_tp", stop_before_weights)
         constructor = image_encoder.MiniCPMOImageEncoder
     else:
-        monkeypatch.setattr(audio_encoder, "_audio_config_object", stop_before_weights)
+        monkeypatch.setattr(audio_encoder, "audio_config_object", stop_before_weights)
         constructor = audio_encoder.MiniCPMOAudioEncoder
 
     with pytest.raises(ConfigLoaded):
@@ -74,8 +74,8 @@ def test_native_config_preserves_component_dictionaries(snapshot: Path) -> None:
     raw = json.loads((snapshot / "config.json").read_text())
     for name in ("vision_config", "audio_config", "tts_config"):
         assert getattr(config, name) == raw[name]
-    assert image_encoder._vision_config_object(config).hidden_size == 32
-    assert audio_encoder._audio_config_object(config).d_model == 32
+    assert image_encoder.vision_config_object(config).hidden_size == 32
+    assert audio_encoder.audio_config_object(config).d_model == 32
     assert config.get_text_config().hidden_size == 64
 
 

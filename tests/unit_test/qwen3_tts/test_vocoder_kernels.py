@@ -42,7 +42,7 @@ def test_fuse_vocoder_decoder_keeps_originals_on_prewarm_failure(
     def fail_prewarm(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("prewarm failed")
 
-    monkeypatch.setattr(vocoder_kernels, "_prewarm_replacements", fail_prewarm)
+    monkeypatch.setattr(vocoder_kernels, "prewarm_replacements", fail_prewarm)
 
     assert vocoder_kernels.fuse_vocoder_decoder(decoder) == 0
     assert decoder[0] is first
@@ -83,7 +83,7 @@ def test_fused_snake_beta_cuda_parity_uses_kernel(
     )
     expected = original(x)
     launches: list[tuple[int, int, int]] = []
-    original_launch = vocoder_kernels._launch
+    original_launch = vocoder_kernels.launch
 
     def record_launch(
         hidden_states: torch.Tensor,
@@ -93,7 +93,7 @@ def test_fused_snake_beta_cuda_parity_uses_kernel(
         launches.append(tuple(hidden_states.shape))
         return original_launch(hidden_states, alpha, beta)
 
-    monkeypatch.setattr(vocoder_kernels, "_launch", record_launch)
+    monkeypatch.setattr(vocoder_kernels, "launch", record_launch)
 
     actual = vocoder_kernels.fused_snake_beta(x, original.alpha, original.beta)
 

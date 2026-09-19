@@ -133,10 +133,10 @@ def _payload(
 
 
 def test_chat_api_forwards_reference_to_vocoder() -> None:
-    from sglang_omni.client.client import _build_params
+    from sglang_omni.client.client import build_params
     from sglang_omni.serve.openai_api import (
         ChatCompletionRequest,
-        _build_chat_generate_request,
+        build_chat_generate_request,
     )
 
     reference = _data_uri(b"reference")
@@ -146,9 +146,9 @@ def test_chat_api_forwards_reference_to_vocoder() -> None:
         modalities=["text", "audio"],
         audio={"format": "wav", "ref_audio": reference},
     )
-    generate_request = _build_chat_generate_request(request)
+    generate_request = build_chat_generate_request(request)
     payload = _payload(
-        params=_build_params(generate_request), metadata=generate_request.metadata
+        params=build_params(generate_request), metadata=generate_request.metadata
     )
     assert code2wav_reference_audio(project_talker_to_code2wav(payload)) == b"reference"
 
