@@ -11,6 +11,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from transformers import AutoTokenizer
 
 from sglang_omni.models.minicpm_o.bootstrap import (
     create_talker_scheduler,
@@ -21,16 +22,10 @@ from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
 from sglang_omni.models.minicpm_o.components.image_encoder import MiniCPMOImageEncoder
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
 from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
+from sglang_omni.models.minicpm_o.merge import build_decode_result
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
-from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
-    StreamingDetokenizeScheduler,
-    create_streaming_detokenize_scheduler,
-)
-
-# Note (Chenyang): We should refactor the streaming detokenizer
-# Never import a class from a different model.
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -43,6 +38,7 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.scheduling.streaming_detokenizer import StreamingDetokenizeScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.misc import avail_gpu_mem
@@ -254,7 +250,18 @@ def create_code2wav_executor(
 
 
 def create_decode_executor(model_path: str) -> StreamingDetokenizeScheduler:
-    return create_streaming_detokenize_scheduler(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    eos_token_id = tokenizer.eos_token_id
+    return StreamingDetokenizeScheduler(
+        tokenizer,
+        eos_token_id,
+        build_result=lambda payload, is_streaming: build_decode_result(
+            payload,
+            tokenizer=tokenizer,
+            eos_token_id=eos_token_id,
+            is_streaming=is_streaming,
+        ),
+    )
 
 
 def create_sglang_thinker_executor_from_config(

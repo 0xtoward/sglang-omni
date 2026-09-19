@@ -205,6 +205,11 @@ speculative generality.
   `__init__.py`. Keep package re-exports minimal and define an explicit
   `__all__`; no wildcard imports. For third-party libraries, prefer their
   documented public import paths (e.g. `from pydantic import BaseModel`).
+- Do not import a class or factory from a sibling model package. Shared
+  runtime belongs in sglang_omni/scheduling (or another non-model module).
+  Wrong: MiniCPM-o stages importing Qwen3-Omni StreamingDetokenizeScheduler.
+  Right: both models import the shared scheduler and pass their own
+  build_result.
 
 ## TOOLING
 
