@@ -38,26 +38,28 @@ from __future__ import annotations
 import logging
 
 import torch
+from sglang.srt.utils.custom_op import register_custom_op
 
 try:  # keep the module importable when Triton is unavailable
     import triton
     import triton.language as tl
     from triton.language.extra import libdevice
 
-    _HAS_TRITON = True
+    HAS_TRITON = True
 except Exception:  # pragma: no cover
     triton = None
     tl = None
     libdevice = None
-    _HAS_TRITON = False
+    HAS_TRITON = False
 
-_ALLOWED_CHANNELS = frozenset((1536, 768, 384, 192, 96))
-_MAX_BATCH = 8
-_MAX_T = 65536
+ALLOWED_CHANNELS = frozenset((1536, 768, 384, 192, 96))
+MAX_BATCH = 8
+# note (ratish): CUDA caps the launch's second axis, cdiv(T, 1024), at 65,535
+MAX_T = 65535 * 1024
 
 logger = logging.getLogger(__name__)
 
-if _HAS_TRITON:
+if HAS_TRITON:
 
     @triton.jit(do_not_specialize=["C", "T"])
     def _snake_beta_kernel(
@@ -103,6 +105,8 @@ def _block_for(t: int) -> int:
     return 1024
 
 
+# note (ratish): opaque to torch.compile, which cannot trace the Triton launch
+@register_custom_op(op_name="qwen3_tts_fused_snake_beta", mutates_args=[], out_shape=0)
 def _launch(x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor) -> torch.Tensor:
     batch, channels, t = x.shape
     out = torch.empty_like(x)
@@ -131,12 +135,12 @@ def fused_snake_beta(
 
     Envelope: x [B, C, T] bfloat16 contiguous CUDA, alpha/beta
     bfloat16 [C] on the same device, 1 <= B <= 8, C in {1536, 768, 384,
-    192, 96}, 1 <= T <= 65536. Inside the envelope the result is bitwise
+    192, 96}, 1 <= T <= 65535 * 1024. Inside the envelope the result is bitwise
     identical to the eager qwen-tts SnakeBeta.forward. Never raises and
     never synchronizes with the host (safe under CUDA graph capture).
     """
     try:
-        if not _HAS_TRITON:
+        if not HAS_TRITON:
             return None
         if (
             not isinstance(x, torch.Tensor)
@@ -157,9 +161,9 @@ def fused_snake_beta(
         if x.dim() != 3 or not x.is_contiguous():
             return None
         batch, channels, t = x.shape
-        if channels not in _ALLOWED_CHANNELS:
+        if channels not in ALLOWED_CHANNELS:
             return None
-        if not (1 <= batch <= _MAX_BATCH) or not (1 <= t <= _MAX_T):
+        if not (1 <= batch <= MAX_BATCH) or not (1 <= t <= MAX_T):
             return None
         if alpha.shape != (channels,) or beta.shape != (channels,):
             return None
@@ -212,7 +216,7 @@ def _prewarm(device: torch.device) -> None:
     covers every envelope shape; a JIT compile can then never happen inside
     a stream capture.
     """
-    if not _HAS_TRITON or device.type != "cuda":
+    if not HAS_TRITON or device.type != "cuda":
         return
     with torch.cuda.device(device):
         for t in (2, 128, 256, 1024):  # one T per BLOCK bucket
@@ -247,7 +251,7 @@ def fuse_vocoder_decoder(decoder: torch.nn.Module) -> int:
             if _is_snake_beta(child):
                 replacements.append((module, name))
 
-    if replacements and _HAS_TRITON and torch.cuda.is_available():
+    if replacements and HAS_TRITON and torch.cuda.is_available():
         try:
             # Note(Jiaxin): compile before mutating the decoder so a failed
             # prewarm leaves the proven eager implementation intact.

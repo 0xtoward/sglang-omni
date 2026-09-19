@@ -295,7 +295,7 @@ def create_vocoder_executor(
     initial_cuda_graph: bool = True,
     enable_deterministic_inference: bool = False,
     followup_cuda_graph: bool = True,
-    fused_snake_activation: bool = False,
+    fused_snake_activation: bool = True,
     enable_stateful_codec_decoder: bool = True,
     codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
     incremental_codec_cuda_graph: bool | None = None,
