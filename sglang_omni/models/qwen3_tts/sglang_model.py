@@ -21,7 +21,7 @@ from sglang.srt.layers.quantization.unquant import (
     get_bf16_gemm_backend,
 )
 from sglang.srt.layers.sampler import multinomial_with_seed
-from sglang.srt.runtime_context import get_exec, get_parallel
+from sglang.srt.runtime_context import get_context, get_exec, get_parallel, get_schedule
 from sglang.srt.utils import add_prefix
 from sglang.srt.utils.common import is_pin_memory_available
 from torch import nn
@@ -49,7 +49,6 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +289,7 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         self.end_layer = config.num_hidden_layers
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        max_batch_size = get_global_server_args().max_running_requests
+        max_batch_size = get_schedule().max_running_requests
         self._feedback_buffer = torch.zeros(
             max_batch_size,
             config.hidden_size,
@@ -924,8 +923,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             self.speaker_encoder = None
         self.speech_tokenizer = None
 
-        server_args = get_global_server_args()
-        max_batch_size = server_args.max_running_requests
+        server_args = get_context().server_args
+        max_batch_size = get_schedule().max_running_requests
         hidden_size = config.hidden_size
         predictor_len = config.num_code_groups + 1
         device = self.model.codec_embedding.weight.device
