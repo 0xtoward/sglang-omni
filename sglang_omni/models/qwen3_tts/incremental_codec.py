@@ -691,5 +691,10 @@ class Qwen3TTSIncrementalDecoder:
         shape = (int(codes.shape[0]), int(codes.shape[-1]))
         if shape in self._compiled_shapes:
             return
-        self._compiled_kernel(codes, state)
+        # note (luojiaxuan): one trace per (batch, width) pair, past the default
+        # 8; ``decode`` never compiles a new shape, so the limit only matters here.
+        with torch._dynamo.config.patch(
+            recompile_limit=max(torch._dynamo.config.recompile_limit, 64)
+        ):
+            self._compiled_kernel(codes, state)
         self._compiled_shapes.add(shape)

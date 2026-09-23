@@ -2429,6 +2429,9 @@ def test_qwen3_tts_window_frames_build_the_window_runner(
         0
     ]._compile_fresh_frames == frozenset({8})
     assert compiled._initial_incremental_decode_graphs._compile_fresh_frames == (
+        frozenset({1, 2})
+    )
+    assert scheduler._initial_incremental_decode_graphs._compile_fresh_frames == (
         frozenset()
     )
 
