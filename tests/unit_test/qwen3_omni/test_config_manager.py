@@ -284,24 +284,17 @@ def test_qwen3_omni_gfx950_bf16_config_uses_colocated_budgets() -> None:
     }
 
 
-TALKER_ADMISSION_ENV = {"SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "256"}
-
-
 @pytest.mark.parametrize(
     ("is_rocm", "expected_env"),
     [
         (
             True,
             {
-                **TALKER_ADMISSION_ENV,
                 "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0",
                 "SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1",
             },
         ),
-        (
-            False,
-            {**TALKER_ADMISSION_ENV, "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0"},
-        ),
+        (False, {"SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0"}),
     ],
 )
 def test_qwen3_omni_talker_stage_env_defaults(
@@ -309,7 +302,7 @@ def test_qwen3_omni_talker_stage_env_defaults(
     is_rocm: bool,
     expected_env: dict[str, str],
 ) -> None:
-    """The admission clip preserves Talker determinism defaults on each platform."""
+    """Talker disables fused atomic MoE finalize; ROCm also disables aiter greedy."""
     monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: is_rocm)
 
     for config_cls in (
@@ -320,30 +313,6 @@ def test_qwen3_omni_talker_stage_env_defaults(
 
         assert _stage(config, "talker_ar").env == expected_env
         assert _stage(config, "thinker").env == {}
-
-
-@pytest.mark.parametrize("is_rocm", [False, True])
-def test_qwen3_omni_stage_env_config_overrides_talker_default(
-    monkeypatch: pytest.MonkeyPatch,
-    is_rocm: bool,
-) -> None:
-    monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: is_rocm)
-    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
-    config = manager.merge_config(
-        {
-            "talker_ar.env.SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "512",
-            "thinker.env.SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "32",
-        }
-    )
-
-    assert _stage(config, "talker_ar").env == {
-        "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "512",
-        "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0",
-        **({"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"} if is_rocm else {}),
-    }
-    assert _stage(config, "thinker").env == {
-        "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "32"
-    }
 
 
 def test_qwen3_omni_xpu_b60_example_config_loads_and_plans() -> None:
