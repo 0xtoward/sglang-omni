@@ -322,10 +322,10 @@ class MiniMaxMusic3DIT(nn.Module):
         dtype = next(self.parameters()).dtype
         shape = (2, 2048, warmup_mel_length)
         with torch.inference_mode(), set_forward_context(0, None):
-            self.diffusion_transformer.transformer(
-                torch.zeros((2, 128, warmup_mel_length), device=device, dtype=dtype),
-                torch.zeros((2,), device=device, dtype=dtype),
-                torch.zeros(shape, device=device, dtype=dtype),
+            self.diffusion_transformer(
+                x=torch.zeros((2, 128, warmup_mel_length), device=device, dtype=dtype),
+                t=torch.zeros((2,), device=device, dtype=dtype),
+                align_cond=torch.zeros(shape, device=device, dtype=dtype),
             )
 
     def enable_cache_dit(
