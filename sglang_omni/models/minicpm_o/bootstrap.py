@@ -75,11 +75,7 @@ def create_talker_scheduler(
     if want_cuda_graph:
         init_sglang_cuda_graphs(model_worker)
 
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=False,
-        capture_hidden_layers=None,
-        model=model,
-    )
+    output_proc = SGLangOutputProcessor()
     model_runner = MiniCPMOTalkerModelRunner(model_worker, output_proc)
 
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
@@ -184,8 +180,6 @@ def create_thinker_scheduler(
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=speech_enabled,
-        capture_hidden_layers=None,
-        model=None,
         should_emit_hidden=_should_emit_hidden if speech_enabled else None,
     )
     model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc)

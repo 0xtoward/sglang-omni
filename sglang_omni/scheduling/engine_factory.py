@@ -217,11 +217,7 @@ class SGLangGenerationEngineBuilder(ABC):
                 generation_cuda_graph_enabled=want_cuda_graph,
             )
 
-            output_proc = sglang_backend.SGLangOutputProcessor(
-                capture_hidden=False,
-                capture_hidden_layers=None,
-                model=model,
-            )
+            output_proc = sglang_backend.SGLangOutputProcessor()
             self.setup_runtime_resources(model, server_args)
             scheduler, model_runner = self.build_runtime(
                 model_worker=model_worker,

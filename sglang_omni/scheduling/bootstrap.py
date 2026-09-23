@@ -70,38 +70,6 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
         model_config.is_multimodal = original_is_multimodal
 
 
-def hidden_capture_max_tokens() -> int:
-    """Largest token-row count a single thinker forward can produce.
-
-    Covers chunked prefill, non-chunked prefill, decode batches, and every
-    configured CUDA graph bucket maximum, so the capture buffers are large
-    enough for both eager forwards and graph replay.
-    """
-    from sglang.srt.runtime_context import get_exec, get_model, get_schedule
-
-    chunked_prefill_size = get_schedule().chunked_prefill_size
-    candidates: list[Any] = []
-    if chunked_prefill_size is not None and chunked_prefill_size > 0:
-        candidates.append(chunked_prefill_size)
-    else:
-        candidates.append(get_schedule().max_prefill_tokens)
-        # Note(wenyao): Without chunking, SGLang always admits the first prefill request even
-        # when it exceeds the batch token budget, up to the model context bound.
-        candidates.append(get_model().context_length)
-    candidates.append(get_schedule().max_running_requests)
-    candidates.append(get_exec().graph.cuda_graph_config.decode.max_bs)
-    candidates.append(get_exec().graph.cuda_graph_config.prefill.max_bs)
-
-    positive = [int(value) for value in candidates if value is not None and value > 0]
-    if not positive:
-        raise ValueError(
-            "Cannot derive hidden capture capacity: none of chunked_prefill_size, "
-            "max_prefill_tokens, context_length, max_running_requests, or the "
-            "CUDA graph batch maxima is positive"
-        )
-    return max(positive)
-
-
 def create_sglang_infrastructure(
     server_args: Any,
     gpu_id: int,
@@ -110,7 +78,6 @@ def create_sglang_infrastructure(
     nccl_port: int | None = None,
     model_arch_override: str | None = None,
     weight_prefix: str | None = None,
-    capture_hidden_layers: list[int] | None = None,
     total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
@@ -179,18 +146,6 @@ def create_sglang_infrastructure(
             server_args=server_args,
             gpu_id=gpu_id,
             tp_rank=tp_rank,
-        )
-
-    if capture_hidden_layers:
-        from sglang_omni.model_runner._hidden_capture import (
-            install_hidden_capture_hooks,
-        )
-
-        model = model_worker.model_runner.model
-        install_hidden_capture_hooks(
-            model,
-            capture_hidden_layers,
-            max_tokens=hidden_capture_max_tokens(),
         )
 
     if before_memory_pool is not None:

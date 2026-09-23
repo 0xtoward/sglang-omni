@@ -30,7 +30,6 @@ def test_ming_bootstrap_wires_ming_thinker_model_runner() -> None:
 
     assert "MingThinkerModelRunner" in source
     assert "SGLangOutputProcessor" in source
-    assert "model=model_worker.model_runner.model" in source
     assert "model_runner = MingThinkerModelRunner(model_worker, output_proc)" in source
     assert "model_runner=model_runner" in source
     assert 'model_arch_override="BailingMoeV2ForCausalLM"' in source

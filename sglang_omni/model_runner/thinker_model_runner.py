@@ -54,9 +54,8 @@ class ThinkerModelRunner(ModelRunner):
             )
         return None
 
-    # note (jingwen): thinker streaming captures hidden states through local
-    # forward hooks; both SGLang hooks must return NULL because LAST can disable
-    # CUDA-graph replay.
+    # note (ratish): the thinker reads no SGLang hidden states, and a request asking
+    # for them would raise the batch capture mode above the graph's and run eager
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: Any, requests: list
     ):
@@ -409,10 +408,11 @@ class ThinkerModelRunner(ModelRunner):
         )
 
     def lookahead_eligible(self, batch: Any) -> bool:
-        """Reject batches whose state would diverge under one-step lookahead.
+        """Reject batches that must decode synchronously.
 
-        Audio can overwrite hidden-state capture before resolve; stateful or
-        unsupported sampling options use the synchronous path for parity.
+        MiniCPM-o speech reads hidden states at resolve, after the next launch
+        overwrote them; a Qwen speech lookahead takes GPU time from the colocated
+        talker. History-dependent or unsupported sampling needs sync for parity.
         """
         from sglang_omni.models.qwen3_omni.request_builders import (
             should_generate_audio_output,

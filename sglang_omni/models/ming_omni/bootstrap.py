@@ -66,11 +66,7 @@ def create_thinker_scheduler(
         model_arch_override="BailingMoeV2ForCausalLM",
     )
 
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=False,
-        capture_hidden_layers=None,
-        model=model_worker.model_runner.model,
-    )
+    output_proc = SGLangOutputProcessor()
     model_runner = MingThinkerModelRunner(model_worker, output_proc)
 
     image_token_id = getattr(llm_cfg, "image_patch_token", None)
