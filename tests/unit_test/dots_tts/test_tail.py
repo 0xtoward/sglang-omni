@@ -27,13 +27,13 @@ LATENT_DIM = 6
 PATCH_SIZE = 2
 NFE = 2
 SLOT_DIMS = {
-    "_dit_k": 2,
-    "_dit_v": 2,
-    "_encoder_k": 1,
-    "_encoder_v": 1,
-    "_encoder_conv_tail": 0,
-    "_window": 0,
-    "_all_mods": 1,
+    "dit_k": 2,
+    "dit_v": 2,
+    "encoder_k": 1,
+    "encoder_v": 1,
+    "encoder_conv_tail": 0,
+    "window": 0,
+    "all_mods": 1,
 }
 
 
@@ -163,8 +163,8 @@ def _assert_live_state_close(actual, expected) -> None:
         )
     for slot in range(slots):
         assert torch.equal(
-            actual._generators[slot].get_state(),
-            expected._generators[slot].get_state(),
+            actual.generators[slot].get_state(),
+            expected.generators[slot].get_state(),
         )
     assert actual._fm_seq_len == expected._fm_seq_len
     assert actual.encoder_seq_len == expected.encoder_seq_len
@@ -208,9 +208,9 @@ def test_padding_request_does_not_allocate_on_cpu(optimize: bool) -> None:
         pad_to_bucket=True,
     )
 
-    assert acoustic_tail._cuda_graph_enabled is False
-    assert acoustic_tail._pad_to_bucket is False
-    assert acoustic_tail._graph_batch_buckets == (1, 4, 8)
+    assert acoustic_tail.cuda_graph_enabled is False
+    assert acoustic_tail.pad_to_bucket is False
+    assert acoustic_tail.graph_batch_buckets == (1, 4, 8)
     for name, slot_dim in SLOT_DIMS.items():
         assert getattr(acoustic_tail, name).shape[slot_dim] == 12
     estimate = acoustic_tail.pool_memory_estimate(acoustic_tail.mods_width)
@@ -618,20 +618,18 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
                         assert torch.count_nonzero(value[2:]).item() == 0
 
     assert graph.graph_replays == {"meanflow": 5, "semantic_encoder": 5}
-    assert graph._graph_padded_replays == {"meanflow": 4, "semantic_encoder": 4}
+    assert graph.graph_padded_replays == {"meanflow": 4, "semantic_encoder": 4}
     assert graph.graph_misses == {"meanflow": 1, "semantic_encoder": 1}
     assert graph.dit_contiguous_view_steps == 0
 
     # note (0xtoward): Filler writes stay outside every allocatable slot.
-    assert graph._pad_bin_slot == slots
+    assert graph.pad_bin_slot == slots
     for name, slot_dim in SLOT_DIMS.items():
         expected_rows = (
-            slots
-            if name in {"_dit_k", "_dit_v", "_encoder_k", "_encoder_v"}
-            else slots + 1
+            slots if name in {"dit_k", "dit_v", "encoder_k", "encoder_v"} else slots + 1
         )
         assert getattr(graph, name).size(slot_dim) == expected_rows
-    assert eager._window.shape[0] == slots
+    assert eager.window.shape[0] == slots
     estimate = graph.pool_memory_estimate(graph.mods_width)
     assert estimate.num_slots == slots
     assert estimate.total_bytes == graph.allocated_pool_bytes()
@@ -698,12 +696,12 @@ def test_inactive_padding_preserves_cuda_pool_storage(
         pad_to_bucket=pad_to_bucket,
     )
 
-    assert not actual._pad_to_bucket
-    assert actual._graph_batch_buckets == buckets
-    assert not actual._meanflow_pad_graphs
+    assert not actual.pad_to_bucket
+    assert actual.graph_batch_buckets == buckets
+    assert not actual.meanflow_pad_graphs
     assert actual.allocated_pool_bytes() == baseline.allocated_pool_bytes()
-    assert [pool.shape for pool in actual._pool_tensors()] == [
-        pool.shape for pool in baseline._pool_tensors()
+    assert [pool.shape for pool in actual.pool_tensors()] == [
+        pool.shape for pool in baseline.pool_tensors()
     ]
 
 
@@ -729,7 +727,7 @@ def _counter_records(caplog) -> list[logging.LogRecord]:
 
 
 @pytest.mark.parametrize(
-    "graph_kind", ["meanflow_graphs", "_meanflow_pad_graphs", "encoder_graphs"]
+    "graph_kind", ["meanflow_graphs", "meanflow_pad_graphs", "encoder_graphs"]
 )
 def test_tail_logs_graph_counters_every_50_steps(caplog, graph_kind: str) -> None:
     acoustic_tail, slot = _seed_single_slot_tail(patch_capacity=60)

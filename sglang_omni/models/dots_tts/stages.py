@@ -426,7 +426,7 @@ def create_sglang_latent_engine_executor(
     optimize: bool = True,
     max_generate_length: int = 500,
     num_steps: int = 4,
-    enable_acoustic_tail_batch_padding: bool = False,
+    enable_acoustic_tail_batch_padding: bool = True,
     device: str | None = None,
     gpu_id: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,

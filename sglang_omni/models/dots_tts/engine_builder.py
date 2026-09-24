@@ -22,7 +22,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         num_steps: int = 4,
         max_audio_patches: int = 500,
         max_running_requests: int = 16,
-        enable_acoustic_tail_batch_padding: bool = False,
+        enable_acoustic_tail_batch_padding: bool = True,
     ) -> None:
         from sglang_omni.models.dots_tts.hf_config import DOTS_TTS_MODEL_ARCH_OVERRIDE
 

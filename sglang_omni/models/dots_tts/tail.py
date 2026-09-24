@@ -42,12 +42,6 @@ def graph_batch_buckets(
     return tuple(sorted(buckets))
 
 
-def _has_batch_padding_gap(batch_buckets: tuple[int, ...]) -> bool:
-    return any(
-        upper - lower > 1 for lower, upper in zip(batch_buckets, batch_buckets[1:])
-    )
-
-
 def project_attention(
     attn: nn.Module,
     value: torch.Tensor,
@@ -223,7 +217,7 @@ def gib(num_bytes: int) -> float:
 
 @dataclass(frozen=True)
 class AcousticPoolMemoryEstimate:
-    """Eager acoustic-tail pool byte budget matching _allocate_pools shapes."""
+    """Eager acoustic-tail pool byte budget matching allocate_pools shapes."""
 
     dit_kv_bytes: int
     encoder_kv_bytes: int
@@ -433,7 +427,7 @@ class DotsTtsAcousticTail:
         device: torch.device,
         dtype: torch.dtype,
         optimize: bool = False,
-        pad_to_bucket: bool = False,
+        pad_to_bucket: bool = True,
     ) -> None:
         self.spec = spec
         self.device = device
@@ -460,31 +454,36 @@ class DotsTtsAcousticTail:
         self.encoder_heads = int(encoder_attention.num_heads)
         self.encoder_head_dim = int(encoder_attention.head_dim)
 
-        self._graph_context_patch_buckets = tuple(
+        self.graph_context_patch_buckets = tuple(
             patches
             for patches in _GRAPH_CONTEXT_PATCH_BUCKETS
             if patches < spec.patch_capacity
         )
-        self._cuda_graph_enabled = bool(optimize and device.type == "cuda")
+        self.cuda_graph_enabled = bool(optimize and device.type == "cuda")
         padding_graphs_requested = bool(
             pad_to_bucket
-            and self._cuda_graph_enabled
-            and self._graph_context_patch_buckets
+            and self.cuda_graph_enabled
+            and self.graph_context_patch_buckets
         )
-        self._graph_batch_buckets = graph_batch_buckets(
+        self.graph_batch_buckets = graph_batch_buckets(
             spec.num_slots, include_maximum=padding_graphs_requested
         )
-        self._pad_to_bucket = bool(
+        self.pad_to_bucket = bool(
             padding_graphs_requested
-            and _has_batch_padding_gap(self._graph_batch_buckets)
+            and any(
+                upper - lower > 1
+                for lower, upper in zip(
+                    self.graph_batch_buckets, self.graph_batch_buckets[1:]
+                )
+            )
         )
-        if self._pad_to_bucket:
+        if self.pad_to_bucket:
             from sglang_omni.models.dots_tts.tail_kv import gather_kv, scatter_kv
 
-            self._gather_kv = gather_kv
-            self._scatter_kv = scatter_kv
+            self.gather_kv = gather_kv
+            self.scatter_kv = scatter_kv
         # note (0xtoward): Filler writes must never reach an allocatable slot.
-        self._pad_bin_slot = spec.num_slots
+        self.pad_bin_slot = spec.num_slots
         self.mods_width = int(dit.fused_adaln[-1].out_features)
         self.allocate_pools(self.mods_width)
         self.times = torch.linspace(0.0, 1.0, spec.nfe + 1, device=device, dtype=dtype)
@@ -497,16 +496,16 @@ class DotsTtsAcousticTail:
         self.generators: list[torch.Generator | None] = [None] * spec.num_slots
         self.free_slots = list(reversed(range(spec.num_slots)))
         self.meanflow_graphs: dict[tuple[int, int], CapturedTailGraph] = {}
-        self._meanflow_pad_graphs: dict[tuple[int, int], CapturedTailGraph] = {}
+        self.meanflow_pad_graphs: dict[tuple[int, int], CapturedTailGraph] = {}
         self.encoder_graphs: dict[tuple[int, int], CapturedTailGraph] = {}
         self.graph_pool: Any | None = None
         self.capture_stream: torch.cuda.Stream | None = None
         self.graph_replays: Counter[str] = Counter()
         self.graph_misses: Counter[str] = Counter()
         self.tail_steps = 0
-        self._graph_padded_replays: Counter[str] = Counter()
+        self.graph_padded_replays: Counter[str] = Counter()
         self.dit_contiguous_view_steps = 0
-        if self._cuda_graph_enabled:
+        if self.cuda_graph_enabled:
             self.capture_cuda_graphs()
 
     def pool_tensors(self) -> tuple[torch.Tensor, ...]:
@@ -540,7 +539,7 @@ class DotsTtsAcousticTail:
             encoder_conv_padding=int(self.encoder.ds_proj.left_padding),
             mods_width=int(mods_width),
             dtype=self.dtype,
-            reserved_rows=1 if self._pad_to_bucket else 0,
+            reserved_rows=1 if self.pad_to_bucket else 0,
             reserved_kv_rows=0,
         )
 
@@ -582,7 +581,7 @@ class DotsTtsAcousticTail:
         zeros = partial(torch.zeros, device=self.device, dtype=self.dtype)
         # note (0xtoward): Dummy history is invisible; only its small auxiliary
         # state needs a reserved row. Masked copies never access dummy KV.
-        pool_rows = spec.num_slots + (1 if self._pad_to_bucket else 0)
+        pool_rows = spec.num_slots + (1 if self.pad_to_bucket else 0)
         self.dit_k = zeros(
             spec.nfe,
             self.dit_layers,
@@ -681,7 +680,7 @@ class DotsTtsAcousticTail:
     @property
     def has_captured_graphs(self) -> bool:
         return bool(
-            self.meanflow_graphs or self._meanflow_pad_graphs or self.encoder_graphs
+            self.meanflow_graphs or self.meanflow_pad_graphs or self.encoder_graphs
         )
 
     def log_graph_counters(self) -> None:
@@ -705,8 +704,8 @@ class DotsTtsAcousticTail:
             self.graph_replays["semantic_encoder"],
             self.graph_misses["semantic_encoder"],
             # note (0xtoward): Padded replays are a subset of total replays.
-            self._graph_padded_replays["meanflow"],
-            self._graph_padded_replays["semantic_encoder"],
+            self.graph_padded_replays["meanflow"],
+            self.graph_padded_replays["semantic_encoder"],
         )
 
     def note_decode_cycle(self) -> None:
@@ -897,12 +896,12 @@ class DotsTtsAcousticTail:
         graph = self.select_graph(self.meanflow_graphs, len(slots), capacity)
         pad = 0
         if graph is None:
-            graph, pad = self._select_graph_padded(
+            graph, pad = self.select_graph_padded(
                 self.meanflow_graphs,
                 len(slots),
                 capacity,
                 skip_batch=spec.num_slots,
-                extra=self._meanflow_pad_graphs,
+                extra=self.meanflow_pad_graphs,
             )
         if graph is None:
             self.graph_misses["meanflow"] += 1
@@ -916,8 +915,8 @@ class DotsTtsAcousticTail:
             )
         else:
             if pad:
-                bin_slot = self._pad_bin_slot
-                self._graph_padded_replays["meanflow"] += 1
+                bin_slot = self.pad_bin_slot
+                self.graph_padded_replays["meanflow"] += 1
                 # note (0xtoward): Refresh filler inputs in place; do not
                 # allocate and concatenate temporary padded tensors.
                 real_rows = len(slots)
@@ -1009,11 +1008,12 @@ class DotsTtsAcousticTail:
         mask = self.dit_mask[:rows, :, :, : capacity + query_len]
         self.fill_mask(mask, capacity, persistent_index, unit, unit)
         cos, sin = rotary_cos_sin(self.dit_rotary, persistent_index, query_len)
-        token_index = persistent_index.reshape(1, rows, 1) + torch.arange(
-            unit, device=self.device
-        ).reshape(1, 1, unit)
-        layer_index = self.dit_layer_index.reshape(self.dit_layers, 1, 1)
-        batch_index = slot_index.reshape(1, rows, 1)
+        if not self.pad_to_bucket or direct_kv:
+            token_index = persistent_index.reshape(1, rows, 1) + torch.arange(
+                unit, device=self.device
+            ).reshape(1, 1, unit)
+            layer_index = self.dit_layer_index.reshape(self.dit_layers, 1, 1)
+            batch_index = slot_index.reshape(1, rows, 1)
         promote = slice(capacity, capacity + unit)
         with sdpa_kernel(_TAIL_SDPA_BACKENDS):
             for ode_index in range(spec.nfe):
@@ -1023,8 +1023,8 @@ class DotsTtsAcousticTail:
                 else:
                     keys = self.dit_scratch_k[:, :rows, :, : capacity + query_len]
                     values = self.dit_scratch_v[:, :rows, :, : capacity + query_len]
-                    if self._pad_to_bucket:
-                        self._gather_kv(
+                    if self.pad_to_bucket:
+                        self.gather_kv(
                             self.dit_k[ode_index],
                             self.dit_v[ode_index],
                             slot_index,
@@ -1074,8 +1074,8 @@ class DotsTtsAcousticTail:
                 )
                 duration = self.times[ode_index + 1] - self.times[ode_index]
                 latent = (latent + duration * velocity).clone()
-                if self._pad_to_bucket and not direct_kv:
-                    self._scatter_kv(
+                if self.pad_to_bucket and not direct_kv:
+                    self.scatter_kv(
                         keys[:, :, :, promote],
                         values[:, :, :, promote],
                         slot_index,
@@ -1143,7 +1143,7 @@ class DotsTtsAcousticTail:
         graph = self.select_graph(self.encoder_graphs, rows, capacity)
         pad = 0
         if graph is None:
-            graph, pad = self._select_graph_padded(self.encoder_graphs, rows, capacity)
+            graph, pad = self.select_graph_padded(self.encoder_graphs, rows, capacity)
         if graph is None:
             self.graph_misses["semantic_encoder"] += 1
             embeddings = self.encode_feedback_core(
@@ -1154,8 +1154,8 @@ class DotsTtsAcousticTail:
             )
         else:
             if pad:
-                bin_slot = self._pad_bin_slot
-                self._graph_padded_replays["semantic_encoder"] += 1
+                bin_slot = self.pad_bin_slot
+                self.graph_padded_replays["semantic_encoder"] += 1
                 graph.inputs["slots"][:rows].copy_(slot_index)
                 graph.inputs["slots"][rows:].fill_(bin_slot)
                 graph.inputs["starts"][:rows].copy_(start_index)
@@ -1194,8 +1194,8 @@ class DotsTtsAcousticTail:
             cos, sin = rotary_cos_sin(self.encoder_rotary, start_index, block)
         keys = self.encoder_scratch_k[:, :rows, :, : capacity + block]
         values = self.encoder_scratch_v[:, :rows, :, : capacity + block]
-        if self._pad_to_bucket:
-            self._gather_kv(
+        if self.pad_to_bucket:
+            self.gather_kv(
                 self.encoder_k,
                 self.encoder_v,
                 slot_index,
@@ -1225,14 +1225,9 @@ class DotsTtsAcousticTail:
                 cos,
                 sin,
             )
-        token_index = start_index.reshape(1, rows, 1) + torch.arange(
-            block, device=self.device
-        ).reshape(1, 1, block)
-        layer_index = self.encoder_layer_index.reshape(self.encoder_layers, 1, 1)
-        batch_index = slot_index.reshape(1, rows, 1)
         promote = slice(capacity, capacity + block)
-        if self._pad_to_bucket:
-            self._scatter_kv(
+        if self.pad_to_bucket:
+            self.scatter_kv(
                 keys[:, :, :, promote],
                 values[:, :, :, promote],
                 slot_index,
@@ -1241,6 +1236,11 @@ class DotsTtsAcousticTail:
                 self.encoder_v,
             )
         else:
+            token_index = start_index.reshape(1, rows, 1) + torch.arange(
+                block, device=self.device
+            ).reshape(1, 1, block)
+            layer_index = self.encoder_layer_index.reshape(self.encoder_layers, 1, 1)
+            batch_index = slot_index.reshape(1, rows, 1)
             self.encoder_k[layer_index, batch_index, :, token_index] = keys[
                 :, :, :, promote
             ].permute(0, 1, 3, 2, 4)
@@ -1266,7 +1266,7 @@ class DotsTtsAcousticTail:
         )
         return None if bucket is None else graphs[(rows, bucket)]
 
-    def _select_graph_padded(
+    def select_graph_padded(
         self,
         graphs: dict[tuple[int, int], CapturedTailGraph],
         rows: int,
@@ -1277,7 +1277,7 @@ class DotsTtsAcousticTail:
     ) -> tuple[CapturedTailGraph | None, int]:
         # note (0xtoward): Positional captures cannot follow filler slot IDs;
         # use their gather twins. Cap row expansion, not context capacity.
-        if not self._pad_to_bucket:
+        if not self.pad_to_bucket:
             return None, 0
         return select_padded_graph(
             graphs,
@@ -1290,8 +1290,8 @@ class DotsTtsAcousticTail:
 
     @torch.no_grad()
     def capture_cuda_graphs(self) -> None:
-        batch_buckets = self._graph_batch_buckets
-        context_buckets = self._graph_context_patch_buckets
+        batch_buckets = self.graph_batch_buckets
+        context_buckets = self.graph_context_patch_buckets
         if not batch_buckets or not context_buckets:
             return
 
@@ -1324,12 +1324,12 @@ class DotsTtsAcousticTail:
                         patches * self.encoder_block,
                         kind="semantic_encoder",
                     )
-            if self._pad_to_bucket and self.spec.num_slots in batch_buckets:
+            if self.pad_to_bucket:
                 # note (0xtoward): Keep the exact full-batch positional path;
                 # padding to this bucket needs a slot-indexed gather capture.
                 for patches in reversed(context_buckets):
                     self.capture_graph(
-                        self._meanflow_pad_graphs,
+                        self.meanflow_pad_graphs,
                         self.spec.num_slots,
                         patches * self.spec.unit_len,
                         kind="meanflow",
@@ -1342,10 +1342,10 @@ class DotsTtsAcousticTail:
             "meanflow_gather_twins=%d semantic_encoder=%d total=%d "
             "batch_buckets=%s context_patch_buckets=%s",
             len(self.meanflow_graphs),
-            len(self._meanflow_pad_graphs),
+            len(self.meanflow_pad_graphs),
             len(self.encoder_graphs),
             len(self.meanflow_graphs)
-            + len(self._meanflow_pad_graphs)
+            + len(self.meanflow_pad_graphs)
             + len(self.encoder_graphs),
             batch_buckets,
             context_buckets,
@@ -1440,7 +1440,7 @@ class DotsTtsAcousticTail:
             return (
                 "CUDA graph batched tail with eager fallback "
                 f"(meanflow={len(self.meanflow_graphs)}, "
-                f"meanflow_gather_twins={len(self._meanflow_pad_graphs)}, "
+                f"meanflow_gather_twins={len(self.meanflow_pad_graphs)}, "
                 f"semantic_encoder={len(self.encoder_graphs)})"
             )
         return "fused eager batched tail"
