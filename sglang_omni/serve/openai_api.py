@@ -718,6 +718,13 @@ def register_chat_completions(app: FastAPI) -> None:
         client: Client = app.state.client
         default_model: str = app.state.model_name
 
+        if req.known_tts_text is not None and req.stream:
+            raise HTTPException(
+                status_code=400, detail="known_tts_text does not support streaming"
+            )
+        else:
+            pass
+
         request_id = req.request_id or str(uuid.uuid4())
         response_id = f"chatcmpl-{request_id}"
         created = int(time.time())
@@ -1101,6 +1108,7 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         ("talker_top_k", req.talker_top_k),
         ("talker_repetition_penalty", req.talker_repetition_penalty),
         ("talker_max_new_tokens", req.talker_max_new_tokens),
+        ("known_tts_text", req.known_tts_text),
     ):
         if value is not None:
             extra_params[field_name] = value

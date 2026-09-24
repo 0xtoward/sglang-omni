@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     import torch
@@ -18,6 +18,7 @@ class PromptInputs(TypedDict):
     input_ids: torch.Tensor
     attention_mask: torch.Tensor
     prompt_text: str
+    known_tts_output_ids: NotRequired[list[int] | None]
 
 
 class ThinkerOutput(TypedDict, total=False):

@@ -132,6 +132,8 @@ class MiniCPMOPreprocessor:
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
+        params = payload.request.params or {}
+        known_tts_text = params.get("known_tts_text")
         raw_images = None
         raw_audios = None
         raw_videos = None
@@ -158,6 +160,20 @@ class MiniCPMOPreprocessor:
             }
         else:
             messages = inputs
+
+        if known_tts_text is not None:
+            if not isinstance(known_tts_text, str) or not known_tts_text.strip():
+                raise ValueError("known_tts_text must be a nonempty string")
+            elif not self.should_use_tts_template(payload):
+                raise ValueError("known_tts_text requires the speech pipeline")
+            elif raw_images or raw_audios or raw_videos:
+                raise ValueError("known_tts_text currently supports text-only input")
+            elif params.get("stream", False):
+                raise ValueError("known_tts_text does not support text streaming")
+            else:
+                pass
+        else:
+            pass
 
         if raw_images or raw_audios or raw_videos:
             return await self.preprocess_multimodal(
@@ -188,11 +204,38 @@ class MiniCPMOPreprocessor:
             input_ids = encoded["input_ids"][0].to(dtype=torch.long)
         attention_mask = torch.ones_like(input_ids)
 
+        known_tts_output_ids = None
+        if known_tts_text is not None:
+            tts_bos_token_id = self.tokenizer.convert_tokens_to_ids("<|tts_bos|>")
+            tts_eos_token_id = self.tokenizer.convert_tokens_to_ids("<|tts_eos|>")
+            if int(input_ids[-1]) != tts_bos_token_id:
+                raise ValueError("known_tts_text requires a TTS prompt boundary")
+            else:
+                pass
+            known_tts_output_ids = self.tokenizer.encode(
+                known_tts_text, add_special_tokens=False
+            )
+            if not known_tts_output_ids or any(
+                token_id in (tts_bos_token_id, tts_eos_token_id)
+                for token_id in known_tts_output_ids
+            ):
+                raise ValueError("known_tts_text contains no usable speech tokens")
+            else:
+                pass
+            suffix = torch.tensor(
+                [*known_tts_output_ids, tts_eos_token_id], dtype=torch.long
+            )
+            input_ids = torch.cat((input_ids, suffix))
+            attention_mask = torch.ones_like(input_ids)
+        else:
+            pass
+
         state = MiniCPMOPipelineState(
             prompt={
                 "prompt_text": prompt_text,
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
+                "known_tts_output_ids": known_tts_output_ids,
             },
             stream_state={"token_ids": [], "text": ""},
         )

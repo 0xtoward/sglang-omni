@@ -90,14 +90,20 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 continue
             else:
                 pass
-            if sched_req.data.req.inflight_middle_chunks > 0:
+            known_tts_text = (sched_req.data.stage_payload.request.params or {}).get(
+                "known_tts_text"
+            )
+            if sched_req.data.req.inflight_middle_chunks > 0 and known_tts_text is None:
                 continue
             else:
                 pass
-            hidden = hidden.reshape(-1, hidden.shape[-1])[-1]
             seq = self.pending_hidden.setdefault(sched_req.request_id, [])
-            # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
-            seq.append(hidden.detach().clone())
+            hidden_rows = hidden.reshape(-1, hidden.shape[-1])
+            if known_tts_text is not None:
+                seq.extend(hidden_rows.detach().clone().unbind(0))
+            else:
+                # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
+                seq.append(hidden_rows[-1].detach().clone())
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Do not advance generation state for non-final prefill chunks."""
