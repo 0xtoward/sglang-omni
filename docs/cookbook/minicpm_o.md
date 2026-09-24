@@ -122,3 +122,27 @@ Session settings go in the `sglang` field of `session.update`, before the first 
 | Image detail | `max_slice_nums` | Higher is sharper but accepts fewer frames per second |
 
 Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.
+
+## Speaking text already known to the caller
+
+For a text-only speech request whose exact words are known in advance, pass
+`known_tts_text` to `/v1/chat/completions`. MiniCPM-o conditions its Talker on
+hidden states from one Thinker prefill of those words, instead of generating
+the same words one token at a time. The option is explicit: ordinary chat,
+audio understanding, and video requests keep their normal generation path.
+
+```python
+response = client.chat.completions.create(
+    model="MiniCPM-o-4_5",
+    messages=[{"role": "user", "content": "Please say hello."}],
+    modalities=["text", "audio"],
+    extra_body={"known_tts_text": "Hello!"},
+)
+```
+
+The caller is responsible for the text. This is not a speculative verification
+of what autoregressive decoding would have produced; the resulting audio can
+therefore differ from an ordinary chat response. The option requires the speech
+pipeline and currently supports only non-streaming, text-only input. Each such
+request is isolated from prefix reuse because the Talker needs every text
+position's hidden state.
