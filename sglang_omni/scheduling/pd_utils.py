@@ -186,7 +186,7 @@ def continuation_from_req(
     else:
         pass
     data = (
-        req._omni_data
+        req.omni_data
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     if data.input_embeds_are_projected or getattr(
         req,
@@ -315,7 +315,7 @@ def req_from_continuation(
         return_logprob=continuation.return_logprob,
         output_token_logprobs=list(continuation.output_token_logprobs),
     )
-    req._omni_data = data  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req.omni_data = data  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     state_restorer(req, data, continuation.multimodal_resume)
     if req.tokenizer is None and (
         sampling_params.stop_strs or sampling_params.stop_regex_strs

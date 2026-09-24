@@ -143,7 +143,7 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
         # slot and its KV. Holding the batch back until a text token arrives
         # would strand a request whose thinker has already stopped.
         return all(
-            len(req._omni_data.pending_text_queue) > 0
+            len(req.omni_data.pending_text_queue) > 0
             or self.is_terminating(
                 req
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken

@@ -99,7 +99,7 @@ def test_runner_masks_controls_and_penalizes_each_repeated_id_once() -> None:
     speech_ids = mx.arange(SPEECH_TOKEN_SIZE, dtype=mx.int32)
     runner.cosyvoice3_seen_masks = {"req": (speech_ids == 5) | (speech_ids == 6)}
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=5)
-    runner.req_token_ids = {"req": [0, 0, 5, 5, 6]}
+    runner._req_token_ids = {"req": [0, 0, 5, 5, 6]}  # noqa: leading-underscore
 
     raw_logits = np.zeros((1, TOTAL_VOCAB_SIZE), dtype=np.float32)
     raw_logits[0, 5] = 4.0
@@ -155,13 +155,13 @@ def test_runner_tracks_recent_history_for_ras() -> None:
 
 def test_runner_ras_redraws_a_repeated_primary_token() -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner.enable_sampling = True
-    runner.req_sampling = {
+    runner._enable_sampling = True  # noqa: leading-underscore
+    runner._req_sampling = {  # noqa: leading-underscore
         "req": MlxSamplingParams(
             temperature=1.0, top_k=20, top_p=1.0, min_p=0.0, seed=None
         )
     }
-    runner.rng_key = mx.random.key(0)
+    runner._rng_key = mx.random.key(0)  # noqa: leading-underscore
     runner.cosyvoice3_recent_tokens = {"req": [5]}
     runner.cosyvoice3_sampling_pending_tokens = None
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
@@ -178,13 +178,13 @@ def test_runner_ras_redraws_a_repeated_primary_token() -> None:
 
 def test_runner_ras_keeps_a_repeated_greedy_primary_token() -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner.enable_sampling = True
-    runner.req_sampling = {
+    runner._enable_sampling = True  # noqa: leading-underscore
+    runner._req_sampling = {  # noqa: leading-underscore
         "req": MlxSamplingParams(
             temperature=0.0, top_k=1, top_p=1.0, min_p=0.0, seed=None
         )
     }
-    runner.rng_key = mx.random.key(0)
+    runner._rng_key = mx.random.key(0)  # noqa: leading-underscore
     runner.cosyvoice3_recent_tokens = {"req": [5]}
     runner.cosyvoice3_sampling_pending_tokens = None
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
@@ -201,13 +201,13 @@ def test_runner_ras_keeps_a_repeated_greedy_primary_token() -> None:
 
 def test_runner_ras_keeps_a_non_repeated_primary_token() -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner.enable_sampling = True
-    runner.req_sampling = {
+    runner._enable_sampling = True  # noqa: leading-underscore
+    runner._req_sampling = {  # noqa: leading-underscore
         "req": MlxSamplingParams(
             temperature=1.0, top_k=1, top_p=1.0, min_p=0.0, seed=None
         )
     }
-    runner.rng_key = mx.random.key(0)
+    runner._rng_key = mx.random.key(0)  # noqa: leading-underscore
     runner.cosyvoice3_recent_tokens = {"req": [5]}
     runner.cosyvoice3_sampling_pending_tokens = None
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
@@ -236,7 +236,7 @@ def test_runner_resolves_omni_sampling_seed(
     expected: int | None,
 ) -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner.deterministic_seeding = deterministic
+    runner._deterministic_seeding = deterministic  # noqa: leading-underscore
     req = SimpleNamespace(
         sampling_params=SimpleNamespace(
             temperature=0.7,

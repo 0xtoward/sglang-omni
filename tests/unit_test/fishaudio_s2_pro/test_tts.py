@@ -643,7 +643,7 @@ def test_fish_req_hits_max_new_tokens_and_scheduler_reports_length(
         make_s2pro_payload(make_s2pro_state(max_new_tokens=2), request_id="req-length")
     )
     req = data.req
-    req._omni_data = data
+    req.omni_data = data
     req._omni_terminal_claimed = False
 
     for value in (200, 201):

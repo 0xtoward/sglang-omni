@@ -229,9 +229,9 @@ class FunCosyVoice3MlxVocoder:
         mx.eval(
             flow.parameters(),
             hift.parameters(),
-            flow.decoder.rand_noise,
-            hift.stft_window,
-            hift.m_source.l_sin_gen.rand_ini,
+            flow.decoder._rand_noise,  # noqa: leading-underscore
+            hift._stft_window,  # noqa: leading-underscore
+            hift.m_source.l_sin_gen._rand_ini,  # noqa: leading-underscore
         )
         return cls(flow=flow, hift=hift, config=config, dtype=dtype)
 

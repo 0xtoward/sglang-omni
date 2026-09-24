@@ -113,7 +113,7 @@ def test_length_terminal_releases_pool_row_through_scheduler_result_path(
         sampling_params=sampling_params,
         vocab_size=2,
     )
-    req._omni_data = data
+    req.omni_data = data
     req._omni_terminal_claimed = False
     req.output_ids.append(1)
     req.update_finish_state()

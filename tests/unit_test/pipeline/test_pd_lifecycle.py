@@ -182,7 +182,7 @@ def test_prefill_handoff_runs_terminal_cleanup_and_closes_bookkeeping(
     model_path_end.assert_called_once_with(req.rid, status="success")
     scheduler.release_request_kv_cache.assert_not_called()
     assert scheduler.is_fully_idle() is False
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert req.rid in scheduler.completed_request_ids
     assert req.rid not in scheduler.first_emit_done
     assert req.rid not in scheduler.prefill_start_done
@@ -218,7 +218,7 @@ def test_prefill_handoff_cleanup_failure_emits_error_and_releases_kv(
     model_path_end.assert_called_once_with(req.rid, status="error")
     scheduler.release_request_kv_cache.assert_called_once_with(req)
     assert scheduler.is_fully_idle() is True
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert req.rid in scheduler.completed_request_ids
     assert req.rid not in scheduler.first_emit_done
     assert req.rid not in scheduler.prefill_start_done
@@ -644,7 +644,7 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
                 OutgoingMessage(
                     "request-1",
                     "result",
-                    scheduler.waiting_queue[0]._omni_data.stage_payload,
+                    scheduler.waiting_queue[0].omni_data.stage_payload,
                 )
             )
             decode.running = True

@@ -2308,7 +2308,7 @@ def test_lookahead_eligible_routes_eager_batches_to_sync():
         return types.SimpleNamespace(
             reqs=[
                 types.SimpleNamespace(
-                    _omni_data=types.SimpleNamespace(audio_repetition_penalty=p)
+                    omni_data=types.SimpleNamespace(audio_repetition_penalty=p)
                 )
                 for p in penalties
             ]

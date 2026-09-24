@@ -30,9 +30,9 @@ class FunCosyVoice3MlxModelRunner:
         ensure_remote_code_allowed(model_dir, self.trust_remote_code)
         self.model = load_cosyvoice3_mlx_model(
             model_dir,
-            quantization=self.quantization,
+            quantization=self._quantization,  # noqa: leading-underscore
         )
-        self.trunk = None
+        self._trunk = None  # noqa: leading-underscore
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -152,8 +152,10 @@ class FunCosyVoice3MlxModelRunner:
         else:
             pass
 
-        if self.enable_sampling:
-            self.req_sampling[req_id] = self.sampling_params_for_request(req)
+        if self._enable_sampling:  # noqa: leading-underscore
+            self._req_sampling[req_id] = self.sampling_params_for_request(
+                req
+            )  # noqa: leading-underscore
         else:
             pass
         self.cosyvoice3_prompt_lengths[req_id] = len(full_token_ids)
@@ -203,7 +205,7 @@ class FunCosyVoice3MlxModelRunner:
         # Note (yexiaodong): Preserve the request seed when global deterministic
         # inference is disabled; global state is only a default.
         seed = sampling_params.sampling_seed
-        if seed is None and self.deterministic_seeding:
+        if seed is None and self._deterministic_seeding:  # noqa: leading-underscore
             seed = DEFAULT_SAMPLING_SEED
         else:
             pass
@@ -236,8 +238,10 @@ class FunCosyVoice3MlxModelRunner:
         from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
 
         req_id = req_ids[0]
-        cache = self.req_caches[req_id]
-        input_ids = mx.array([[self.req_token_ids[req_id][-1]]], dtype=mx.int32)
+        cache = self._req_caches[req_id]  # noqa: leading-underscore
+        input_ids = mx.array(
+            [[self._req_token_ids[req_id][-1]]], dtype=mx.int32
+        )  # noqa: leading-underscore
         logits = self._decode_with_native_cache(
             [cache], [input_ids]
         )  # noqa: leading-underscore
@@ -300,7 +304,7 @@ class FunCosyVoice3MlxModelRunner:
         full distribution with that candidate masked. Keep this entirely in
         the MLX graph so chained decode remains valid.
         """
-        if not self.enable_sampling:
+        if not self._enable_sampling:  # noqa: leading-underscore
             return super()._select_tokens_with_logprobs(
                 last_logits,
                 req_ids,
@@ -318,13 +322,17 @@ class FunCosyVoice3MlxModelRunner:
             scale_by_temperature,
         )
 
-        params = [self.req_sampling[req_id] for req_id in req_ids]
+        params = [
+            self._req_sampling[req_id] for req_id in req_ids
+        ]  # noqa: leading-underscore
         edited = self._edited_logits(last_logits, edit_rows)  # noqa: leading-underscore
         scaled = scale_by_temperature(edited, params)
         positions = [
             self._first_attention_cache(cache).offset - 1 for cache in caches
         ]  # noqa: leading-underscore
-        self.rng_key, first_key = mx.random.split(self.rng_key)
+        self._rng_key, first_key = mx.random.split(
+            self._rng_key
+        )  # noqa: leading-underscore
         first = sample_tokens(
             edited,
             params,
@@ -365,7 +373,9 @@ class FunCosyVoice3MlxModelRunner:
         fallback_logits = mx.concatenate(
             [fallback_logits, edited[:, SPEECH_TOKEN_SIZE:]], axis=1
         )
-        self.rng_key, fallback_key = mx.random.split(self.rng_key)
+        self._rng_key, fallback_key = mx.random.split(
+            self._rng_key
+        )  # noqa: leading-underscore
         fallback = sample_tokens(
             fallback_logits,
             fallback_params,

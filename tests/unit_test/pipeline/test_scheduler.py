@@ -20,22 +20,26 @@ import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ReqKvInfo
-from sglang.srt.observability.scheduler_stage_metrics import (
-    SchedulerStageMetricsRecorder,
-)
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.message import IncomingMessage
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.scheduling.types import ModelRunnerOutput
 from tests.unit_test.pipeline.helpers import run_scheduler
+
+
+class SchedulerStageMetricsRecorder:
+    """Stand-in for the upstream recorder this SGLang build does not ship."""
+
+    def __init__(self, enabled: bool = False) -> None:
+        self.enabled = enabled
 
 
 @pytest.fixture(autouse=True)
@@ -163,7 +167,7 @@ def test_scheduler_idle_sleep_yields_to_pending_request_builds(
 def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.running = True
-    scheduler.engine_paused = False
+    scheduler._engine_paused = False
     scheduler.request_admission_lock = threading.RLock()
     scheduler.pending_request_builds = {"req": object()}
     scheduler.pending_request_admissions = {}
@@ -381,7 +385,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     scheduler.waiting_queue = []
     scheduler.last_batch = None
     scheduler.forward_ct = 0
-    scheduler.sched_idled = False
+    scheduler._sched_idled = False
     scheduler.first_emit_done = set()
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
@@ -390,13 +394,13 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         reqs=[
             _make_abortable_req(
                 "req-1",
-                _omni_data=SimpleNamespace(),
+                omni_data=SimpleNamespace(),
                 kv=ReqKvInfo(req_pool_idx=1),
                 inflight_middle_chunks=0,
             ),
             _make_abortable_req(
                 "req-2",
-                _omni_data=SimpleNamespace(),
+                omni_data=SimpleNamespace(),
                 kv=ReqKvInfo(req_pool_idx=2),
                 inflight_middle_chunks=0,
             ),
@@ -408,7 +412,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     )
     failed_reqs = list(batch.reqs)
     for req in failed_reqs:
-        req._omni_data.req = req
+        req.omni_data.req = req
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
     _init_sync_request_build_state(scheduler)
@@ -424,7 +428,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     assert scheduler.aborted_request_ids == {"req-1", "req-2"}
     assert batch.reqs == failed_reqs
     assert all(req.finished() for req in failed_reqs)
-    assert all(req._omni_data is None for req in failed_reqs)
+    assert all(req.omni_data is None for req in failed_reqs)
     assert release_calls == [("req-1", tree_cache), ("req-2", tree_cache)]
     assert scheduler.pending_stream_ingress == {}
     assert scheduler.deferred_request_payloads == {}
@@ -504,7 +508,7 @@ def _history_request(
         rid=f"req-{row}",
         priority=None,
         is_retracted=is_retracted,
-        _omni_data=data,
+        omni_data=data,
         time_stats=SimpleNamespace(set_wait_queue_entry_time=lambda: None),
     )
 
@@ -529,7 +533,7 @@ def test_retracted_request_history_gets_its_own_storage_before_requeue(
     OmniScheduler._add_request_to_queue(scheduler, fresh)
 
     assert scheduler.waiting_queue == [retracted, fresh]
-    history = retracted._omni_data.decode_input_embeds
+    history = retracted.omni_data.decode_input_embeds
     assert torch.equal(torch.stack(history), expected)
     storages = {row.untyped_storage().data_ptr() for row in history}
     assert len(storages) == 1
@@ -539,7 +543,7 @@ def test_retracted_request_history_gets_its_own_storage_before_requeue(
         == expected.numel() * expected.element_size()
     )
     fresh_storages = [
-        row.untyped_storage().data_ptr() for row in fresh._omni_data.decode_input_embeds
+        row.untyped_storage().data_ptr() for row in fresh.omni_data.decode_input_embeds
     ]
     assert fresh_storages == [
         snapshot.untyped_storage().data_ptr() for snapshot in snapshots
@@ -553,7 +557,7 @@ def test_retracted_request_without_history_is_requeued_untouched() -> None:
     OmniScheduler._add_request_to_queue(scheduler, retracted, is_retracted=True)
 
     assert scheduler.waiting_queue == [retracted]
-    assert retracted._omni_data.decode_input_embeds == []
+    assert retracted.omni_data.decode_input_embeds == []
 
 
 @pytest.mark.parametrize(
@@ -575,15 +579,15 @@ def test_retracted_request_with_model_owned_data_is_requeued(
         rid="req-model-owned",
         priority=None,
         is_retracted=True,
-        _omni_data=data_cls(),
+        omni_data=data_cls(),
         time_stats=SimpleNamespace(set_wait_queue_entry_time=lambda: None),
     )
 
     OmniScheduler._add_request_to_queue(scheduler, retracted, is_retracted=True)
 
     assert scheduler.waiting_queue == [retracted]
-    assert retracted._omni_data.decode_input_embeds == []
-    assert retracted._omni_data.prefill_input_embeds is None
+    assert retracted.omni_data.decode_input_embeds == []
+    assert retracted.omni_data.prefill_input_embeds is None
 
 
 def _enqueue_limit_scheduler(monkeypatch):
@@ -898,14 +902,14 @@ def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.forward_ct = 0
-    scheduler.sched_idled = True
+    scheduler._sched_idled = True
     scheduler.processed_tokens_counter = 0
 
     def _batch(extend_num_tokens: int | None):
         return SimpleNamespace(
             reqs=[
                 SimpleNamespace(
-                    rid="r", _omni_data=SimpleNamespace(), inflight_middle_chunks=0
+                    rid="r", omni_data=SimpleNamespace(), inflight_middle_chunks=0
                 )
             ],
             is_prefill_only=False,
@@ -1018,7 +1022,9 @@ def test_immediate_finish_keeps_async_snapshot_aligned_until_resolve() -> None:
     scheduler.running_batch = live_batch
     scheduler.cur_batch = live_batch
     scheduler.last_batch = None
-    scheduler.async_pending = (snapshot, object(), object())
+    scheduler.async_pending = PendingDecode(
+        batch=snapshot, scheduler_output=object(), device_step=object()
+    )
     captured = {}
 
     def resolve(batch, _sched_output, _pending_step, *, skip_rids):
@@ -1071,7 +1077,7 @@ def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
 
     req = _make_abortable_req(
         "req-fail",
-        _omni_data=SimpleNamespace(),
+        omni_data=SimpleNamespace(),
         kv=ReqKvInfo(req_pool_idx=1),
     )
     batch = SimpleNamespace(reqs=[req], batch_is_full=True)
@@ -1177,7 +1183,7 @@ def test_omni_scheduler_abort_cleans_queued_request_immediately(monkeypatch) -> 
 
     req = SimpleNamespace(rid="req-wait")
     request_data = SimpleNamespace(req=req)
-    req._omni_data = request_data
+    req.omni_data = request_data
     scheduler.waiting_queue = [req]
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
@@ -1188,7 +1194,7 @@ def test_omni_scheduler_abort_cleans_queued_request_immediately(monkeypatch) -> 
 
     assert scheduler.waiting_queue == []
     assert cleaned == ["req-wait"]
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert request_data.req is req
 
 
@@ -1213,7 +1219,7 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
         kv=ReqKvInfo(),
     )
     request_data = SimpleNamespace(req=req)
-    req._omni_data = request_data
+    req.omni_data = request_data
     other_req = SimpleNamespace(rid="req-other")
     stale_batch = SimpleNamespace(
         reqs=[req, other_req],
@@ -1235,7 +1241,7 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
     assert stale_batch.input_ids.tolist() == [20, 21]
     assert req.finished_reason.to_json()["type"] == "abort"
     assert req.to_finish is None
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert request_data.req is req
     assert cleaned == ["req-retracted"]
 
@@ -1286,7 +1292,7 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
     )
     req = SimpleNamespace(
         rid="req-finished",
-        _omni_data=request_data,
+        omni_data=request_data,
         output_ids=[1, 2],
         finished=lambda: True,
         finished_reason=None,
@@ -1318,7 +1324,7 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
     assert calls == ["flush", "result"]
     assert scheduler.outbox.get_nowait().type == "stream"
     assert scheduler.outbox.get_nowait().type == "result"
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert request_data.req is req
     assert model_path_ends == [("req-finished", "success")]
 
@@ -1379,7 +1385,7 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
         finished_reason=None,
         kv=ReqKvInfo(req_pool_idx=1),
         is_retracted=False,
-        _omni_data=data,
+        omni_data=data,
         _omni_terminal_claimed=False,
     )
     data.req = req
@@ -1410,7 +1416,7 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
     assert adapted == []
     assert cleaned == ["req-fish"]
     assert scheduler.outbox.empty()
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert data.req is req
 
 
@@ -1439,7 +1445,7 @@ def test_stream_output_sets_finish_reason_and_drains_runner_before_terminal() ->
         finished=lambda: True,
         finished_reason=finished_reason,
         output_ids=[7],
-        _omni_data=data,
+        omni_data=data,
         _omni_terminal_claimed=False,
     )
     data.req = req
@@ -1450,7 +1456,7 @@ def test_stream_output_sets_finish_reason_and_drains_runner_before_terminal() ->
     assert calls == [("req-1", data, "stop", 0)]
     assert scheduler.outbox.qsize() == 1
     assert scheduler.outbox.get().type == "result"
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert data.req is req
 
 
@@ -1475,14 +1481,14 @@ def test_stream_output_cleans_request_when_runner_finish_hook_fails() -> None:
         finished=lambda: True,
         finished_reason=None,
         output_ids=[],
-        _omni_data=data,
+        omni_data=data,
         _omni_terminal_claimed=False,
     )
     data.req = req
 
     scheduler.stream_output([req])
 
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert data.req is req
     assert cleanup_calls == ["req-hook-error"]
     error = scheduler.outbox.get_nowait()
@@ -1514,7 +1520,7 @@ def test_stream_output_releases_request_when_terminal_flush_fails() -> None:
         finished=lambda: True,
         finished_reason=None,
         output_ids=[],
-        _omni_data=data,
+        omni_data=data,
         _omni_terminal_claimed=False,
     )
     data.req = req
@@ -1522,7 +1528,7 @@ def test_stream_output_releases_request_when_terminal_flush_fails() -> None:
     scheduler.stream_output([req])
 
     assert cleanup_calls == ["req-flush-error"]
-    assert req._omni_data is None
+    assert req.omni_data is None
     error = scheduler.outbox.get_nowait()
     assert error.type == "error"
     assert "flush failed" in str(error.data)
@@ -1568,7 +1574,7 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
             self._omni_terminal_claimed = False
 
         @property
-        def _omni_data(self):
+        def omni_data(self):
             data_read_started.set()
             assert abort_started.wait(timeout=1)
             if terminal_lock.is_owned_by_current_thread():
@@ -1582,8 +1588,8 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
                 assert abort_done.wait(timeout=1)
             return self._data
 
-        @_omni_data.setter
-        def _omni_data(self, value):
+        @omni_data.setter
+        def omni_data(self, value):
             self._data = value
 
         def finished(self):
@@ -1665,7 +1671,7 @@ def test_abort_after_terminal_close_runs_its_own_cleanup() -> None:
     data = SimpleNamespace()
     req = _make_abortable_req(
         "req-abort-after-close",
-        _omni_data=data,
+        omni_data=data,
         _omni_terminal_claimed=True,
         finished_reason=object(),
         kv=ReqKvInfo(),
@@ -1677,7 +1683,7 @@ def test_abort_after_terminal_close_runs_its_own_cleanup() -> None:
     scheduler.last_batch = None
 
     assert scheduler.close_completed_request(req) is False
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert batch.reqs == [req]
 
     scheduler.abort(req.rid)
@@ -1736,7 +1742,7 @@ def test_abort_publishes_request_id_before_marking_terminal_finish() -> None:
         is_retracted=False,
         to_finish=None,
         kv=ReqKvInfo(),
-        _omni_data=data,
+        omni_data=data,
         _omni_terminal_claimed=False,
     )
     req.finished = lambda: req.to_finish is not None
@@ -1783,7 +1789,7 @@ def test_abort_publishes_request_id_before_marking_terminal_finish() -> None:
     assert not terminal_thread.is_alive()
     assert thread_errors == []
     assert scheduler.aborted_request_ids == {req.rid}
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert cleaned == [req.rid]
     assert scheduler.outbox.empty()
 
@@ -1816,7 +1822,7 @@ def test_terminal_request_data_is_collectable_without_cyclic_gc() -> None:
         data = RequestData()
         data.prefill_input_embeds = None
         data.decode_input_embeds = None
-        req._omni_data = data
+        req.omni_data = data
         data.req = req
         req_ref = weakref.ref(req)
         data_ref = weakref.ref(data)
@@ -1850,7 +1856,7 @@ def test_stream_output_skips_runner_hook_for_aborted_requests() -> None:
         rid="req-1",
         finished=lambda: True,
         finished_reason=None,
-        _omni_data=data,
+        omni_data=data,
         _omni_terminal_claimed=False,
     )
     data.req = req
@@ -1859,7 +1865,7 @@ def test_stream_output_skips_runner_hook_for_aborted_requests() -> None:
 
     assert calls == []
     assert scheduler.outbox.empty()
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert data.req is req
 
 
@@ -1879,7 +1885,7 @@ def test_stream_output_closes_late_stream_ingress() -> None:
         finished=lambda: True,
         finished_reason=None,
         output_ids=[],
-        _omni_data=data,
+        omni_data=data,
         _omni_terminal_claimed=False,
     )
     data.req = req
@@ -2040,7 +2046,7 @@ def test_stream_output_drops_stale_terminal_alias_without_raising() -> None:
         rid="req-stale-terminal",
         finished=lambda: True,
         finished_reason=None,
-        _omni_data=None,
+        omni_data=None,
         _omni_terminal_claimed=False,
     )
 
@@ -2394,7 +2400,7 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
         monkeypatch, return_runtime_context=True
     )
 
-    assert scheduler.pending_chunked_abort_req is None
+    assert scheduler._pending_chunked_abort_req is None
     assert scheduler.new_token_ratio_tracker is not None
     assert scheduler.dp_attn_adapter is not None
     assert scheduler.pool_stats_observer is not None
@@ -2964,7 +2970,7 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     scheduler.process_input_requests([_new_stage_payload("req-ok")])
 
     assert scheduler.waiting_queue == [req]
-    assert req._omni_data is req_data
+    assert req.omni_data is req_data
     assert req.sampling_params.max_new_tokens == 2
     assert req_data.max_new_tokens == 2
     assert scheduler.outbox.empty()
@@ -3077,7 +3083,7 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     assert isinstance(output.data, ValueError)
     assert "Input length (5 tokens) exceeds" in str(output.data)
     assert scheduler.waiting_queue == []
-    assert not hasattr(req, "_omni_data")
+    assert not hasattr(req, "omni_data")
     assert request_data.req is req
 
 
@@ -3221,7 +3227,7 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise(
     )
     req = SimpleNamespace(
         rid="req-adapter",
-        _omni_data=request_data,
+        omni_data=request_data,
         _omni_terminal_claimed=False,
         output_ids=[1, 2],
         finished=lambda: True,
@@ -3240,7 +3246,7 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise(
     assert model_path_ends == [("req-adapter", "error")]
     assert request_data.prefill_input_embeds is None
     assert request_data.decode_input_embeds is None
-    assert req._omni_data is None
+    assert req.omni_data is None
     assert request_data.req is req
 
 

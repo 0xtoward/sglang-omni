@@ -32,6 +32,63 @@ _CHUNK_BUCKETS = [1, 2, 4, 8, 16, 32]
 _TEST_CHUNKS = [1, 2, 3, 4, 5, 8, 12, 16, 20, 32]
 
 
+_QKV_FUSED_NAMES = (
+    ("self_attn.qkv_proj", "self_attn.q_proj", "q"),
+    ("self_attn.qkv_proj", "self_attn.k_proj", "k"),
+    ("self_attn.qkv_proj", "self_attn.v_proj", "v"),
+)
+
+
+def _load_encoder_checkpoint(encoder: torch.nn.Module, snapshot: str) -> None:
+    """Load the checkpoint Whisper encoder. Random bf16 init overflows to NaN."""
+    weight_paths = sorted(glob.glob(os.path.join(snapshot, "*.safetensors")))
+    if not weight_paths:
+        return
+    else:
+        from safetensors.torch import load_file
+        from sglang.srt.model_loader.weight_utils import default_weight_loader
+
+        checkpoint_tensors: dict[str, torch.Tensor] = {}
+        for weight_path in weight_paths:
+            checkpoint_tensors.update(load_file(weight_path))
+        prefix = "model.whisper_encoder."
+        encoder_weights = {
+            name[len(prefix) :]: tensor
+            for name, tensor in checkpoint_tensors.items()
+            if name.startswith(prefix)
+        }
+        for name, tensor in list(encoder_weights.items()):
+            if ".self_attn.k_proj.weight" not in name:
+                continue
+            else:
+                bias_name = name.replace(".k_proj.weight", ".k_proj.bias")
+                if bias_name not in encoder_weights:
+                    encoder_weights[bias_name] = torch.zeros(
+                        tensor.shape[0], dtype=tensor.dtype
+                    )
+                else:
+                    pass
+        parameters = dict(encoder.named_parameters())
+        for name, tensor in encoder_weights.items():
+            mapped_name = name
+            shard_id = None
+            for fused_name, source_name, shard in _QKV_FUSED_NAMES:
+                if source_name in mapped_name:
+                    mapped_name = mapped_name.replace(source_name, fused_name)
+                    shard_id = shard
+                    break
+                else:
+                    pass
+            if mapped_name not in parameters:
+                continue
+            else:
+                parameter = parameters[mapped_name]
+                if shard_id is None:
+                    default_weight_loader(parameter, tensor)
+                else:
+                    parameter.weight_loader(parameter, tensor, shard_id)
+
+
 def test_capture_uses_thread_local_error_mode():
     source = textwrap.dedent(
         inspect.getsource(WhisperEncoderCudaGraphRunner.capture_bucket)
@@ -95,7 +152,9 @@ def encoder_bundle():
     published = get_context().override_server_args()
     published.install()
     try:
-        encoder = WhisperEncoder(audio_config).cuda().to(torch.bfloat16).eval()
+        encoder = WhisperEncoder(audio_config)
+        _load_encoder_checkpoint(encoder, snaps[0])
+        encoder = encoder.cuda().to(torch.bfloat16).eval()
         num_mel_bins = int(audio_config.num_mel_bins)
         runner = WhisperEncoderCudaGraphRunner(
             encoder, num_mel_bins, _INPUT_FEATURE_LEN

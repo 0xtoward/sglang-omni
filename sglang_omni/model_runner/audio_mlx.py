@@ -182,9 +182,9 @@ class AudioMlxModelRunner:
         from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
 
         req_id = req_ids[0]
-        cache = self.req_caches[req_id]
+        cache = self._req_caches[req_id]  # noqa: leading-underscore
         input_ids = mx.array(
-            [[self.req_token_ids[req_id][-1]]],
+            [[self._req_token_ids[req_id][-1]]],  # noqa: leading-underscore
             dtype=mx.int32,
         )
         lazy_logits = self._decode_with_native_cache(

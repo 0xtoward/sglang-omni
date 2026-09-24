@@ -39,6 +39,7 @@ from sglang_omni.models.qwen3_omni.talker_scheduler import (
     QwenTalkerScheduler,
     configure_talker_server_args,
 )
+from sglang_omni.proto.request import OmniRequest
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
@@ -1044,7 +1045,7 @@ def test_process_input_requests_builds_at_one_chunk_under_topology() -> None:
         return SGLangARRequestData(
             req=SimpleNamespace(
                 rid=payload.request_id,
-                _omni_data=None,
+                omni_data=None,
                 origin_input_ids=origin_input_ids,
                 origin_input_ids_unpadded=origin_input_ids,
                 sampling_params=SimpleNamespace(max_new_tokens=0),
@@ -1063,6 +1064,7 @@ def test_process_input_requests_builds_at_one_chunk_under_topology() -> None:
     scheduler.append_stream_chunk = lambda req_data, chunk: None
     scheduler.mark_stream_done = lambda req_data: None
     payload = SimpleNamespace(
+        request=OmniRequest(inputs=None),
         request_id="rid-topo",
         prefetched_chunks=[SimpleNamespace(data=torch.tensor([0.0]))],
         prefetched_stream_done=False,
@@ -1427,7 +1429,7 @@ def test_process_input_requests_partial_build_state_machine() -> None:
         req_data = SGLangARRequestData(
             req=SimpleNamespace(
                 rid=payload.request_id,
-                _omni_data=None,
+                omni_data=None,
                 origin_input_ids=origin_input_ids,
                 origin_input_ids_unpadded=origin_input_ids,
                 sampling_params=SimpleNamespace(max_new_tokens=0),
@@ -1450,6 +1452,7 @@ def test_process_input_requests_partial_build_state_machine() -> None:
 
     chunks = [SimpleNamespace(data=torch.tensor([float(i)])) for i in range(5)]
     payload = SimpleNamespace(
+        request=OmniRequest(inputs=None),
         request_id="rid-partial-1",
         prefetched_chunks=list(chunks),
         prefetched_stream_done=False,
@@ -1459,7 +1462,7 @@ def test_process_input_requests_partial_build_state_machine() -> None:
     OmniScheduler.process_input_requests(scheduler, [payload])
 
     assert scheduler.waiting_queue, "request must have been built and enqueued"
-    built = scheduler.waiting_queue[0]._omni_data
+    built = scheduler.waiting_queue[0].omni_data
     assert built._captured_thinker_done is False
     assert "rid-partial-1" not in scheduler.deferred_request_payloads
     assert "rid-partial-1" not in scheduler.pending_stream_ingress
@@ -1493,6 +1496,7 @@ def test_process_input_requests_keeps_deferred_when_below_threshold() -> None:
         request_builder_stub=fail_if_called,
     )
     payload = SimpleNamespace(
+        request=OmniRequest(inputs=None),
         request_id="rid-stay",
         prefetched_chunks=[SimpleNamespace(data=torch.tensor([0.0]))] * 2,
         prefetched_stream_done=False,

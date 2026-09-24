@@ -394,7 +394,7 @@ class SessionScheduler(SimpleScheduler):
                     payload.data = {"closed": True}
                     return payload
                 else:
-                    raise ValueError("unknown session incarnation")
+                    raise ValueError("unknown session open index")
             else:
                 with session.lock:
                     if operation == "close":

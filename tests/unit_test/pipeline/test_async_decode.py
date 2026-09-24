@@ -21,7 +21,7 @@ import pytest
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     RequestOutput,
@@ -673,7 +673,9 @@ def test_async_pending_batch_uses_initialized_state():
     s = OmniScheduler.__new__(OmniScheduler)
     s.async_pending = None
     assert s.async_pending_batch() is None
-    s.async_pending = ("batchX", "sched_out", "pending_step")
+    s.async_pending = PendingDecode(
+        batch="batchX", scheduler_output="sched_out", device_step="pending_step"
+    )
     assert s.async_pending_batch() == "batchX"
 
 
@@ -738,7 +740,7 @@ def _drive_loop(seq, min_bs=2):
     events = []
     s = _new_scheduler_for_async_loop()
     s.running = True
-    s.engine_paused = False
+    s._engine_paused = False
     s.async_pending = None
     s.async_decode_min_batch_size = min_bs
     s.cur_batch = None
@@ -872,7 +874,9 @@ def test_pending_decode_drain_order_for_prefill(
     events = []
     pending_during_schedule = []
     pending_batch = _FakeBatch(2)
-    pending = (pending_batch, "prev_sched", "prev_step")
+    pending = PendingDecode(
+        batch=pending_batch, scheduler_output="prev_sched", device_step="prev_step"
+    )
     s = _scaffold_async_loop(async_pending=pending)
     s.is_mixed_chunk = is_mixed_chunk
     s.running_batch.batch_is_full = batch_is_full
@@ -910,7 +914,9 @@ def test_pending_decode_drain_order_for_prefill(
 def test_full_running_batch_keeps_lookahead_with_waiting_requests():
     events = []
     pending_batch = _FakeBatch(2)
-    pending = (pending_batch, "prev_sched", "prev_step")
+    pending = PendingDecode(
+        batch=pending_batch, scheduler_output="prev_sched", device_step="prev_step"
+    )
     s = _scaffold_async_loop(async_pending=pending)
     s.is_mixed_chunk = True
     s.running_batch.batch_is_full = True
@@ -995,7 +1001,7 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
 
     s = _new_scheduler_for_async_loop()
     s.running = True
-    s.engine_paused = False
+    s._engine_paused = False
     s.async_pending = None
     s.async_decode_min_batch_size = 2
     s.cur_batch = None
@@ -1055,7 +1061,7 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
 def _scaffold_async_loop(*, async_pending=None):
     s = _new_scheduler_for_async_loop()
     s.running = True
-    s.engine_paused = False
+    s._engine_paused = False
     s.async_pending = async_pending
     s.async_decode_min_batch_size = 2
     s.cur_batch = None
@@ -1096,7 +1102,7 @@ def test_async_path_launch_failure_calls_handle_batch_failure():
     s.event_loop_async_decode()
 
     assert failures == [(batch, RuntimeError, "launch boom")]
-    # launch failed before _async_pending was set; prev state preserved.
+    # launch failed before async_pending was set; prev state preserved.
     assert s.async_pending is None
 
 
@@ -1104,7 +1110,9 @@ def test_async_path_resolve_failure_calls_handle_batch_failure():
     failures = []
     prev_batch = _FakeBatch(2)
     s = _scaffold_async_loop(
-        async_pending=(prev_batch, "prev_sched", "prev_step"),
+        async_pending=PendingDecode(
+            batch=prev_batch, scheduler_output="prev_sched", device_step="prev_step"
+        ),
     )
 
     s.run_batch_launch = lambda b: ("sched_output", "pending_step")
@@ -1130,16 +1138,18 @@ def test_async_path_resolve_failure_calls_handle_batch_failure():
     s.event_loop_async_decode()
 
     assert failures == [(prev_batch, RuntimeError, "resolve boom")]
-    # launch succeeded; _async_pending was rotated to the new batch.
+    # launch succeeded; async_pending was rotated to the new batch.
     assert s.async_pending is not None
-    assert s.async_pending[0] is new_batch
+    assert s.async_pending.batch is new_batch
 
 
 def test_drain_resolve_failure_calls_handle_batch_failure():
     failures = []
     stranded_batch = _FakeBatch(2)
     s = OmniScheduler.__new__(OmniScheduler)
-    s.async_pending = (stranded_batch, "sched", "step")
+    s.async_pending = PendingDecode(
+        batch=stranded_batch, scheduler_output="sched", device_step="step"
+    )
 
     def resolve(pb, ps, pstep):
         raise RuntimeError("drain boom")
