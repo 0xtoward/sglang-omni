@@ -248,3 +248,27 @@ These are set in `examples/full_duplex/minicpmo.yaml`:
 One conversation can hold 8192 tokens of history, which is the model's limit. When a conversation fills it, the server sends a `context_exhausted` error and closes the session. Start a new session to continue.
 
 For repeatable output, start the server from `examples/full_duplex/minicpmo-parity.yaml`, which uses greedy sampling.
+
+## Speaking text already known to the caller
+
+For a text-only speech request whose exact words are known in advance, pass
+`known_tts_text` to `/v1/chat/completions`. MiniCPM-o conditions its Talker on
+hidden states from one Thinker prefill of those words, instead of generating
+the same words one token at a time. The option is explicit: ordinary chat,
+audio understanding, and video requests keep their normal generation path.
+
+```python
+response = client.chat.completions.create(
+    model="MiniCPM-o-4_5",
+    messages=[{"role": "user", "content": "Please say hello."}],
+    modalities=["text", "audio"],
+    extra_body={"known_tts_text": "Hello!"},
+)
+```
+
+The caller is responsible for the text. This is not a speculative verification
+of what autoregressive decoding would have produced; the resulting audio can
+therefore differ from an ordinary chat response. The option requires the speech
+pipeline and currently supports only non-streaming, text-only input. Each such
+request is isolated from prefix reuse because the Talker needs every text
+position's hidden state.

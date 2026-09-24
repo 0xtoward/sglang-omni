@@ -42,7 +42,12 @@ def build_talker_request(
     extra = thinker_out.get("extra_model_outputs") or {}
     hidden_seq = extra.get("hidden_states_seq") or []
 
-    full_sequence = [int(t) for t in prompt_ids] + output_ids
+    known_tts_output_ids = prompt.get("known_tts_output_ids")
+    full_sequence = (
+        [int(t) for t in prompt_ids]
+        if known_tts_output_ids is not None
+        else [int(t) for t in prompt_ids] + output_ids
+    )
     prompt_len = len(prompt_ids)
 
     tts_bos_indices = [i for i, t in enumerate(full_sequence) if t == tts_bos_token_id]
@@ -60,7 +65,7 @@ def build_talker_request(
     end = segment_eos[0] if segment_eos else len(full_sequence)
 
     # note (MayDomine): the first captured hidden state is the last prompt position.
-    hidden_base = prompt_len - 1
+    hidden_base = 0 if known_tts_output_ids is not None else prompt_len - 1
     if start < hidden_base:
         raise ValueError(
             f"tts span start {start} precedes first captured hidden position "
