@@ -142,7 +142,10 @@ def build_sglang_thinker_request(
     else:
         model_inputs = dict(model_inputs)
 
-    max_new_tokens = params.get("max_new_tokens", 2048)
+    known_tts_output_ids = prompt.get("known_tts_output_ids")
+    max_new_tokens = (
+        1 if known_tts_output_ids is not None else params.get("max_new_tokens", 2048)
+    )
     temperature = params.get("temperature", 0.0)
 
     sampling_params = SamplingParams(
@@ -177,6 +180,12 @@ def build_sglang_thinker_request(
         sampling_params=sampling_params,
         vocab_size=vocab_size,
     )
+    if known_tts_output_ids is not None:
+        # The Talker needs every prompt hidden row, including cached prefixes.
+        req.extra_key = f"minicpmo-known-tts:{req.rid}"
+        req.skip_radix_cache_insert = True
+    else:
+        pass
     req.tokenizer = tokenizer
 
     req.omni_model_inputs = model_inputs if model_inputs else None
@@ -205,7 +214,13 @@ def apply_thinker_result(
     stage_name: str,
     result: SGLangARRequestData,
 ) -> ThinkerOutput:
-    output_ids = list(result.output_ids)
+    prompt = state.prompt or {}
+    known_tts_output_ids = prompt.get("known_tts_output_ids")
+    output_ids = (
+        list(known_tts_output_ids)
+        if known_tts_output_ids is not None
+        else list(result.output_ids)
+    )
     thinker_out: ThinkerOutput = {
         "output_ids": output_ids,
         "step": len(output_ids),

@@ -38,3 +38,27 @@ The vocoder caches only the most recently used reference by audio content. A
 different reference, including switching back to the default, rebuilds the
 conditioning. Invalid references fail instead of silently using the default.
 Audio output remains non-streaming.
+
+## Speaking text already known to the caller
+
+For a text-only speech request whose exact words are known in advance, pass
+`known_tts_text` to `/v1/chat/completions`. MiniCPM-o conditions its Talker on
+hidden states from one Thinker prefill of those words, instead of generating
+the same words one token at a time. The option is explicit: ordinary chat,
+audio understanding, and video requests keep their normal generation path.
+
+```python
+response = client.chat.completions.create(
+    model="MiniCPM-o-4_5",
+    messages=[{"role": "user", "content": "Please say hello."}],
+    modalities=["text", "audio"],
+    extra_body={"known_tts_text": "Hello!"},
+)
+```
+
+The caller is responsible for the text. This is not a speculative verification
+of what autoregressive decoding would have produced; the resulting audio can
+therefore differ from an ordinary chat response. The option requires the speech
+pipeline and currently supports only non-streaming, text-only input. Each such
+request is isolated from prefix reuse because the Talker needs every text
+position's hidden state.
