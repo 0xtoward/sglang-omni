@@ -125,7 +125,7 @@ def test_heap_stays_bounded_and_recovers():
     cache = _make(EvictHeapRadixCache)
     _run_trace(cache, seed=7, steps=2000, drain=False)
     assert cache.evictable_leaves
-    assert len(cache._evict_heap) <= max(1024, 4 * len(cache.evictable_leaves))
+    assert len(cache.evict_heap) <= max(1024, 4 * len(cache.evictable_leaves))
     cache.evict(EvictParams(num_tokens=1 << 20))
     # The cache keeps working after a full drain.
     key = RadixKey(token_ids=[1, 2, 3], extra_key="post")

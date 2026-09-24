@@ -90,7 +90,7 @@ class MiniCPMOPreprocessor:
         )
         # note (MayDomine): text-only requests do not need Whisper feature extraction.
         self.model_dir = local_dir
-        self._processor = None
+        self._processor = None  # noqa: leading-underscore
         self.speech_enabled = speech_enabled
 
     def speech_to_text_inputs(
@@ -108,11 +108,11 @@ class MiniCPMOPreprocessor:
 
     @property
     def processor(self) -> ProcessorMixin:
-        if self._processor is None:
-            self._processor = AutoProcessor.from_pretrained(
+        if self._processor is None:  # noqa: leading-underscore
+            self._processor = AutoProcessor.from_pretrained(  # noqa: leading-underscore
                 self.model_dir, trust_remote_code=True
             )
-        return self._processor
+        return self._processor  # noqa: leading-underscore
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
