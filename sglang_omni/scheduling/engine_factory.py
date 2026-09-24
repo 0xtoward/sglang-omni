@@ -3,28 +3,41 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import Any
+from numbers import Integral
+from typing import Any, ClassVar
+
+from sglang.srt.arg_groups.model_override_base import resolved_view
 
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_generation_batch_overrides,
     get_prefill_cuda_graph_backend,
-    nested_prefill_overrides,
+    operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
+logger = logging.getLogger(__name__)
 
-def _operator_selected_prefill_graph_backend(
-    server_args_overrides: Mapping[str, Any] | None,
-) -> bool:
-    if not server_args_overrides:
-        return False
-    if "cuda_graph_backend_prefill" in server_args_overrides:
-        return True
-    return "backend" in nested_prefill_overrides(server_args_overrides)
+
+def normalize_context_length(value: Any, *, model_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(
+            f"{model_name} context length must be a positive integer, got {value!r}"
+        )
+    else:
+        pass
+    context_length = int(value)
+    if context_length <= 0:
+        raise ValueError(
+            f"{model_name} resolved an invalid context length: {context_length}"
+        )
+    else:
+        pass
+    return context_length
 
 
 class SGLangGenerationEngineBuilder(ABC):
@@ -39,6 +52,7 @@ class SGLangGenerationEngineBuilder(ABC):
     model_name: str
     context_length: int
     model_arch_override: str | None = None
+    supports_context_length_override: ClassVar[bool] = False
     # Set True only by builders whose model has adopted the breakable prefill
     # CUDA graph contract; a deployment override cannot enable it otherwise.
     supports_breakable_prefill_cuda_graph: bool = False
@@ -47,18 +61,20 @@ class SGLangGenerationEngineBuilder(ABC):
         self,
         model_path: str,
         *,
-        device: str = "cuda:0",
+        device: str | None = None,
         gpu_id: int | None = None,
         dtype: str = "bfloat16",
         server_args_overrides: dict[str, Any] | None = None,
     ) -> Any:
+        from sglang_omni.platforms import current_platform
         from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
         from sglang_omni.scheduling import sglang_backend
+        from sglang_omni.utils.device import resolve_concrete_device
 
         checkpoint_dir = self.resolve_checkpoint(model_path)
-        if gpu_id is not None:
-            device = f"cuda:{gpu_id}"
-        gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+        concrete_device = resolve_concrete_device(device, gpu_id)
+        device = str(concrete_device)
+        gpu_id = concrete_device.index or 0
         self.checkpoint_dir = checkpoint_dir
         self.device = device
         self.gpu_id = gpu_id
@@ -66,14 +82,67 @@ class SGLangGenerationEngineBuilder(ABC):
 
         self.pre_infra_setup(checkpoint_dir)
 
-        operator_selected_prefill_backend = _operator_selected_prefill_graph_backend(
-            server_args_overrides
+        if current_platform.is_cpu():
+            # A stage default asking for a graph would otherwise fail inside
+            # capture rather than at configuration time.
+            server_args_overrides = dict(server_args_overrides or {})
+            server_args_overrides["disable_cuda_graph"] = True
+        else:
+            pass
+
+        requested_context_length = (
+            server_args_overrides.get("context_length")
+            if server_args_overrides is not None
+            else None
         )
+        if (
+            requested_context_length is not None
+            and self.supports_context_length_override
+        ):
+            context_length = requested_context_length
+        else:
+            context_length = self.resolve_context_length(
+                checkpoint_dir,
+                server_args_overrides=server_args_overrides,
+            )
+        self.context_length = normalize_context_length(
+            context_length,
+            model_name=self.model_name,
+        )
+
+        operator_selected = operator_selected_prefill_backend(server_args_overrides)
         overrides = build_generation_batch_overrides(
             server_args_overrides=server_args_overrides,
             **self.generation_defaults(dtype=dtype),
         )
         self.adjust_overrides(overrides)
+        if "context_length" in overrides:
+            if not self.supports_context_length_override:
+                raise ValueError(
+                    f"{self.model_name} does not support a context_length override"
+                )
+            else:
+                pass
+            overrides.pop("context_length")
+        else:
+            pass
+        # Note (Jiaxin Deng): user fractions were rejected upstream; what remains
+        # is a builder KV-tuned default, dropped so headroom derives cleanly.
+        from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
+
+        if peek_stage_kv_cache_bytes() is not None:
+            builder_default_fraction = overrides.pop("mem_fraction_static", None)
+            if builder_default_fraction is not None:
+                logger.info(
+                    f"{self.model_name}: clearing builder default "
+                    f"mem_fraction_static={builder_default_fraction} because the "
+                    "stage declares engine.kv_cache_bytes"
+                )
+            else:
+                pass
+        else:
+            pass
+        sglang_backend.pin_resolved_device_type(overrides, concrete_device.type)
 
         server_args = sglang_backend.build_sglang_server_args(
             checkpoint_dir,
@@ -81,21 +150,37 @@ class SGLangGenerationEngineBuilder(ABC):
             **overrides,
         )
         self.customize_server_args(server_args)
+        cfg = resolved_view(server_args)
+        if (
+            overrides.get("chunked_prefill_size") is None
+            and cfg.cuda_graph_config.prefill.backend != CudaGraphBackend.DISABLED
+        ):
+            logger.info(
+                f"{self.model_name}: chunked_prefill_size was unset, SGLang resolved "
+                f"{cfg.chunked_prefill_size}, prefill CUDA graph cap "
+                f"{cfg.cuda_graph_config.prefill.max_bs}"
+            )
+        else:
+            pass
         self.validate_before_infrastructure(server_args)
 
         infra_kwargs = dict(self.infra_kwargs())
         if self.model_arch_override is not None:
             infra_kwargs.setdefault("model_arch_override", self.model_arch_override)
+        else:
+            pass
+
+        def before_memory_pool(model_worker: Any) -> None:
+            self.before_memory_pool(
+                model_worker=model_worker,
+                checkpoint_dir=checkpoint_dir,
+                device=device,
+                gpu_id=gpu_id,
+                server_args=server_args,
+            )
+
+        infra_kwargs["before_memory_pool"] = before_memory_pool
         prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
-        if (
-            prefill_graph_backend != CudaGraphBackend.DISABLED
-            and not operator_selected_prefill_backend
-        ):
-            # SGLang treats every non-default source as operator-locked. A
-            # model-qualified stage default should survive compatibility
-            # resolution, but must remain eligible for the late free-memory
-            # safety gate immediately before graph capture.
-            server_args._cuda_graph_config_locked.discard(("prefill", "backend"))
         if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
             if not self.supports_breakable_prefill_cuda_graph:
                 raise RuntimeError(
@@ -104,14 +189,16 @@ class SGLangGenerationEngineBuilder(ABC):
                     "(supports_breakable_prefill_cuda_graph=False); refusing "
                     "cuda_graph_backend_prefill='breakable'"
                 )
+            else:
+                pass
             infra_kwargs.setdefault("enable_prefill_input_embeds", True)
+        else:
+            pass
         want_cuda_graph, (
             model_worker,
             tree_cache,
             req_to_token_pool,
             token_to_kv_pool_allocator,
-            prefill_mgr,
-            decode_mgr,
             model_config,
         ) = scheduling_bootstrap.create_sglang_infrastructure_defer_cuda_graph(
             server_args,
@@ -139,8 +226,13 @@ class SGLangGenerationEngineBuilder(ABC):
                 from sglang_omni.utils import cuda_graph_batch_validator
 
                 cuda_graph_batch_validator.attest_prefill_cuda_graphs(
-                    model_worker.model_runner, server_args
+                    model_worker.model_runner,
+                    operator_selected=operator_selected,
                 )
+            else:
+                pass
+        else:
+            pass
 
         try:
             # Model-local encoder graphs and caches must be initialized after
@@ -151,13 +243,9 @@ class SGLangGenerationEngineBuilder(ABC):
                 generation_cuda_graph_enabled=want_cuda_graph,
             )
 
-            output_proc = sglang_backend.SGLangOutputProcessor(
-                capture_hidden=False,
-                capture_hidden_layers=None,
-                model=model,
-            )
+            output_proc = sglang_backend.SGLangOutputProcessor()
             self.setup_runtime_resources(model, server_args)
-            scheduler, model_runner = self._build_runtime(
+            scheduler, model_runner = self.build_runtime(
                 model_worker=model_worker,
                 model=model,
                 output_proc=output_proc,
@@ -166,8 +254,6 @@ class SGLangGenerationEngineBuilder(ABC):
                 token_to_kv_pool_allocator=token_to_kv_pool_allocator,
                 server_args=server_args,
                 model_config=model_config,
-                prefill_manager=prefill_mgr,
-                decode_manager=decode_mgr,
             )
             self.post_scheduler_setup(scheduler, model_runner)
             return scheduler
@@ -191,6 +277,15 @@ class SGLangGenerationEngineBuilder(ABC):
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
 
+    def resolve_context_length(
+        self,
+        checkpoint_dir: str,
+        *,
+        server_args_overrides: Mapping[str, Any] | None = None,
+    ) -> int:
+        del checkpoint_dir, server_args_overrides
+        return self.context_length
+
     def validate_before_infrastructure(self, server_args: Any) -> None:
         del server_args
 
@@ -205,6 +300,18 @@ class SGLangGenerationEngineBuilder(ABC):
 
     def infra_kwargs(self) -> dict[str, Any]:
         return {}
+
+    def before_memory_pool(
+        self,
+        *,
+        model_worker: Any,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: Any,
+    ) -> None:
+        """Attach what the stage keeps resident, before the KV pool is sized."""
+        del model_worker, checkpoint_dir, device, gpu_id, server_args
 
     def setup_model(
         self,
@@ -247,7 +354,7 @@ class SGLangGenerationEngineBuilder(ABC):
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         raise NotImplementedError
 
-    def _build_runtime(
+    def build_runtime(
         self,
         *,
         model_worker: Any,
@@ -258,21 +365,17 @@ class SGLangGenerationEngineBuilder(ABC):
         token_to_kv_pool_allocator: Any,
         server_args: Any,
         model_config: Any,
-        prefill_manager: Any,
-        decode_manager: Any,
     ) -> tuple[Any, Any]:
         request_builder, result_adapter = self.make_adapters(model)
         scheduler_kwargs = self.extra_scheduler_kwargs()
         model_runner = self.make_model_runner(model_worker, output_proc)
-        scheduler = self._make_scheduler(
+        scheduler = self.make_scheduler(
             model_worker=model_worker,
             tree_cache=tree_cache,
             req_to_token_pool=req_to_token_pool,
             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
             server_args=server_args,
             model_config=model_config,
-            prefill_manager=prefill_manager,
-            decode_manager=decode_manager,
             model_runner=model_runner,
             request_builder=request_builder,
             result_adapter=result_adapter,
@@ -295,7 +398,7 @@ class SGLangGenerationEngineBuilder(ABC):
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {}
 
-    def _make_scheduler(
+    def make_scheduler(
         self,
         *,
         model_worker: Any,
@@ -304,8 +407,6 @@ class SGLangGenerationEngineBuilder(ABC):
         token_to_kv_pool_allocator: Any,
         server_args: Any,
         model_config: Any,
-        prefill_manager: Any,
-        decode_manager: Any,
         model_runner: Any,
         request_builder: Any,
         result_adapter: Any,
@@ -320,8 +421,6 @@ class SGLangGenerationEngineBuilder(ABC):
             "token_to_kv_pool_allocator": token_to_kv_pool_allocator,
             "server_args": server_args,
             "model_config": model_config,
-            "prefill_manager": prefill_manager,
-            "decode_manager": decode_manager,
             "model_runner": model_runner,
             "request_builder": request_builder,
             "result_adapter": result_adapter,
@@ -397,32 +496,24 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder):
         token_to_kv_pool_allocator: Any,
         server_args: Any,
         model_config: Any,
-        prefill_manager: Any,
-        decode_manager: Any,
         model_runner: Any,
         request_builder: Any,
         result_adapter: Any,
     ) -> Any:
-        from sglang_omni.scheduling import omni_scheduler
-
-        return omni_scheduler.OmniScheduler(
-            tp_worker=model_worker,
+        return super().make_scheduler(
+            model_worker=model_worker,
             tree_cache=tree_cache,
             req_to_token_pool=req_to_token_pool,
             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
             server_args=server_args,
             model_config=model_config,
-            prefill_manager=prefill_manager,
-            decode_manager=decode_manager,
             model_runner=model_runner,
             request_builder=request_builder,
             result_adapter=result_adapter,
-            abort_callback=self.make_abort_callback(),
-            request_finished_callback=self.make_request_finished_callback(),
-            **self.extra_scheduler_kwargs(),
+            extra_scheduler_kwargs=self.extra_scheduler_kwargs(),
         )
 
-    def _build_runtime(
+    def build_runtime(
         self,
         *,
         model_worker: Any,
@@ -433,8 +524,6 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder):
         token_to_kv_pool_allocator: Any,
         server_args: Any,
         model_config: Any,
-        prefill_manager: Any,
-        decode_manager: Any,
     ) -> tuple[Any, Any]:
         model_runner = self.make_model_runner(model_worker, output_proc)
         request_builder, result_adapter = self.make_adapters(model)
@@ -445,8 +534,6 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder):
             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
             server_args=server_args,
             model_config=model_config,
-            prefill_manager=prefill_manager,
-            decode_manager=decode_manager,
             model_runner=model_runner,
             request_builder=request_builder,
             result_adapter=result_adapter,

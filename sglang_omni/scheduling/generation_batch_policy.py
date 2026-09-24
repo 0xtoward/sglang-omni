@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from numbers import Integral
 from typing import Any
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
 
@@ -22,23 +23,28 @@ _PREFILL_PADDING_FACTOR = 2
 
 def get_decode_cuda_graph_max_bs(server_args: Any) -> Any:
     """Read the resolved SGLang decode CUDA Graph batch cap."""
-    return server_args.cuda_graph_config.decode.max_bs
+    cfg = resolved_view(server_args)
+    return cfg.cuda_graph_config.decode.max_bs
 
 
 def get_decode_cuda_graph_bs(server_args: Any) -> Any:
     """Read the resolved SGLang decode CUDA Graph batch buckets."""
-    return server_args.cuda_graph_config.decode.bs
+    cfg = resolved_view(server_args)
+    return cfg.cuda_graph_config.decode.bs
 
 
 def get_prefill_cuda_graph_backend(server_args: Any) -> str:
     """Read the resolved SGLang prefill CUDA graph backend."""
-    return server_args.cuda_graph_config.prefill.backend
+    cfg = resolved_view(server_args)
+    return cfg.cuda_graph_config.prefill.backend
 
 
 def build_default_cuda_graph_bs(max_bs: int) -> list[int]:
     max_bs = int(max_bs)
     if max_bs < 1:
         raise ValueError("max_bs must be >= 1")
+    else:
+        pass
 
     values = [1, 2, 4, 8, 12]
     values.extend(range(16, 257, 8))
@@ -47,6 +53,8 @@ def build_default_cuda_graph_bs(max_bs: int) -> list[int]:
     values = [bs for bs in values if bs <= max_bs]
     if not values or values[-1] != max_bs:
         values.append(max_bs)
+    else:
+        pass
     return values
 
 
@@ -57,6 +65,8 @@ def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
     max_num_tokens = int(max_num_tokens)
     if max_num_tokens < 1:
         raise ValueError("max_num_tokens must be >= 1")
+    else:
+        pass
 
     values = list(range(4, 33, 4))
     values.extend(range(48, 257, 16))
@@ -67,7 +77,30 @@ def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
     values = [size for size in values if size <= max_num_tokens]
     if not values or values[-1] != max_num_tokens:
         values.append(max_num_tokens)
+    else:
+        pass
     return values
+
+
+def explicit_prefill_cap(overrides: Mapping[str, Any]) -> int | None:
+    """The cap SGLang derives inside ServerArgs once its inputs are explicit."""
+    declared = overrides.get("cuda_graph_max_bs_prefill")
+    if declared is not None:
+        return int(declared) if int(declared) > 0 else None
+    else:
+        pass
+    chunk = overrides.get("chunked_prefill_size")
+    if chunk is None or int(chunk) <= 0:
+        return None
+    else:
+        pass
+    cap = int(chunk)
+    max_total_tokens = overrides.get("max_total_tokens")
+    if max_total_tokens is not None:
+        cap = min(cap, int(max_total_tokens))
+    else:
+        pass
+    return cap
 
 
 def nested_prefill_overrides(overrides: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -75,10 +108,31 @@ def nested_prefill_overrides(overrides: Mapping[str, Any]) -> Mapping[str, Any]:
     config = overrides.get("cuda_graph_config")
     if isinstance(config, CudaGraphConfig):
         config = config.to_dict()
+    else:
+        pass
     if not isinstance(config, Mapping):
         return {}
+    else:
+        pass
     prefill_config = config.get("prefill")
     return prefill_config if isinstance(prefill_config, Mapping) else {}
+
+
+def operator_selected_prefill_backend(
+    server_args_overrides: Mapping[str, Any] | None,
+) -> bool:
+    """Whether the operator named the prefill CUDA graph backend in the overrides."""
+    if not server_args_overrides:
+        return False
+    else:
+        pass
+    # note (ratish): a null flat selector is unset in sglang; a nested key is
+    # locked at any value.
+    if server_args_overrides.get("cuda_graph_backend_prefill") is not None:
+        return True
+    else:
+        pass
+    return "backend" in nested_prefill_overrides(server_args_overrides)
 
 
 def build_generation_batch_overrides(
@@ -100,6 +154,8 @@ def build_generation_batch_overrides(
     ):
         if nested_key not in nested_prefill:
             continue
+        else:
+            pass
         nested_value = nested_prefill[nested_key]
         if flat_key in incoming and incoming[flat_key] != nested_value:
             raise ValueError(
@@ -107,22 +163,24 @@ def build_generation_batch_overrides(
                 f"{nested_key} values: "
                 f"{incoming[flat_key]!r} != {nested_value!r}"
             )
+        else:
+            pass
         incoming[flat_key] = nested_value
-    max_running_requests = _normalize_positive_int(
+    max_running_requests = normalize_positive_int(
         "max_running_requests",
         incoming.pop("max_running_requests", max_running_requests),
     )
     cuda_graph_max_bs = (
         max_running_requests if cuda_graph_max_bs is None else cuda_graph_max_bs
     )
-    cuda_graph_max_bs = _normalize_positive_int(
+    cuda_graph_max_bs = normalize_positive_int(
         "cuda_graph_max_bs",
         incoming.pop("cuda_graph_max_bs", cuda_graph_max_bs),
     )
     torch_compile_max_bs = (
         max_running_requests if torch_compile_max_bs is None else torch_compile_max_bs
     )
-    torch_compile_max_bs = _normalize_positive_int(
+    torch_compile_max_bs = normalize_positive_int(
         "torch_compile_max_bs",
         incoming.pop("torch_compile_max_bs", torch_compile_max_bs),
     )
@@ -149,24 +207,67 @@ def build_generation_batch_overrides(
         overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.DISABLED
         overrides.pop("cuda_graph_bs_prefill", None)
         overrides.pop("cuda_graph_max_bs_prefill", None)
+    else:
+        pass
 
-    # Reconcile the merged buckets with the cap: derive a missing cap from
-    # the buckets, and trim stage-default buckets to an operator cap. An
-    # operator-stated list is never trimmed; contradictions fail validation.
     prefill_bs = overrides.get("cuda_graph_bs_prefill")
     prefill_max_bs = overrides.get("cuda_graph_max_bs_prefill")
+    if (
+        prefill_bs is None
+        and overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.BREAKABLE
+    ):
+        # note (ratish): SGLang's prefill generator omits an off-grid cap, and
+        # an unset chunk is only known inside ServerArgs.
+        cap = explicit_prefill_cap(overrides)
+        if cap is not None:
+            prefill_bs = build_default_prefill_cuda_graph_bs(cap)
+            prefill_max_bs = cap
+            overrides["cuda_graph_bs_prefill"] = prefill_bs
+            overrides["cuda_graph_max_bs_prefill"] = cap
+        else:
+            pass
+    else:
+        pass
+    # note (Akazaakane): SGLang sets the prefill max_bs from the chunk even
+    # when a list is declared.
     if prefill_bs and prefill_max_bs is None:
         overrides["cuda_graph_max_bs_prefill"] = max(int(b) for b in prefill_bs)
-    elif (
-        prefill_bs
-        and "cuda_graph_bs_prefill" not in incoming
-        and int(prefill_max_bs) < max(int(b) for b in prefill_bs)
-    ):
+    elif prefill_bs and int(prefill_max_bs) < max(int(b) for b in prefill_bs):
+        # note (ratish): SGLang keeps a declared list as is, so an operator cap
+        # bounds a stage list only here.
         cap = int(prefill_max_bs)
+        if "cuda_graph_bs_prefill" in incoming:
+            raise ValueError(
+                f"cuda_graph_max_bs_prefill={cap} is below the declared "
+                f"cuda_graph_bs_prefill top {max(int(b) for b in prefill_bs)}"
+            )
+        else:
+            pass
         trimmed = [int(b) for b in prefill_bs if int(b) <= cap]
         if not trimmed or trimmed[-1] != cap:
             trimmed.append(cap)
+        else:
+            pass
         overrides["cuda_graph_bs_prefill"] = trimmed
+    elif (
+        prefill_bs
+        and int(prefill_max_bs) > max(int(b) for b in prefill_bs)
+        and "cuda_graph_bs_prefill" not in incoming
+    ):
+        # note (luojiaxuan): a stage-supplied ladder has to grow with a raised
+        # operator cap, otherwise the builder default silently bounds the cap to
+        # its own top and the request is lost. Append above the current top
+        # rather than rebuilding: a stage ladder carries buckets the shared one
+        # does not, such as the Qwen3-TTS 1-token bucket and MOSS-TD's small
+        # ones, and rebuilding would drop them. A ladder the operator declared
+        # themselves is left alone, since they own both values.
+        cap = int(prefill_max_bs)
+        current_top = max(int(b) for b in prefill_bs)
+        overrides["cuda_graph_bs_prefill"] = [int(b) for b in prefill_bs] + [
+            b for b in build_default_prefill_cuda_graph_bs(cap) if b > current_top
+        ]
+    else:
+        pass
 
     return overrides
 
@@ -178,18 +279,19 @@ def validate_generation_batch_policy(
     model_buffer_bs: int | None = None,
 ) -> None:
     errors: list[str] = []
+    cfg = resolved_view(server_args)
 
-    max_running_requests = _validate_positive_int(
+    max_running_requests = validate_positive_int(
         "max_running_requests",
-        server_args.max_running_requests,
+        cfg.max_running_requests,
         errors,
     )
-    cuda_graph_enabled = not bool(server_args.disable_cuda_graph)
+    cuda_graph_enabled = not bool(cfg.disable_cuda_graph)
 
     cuda_graph_max_bs: int | None = None
     cuda_graph_bs: tuple[int, ...] | None = None
     if cuda_graph_enabled:
-        cuda_graph_max_bs = _validate_positive_int(
+        cuda_graph_max_bs = validate_positive_int(
             "cuda_graph_max_bs",
             get_decode_cuda_graph_max_bs(server_args),
             errors,
@@ -199,7 +301,7 @@ def validate_generation_batch_policy(
         if cuda_graph_bs_value is None:
             errors.append("cuda_graph_bs must be explicit when CUDA graph is enabled")
         else:
-            cuda_graph_bs = _normalize_cuda_graph_bs(
+            cuda_graph_bs = normalize_cuda_graph_bs(
                 cuda_graph_bs_value, errors, field="cuda_graph_bs"
             )
 
@@ -209,6 +311,10 @@ def validate_generation_batch_policy(
                     "max(cuda_graph_bs) must match cuda_graph_max_bs "
                     f"({max(cuda_graph_bs)} != {cuda_graph_max_bs})"
                 )
+            else:
+                pass
+        else:
+            pass
 
         if (
             max_running_requests is not None
@@ -219,13 +325,17 @@ def validate_generation_batch_policy(
                 "cuda_graph_max_bs must cover max_running_requests "
                 f"({cuda_graph_max_bs} < {max_running_requests})"
             )
+        else:
+            pass
+    else:
+        pass
 
-    _validate_prefill_graph_policy(server_args, cuda_graph_enabled, errors)
+    validate_prefill_graph_policy(server_args, cuda_graph_enabled, errors)
 
-    torch_compile_enabled = bool(server_args.enable_torch_compile)
-    torch_compile_max_bs = _validate_positive_int(
+    torch_compile_enabled = bool(cfg.enable_torch_compile)
+    torch_compile_max_bs = validate_positive_int(
         "torch_compile_max_bs",
-        server_args.torch_compile_max_bs,
+        cfg.torch_compile_max_bs,
         errors,
         required=torch_compile_enabled,
     )
@@ -234,6 +344,8 @@ def validate_generation_batch_policy(
         normalized_model_buffer_bs = int(model_buffer_bs)
         if normalized_model_buffer_bs < 1:
             errors.append("model_buffer_bs must be >= 1")
+        else:
+            pass
         if (
             max_running_requests is not None
             and normalized_model_buffer_bs < max_running_requests
@@ -242,23 +354,32 @@ def validate_generation_batch_policy(
                 "model_buffer_bs must cover max_running_requests "
                 f"({normalized_model_buffer_bs} < {max_running_requests})"
             )
+        else:
+            pass
+    else:
+        pass
 
     if errors:
         raise ValueError(
             f"{model_name} invalid generation batch policy: " + "; ".join(errors)
         )
+    else:
+        pass
 
 
-def _validate_prefill_graph_policy(
+def validate_prefill_graph_policy(
     server_args: Any,
     cuda_graph_enabled: bool,
     errors: list[str],
 ) -> None:
-    """Validate the declared prefill CUDA graph policy: breakable backend
-    only, with explicitly declared buckets."""
-    backend = get_prefill_cuda_graph_backend(server_args)
+    """Validate the resolved prefill CUDA graph policy: breakable backend
+    only, with the bucket list checked against the chunked prefill ceiling."""
+    cfg = resolved_view(server_args)
+    backend = cfg.cuda_graph_config.prefill.backend
     if backend == CudaGraphBackend.DISABLED:
         return
+    else:
+        pass
 
     if not cuda_graph_enabled:
         errors.append(
@@ -266,18 +387,22 @@ def _validate_prefill_graph_policy(
             f"(backend={backend!r} with disable_cuda_graph)"
         )
         return
+    else:
+        pass
     if backend != CudaGraphBackend.BREAKABLE:
         errors.append(
             "prefill CUDA graph backend must be 'breakable' or 'disabled', "
             f"got {backend!r}"
         )
         return
+    else:
+        pass
 
     incompatibilities = (
-        ("context parallel (attn_cp_size > 1)", server_args.attn_cp_size > 1),
-        ("decode context parallel (dcp_size > 1)", server_args.dcp_size > 1),
-        ("LoRA", bool(server_args.lora_paths) or bool(server_args.enable_lora)),
-        ("MoE A2A", server_args.moe_a2a_backend != "none"),
+        ("context parallel (attn_cp_size > 1)", cfg.attn_cp_size > 1),
+        ("decode context parallel (dcp_size > 1)", cfg.dcp_size > 1),
+        ("LoRA", bool(cfg.lora_paths) or bool(cfg.enable_lora)),
+        ("MoE A2A", cfg.moe_a2a_backend != "none"),
     )
     for feature, is_active in incompatibilities:
         if is_active:
@@ -285,43 +410,39 @@ def _validate_prefill_graph_policy(
                 f"breakable prefill CUDA graphs are incompatible with {feature}; "
                 "set cuda_graph_backend_prefill='disabled'"
             )
+        else:
+            pass
 
-    if ("prefill", "bs") not in server_args._cuda_graph_config_locked:
-        errors.append(
-            "breakable prefill CUDA graphs require explicit "
-            "cuda_graph_bs_prefill buckets (sglang's generated ladder is "
-            "not an accepted shape policy)"
+    prefill_cfg = cfg.cuda_graph_config.prefill
+    if not prefill_cfg.bs:
+        logger.warning(
+            "breakable prefill CUDA graphs require a positive prefill graph cap: "
+            f"chunked_prefill_size={cfg.chunked_prefill_size}, "
+            f"cuda_graph_max_bs_prefill={prefill_cfg.max_bs}, so SGLang captures "
+            "no prefill graphs"
         )
         return
-
-    prefill_cfg = server_args.cuda_graph_config.prefill
-    buckets = _normalize_cuda_graph_bs(
+    else:
+        pass
+    buckets = normalize_cuda_graph_bs(
         prefill_cfg.bs, errors, field="cuda_graph_bs_prefill"
     )
     if buckets is None:
         return
+    else:
+        pass
 
-    max_bs = prefill_cfg.max_bs
-    if max_bs is not None and max(buckets) != int(max_bs):
-        errors.append(
-            "max(cuda_graph_bs_prefill) must match cuda_graph_max_bs_prefill "
-            f"({max(buckets)} != {max_bs})"
+    # note (ratish): PrefillAdder bounds each admission by the remaining chunk,
+    # so a positive chunked_prefill_size is the only per-forward ceiling.
+    # max_prefill_tokens is a cumulative stop one admission can overshoot.
+    chunk = cfg.chunked_prefill_size
+    if chunk is not None and int(chunk) > 0 and buckets[-1] > int(chunk):
+        logger.warning(
+            f"cuda_graph_bs_prefill max={buckets[-1]} exceeds chunked_prefill_size="
+            f"{chunk}, buckets above it are captured but cannot be scheduled"
         )
-
-    # Buckets above either per-forward token cap can never replay.
-    for cap_name, cap_value in (
-        ("chunked_prefill_size", server_args.chunked_prefill_size),
-        ("max_prefill_tokens", server_args.max_prefill_tokens),
-    ):
-        if (
-            cap_value is not None
-            and int(cap_value) > 0
-            and max(buckets) > int(cap_value)
-        ):
-            errors.append(
-                f"cuda_graph_bs_prefill buckets above {cap_name} are "
-                f"unreachable ({max(buckets)} > {cap_value})"
-            )
+    else:
+        pass
 
     # The largest eager-falling length under bucket nxt is
     # (nxt - 1) // factor; a valley exists only when that reaches past the
@@ -331,6 +452,8 @@ def _validate_prefill_graph_policy(
         eager_end = (nxt - 1) // _PREFILL_PADDING_FACTOR
         if eager_end > prev:
             valleys.append((prev + 1, eager_end))
+        else:
+            pass
     if valleys:
         logger.warning(
             "prefill CUDA graph bucket gaps exceed the %dx padding factor; "
@@ -338,9 +461,11 @@ def _validate_prefill_graph_policy(
             _PREFILL_PADDING_FACTOR,
             valleys,
         )
+    else:
+        pass
 
 
-def _validate_positive_int(
+def validate_positive_int(
     field: str,
     value: Any,
     errors: list[str],
@@ -350,7 +475,11 @@ def _validate_positive_int(
     if value is None:
         if required:
             errors.append(f"{field} must be explicit")
+        else:
+            pass
         return None
+    else:
+        pass
     try:
         normalized = int(value)
     except (TypeError, ValueError):
@@ -359,20 +488,24 @@ def _validate_positive_int(
     if normalized < 1:
         errors.append(f"{field} must be >= 1")
         return None
+    else:
+        pass
     return normalized
 
 
-def _normalize_positive_int(field: str, value: Any) -> int:
+def normalize_positive_int(field: str, value: Any) -> int:
     try:
         normalized = int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field} must be an integer") from exc
     if normalized < 1:
         raise ValueError(f"{field} must be >= 1")
+    else:
+        pass
     return normalized
 
 
-def _normalize_cuda_graph_bs(
+def normalize_cuda_graph_bs(
     value: Iterable[Any],
     errors: list[str],
     *,
@@ -381,6 +514,8 @@ def _normalize_cuda_graph_bs(
     if isinstance(value, (str, bytes)):
         errors.append(f"{field} must be a sequence of positive integers")
         return None
+    else:
+        pass
 
     try:
         items = tuple(value)
@@ -390,15 +525,23 @@ def _normalize_cuda_graph_bs(
     if any(isinstance(item, bool) or not isinstance(item, Integral) for item in items):
         errors.append(f"{field} must be a sequence of positive integers")
         return None
+    else:
+        pass
     normalized = tuple(int(item) for item in items)
 
     if not normalized:
         errors.append(f"{field} must be non-empty")
         return None
+    else:
+        pass
     if any(item < 1 for item in normalized):
         errors.append(f"{field} values must be >= 1")
         return None
+    else:
+        pass
     if tuple(sorted(set(normalized))) != normalized:
         errors.append(f"{field} must be strictly increasing")
         return None
+    else:
+        pass
     return normalized

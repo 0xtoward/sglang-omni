@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import collections
-import hashlib
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,19 +23,8 @@ class VoxtralSGLangRequestData(SGLangARRequestData):
     audio_token_id: int = 24
     output_codes: list[torch.Tensor] = field(default_factory=list)
     pending_feedback_queue: Any = field(default_factory=collections.deque)
-    # Persistent history of the fused (all-codebook) decode-input embedding fed
-    # for each generated frame. Unlike pending_feedback_queue (popped during
-    # decode) this is never consumed, so a retraction re-prefill can replay the
-    # exact fused embeds for already-generated positions instead of rebuilding
-    # them as semantic-only (which silently drops the acoustic codebooks).
+    # note (luojiaxuan): Keep all-codebook feedback after decode consumes the queue.
     generated_input_embeds: list[torch.Tensor] = field(default_factory=list)
-
-
-def _voice_cache_key(voice: str, voice_embedding: torch.Tensor | None) -> str | None:
-    if voice_embedding is None:
-        return None
-    digest = hashlib.blake2b(voice.encode("utf-8"), digest_size=16).hexdigest()
-    return f"voxtral_voice:{digest}"
 
 
 def build_sglang_voxtral_request(
@@ -69,10 +58,11 @@ def build_sglang_voxtral_request(
         sampling_params=sampling_params,
         eos_token_ids={eos_id},
         vocab_size=model.voxtral_config.text_config.vocab_size,
-        extra_key=_voice_cache_key(voice, voice_embedding),
+        # note (luojiaxuan): Scalar IDs omit acoustic codes; isolate each lifecycle.
+        extra_key=f"voxtral_tts:{uuid.uuid4().hex}",
     )
     req.tokenizer = None
-    req._codec_suppress_tokens = None
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     data = VoxtralSGLangRequestData(
         input_ids=input_ids,

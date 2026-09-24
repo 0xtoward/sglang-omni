@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 import torch
 
-from sglang_omni.config import build_process_topology_plan, build_stage_placement_plan
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
@@ -19,7 +18,8 @@ from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_waveform_payload
-from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
+from tests.unit_test.fakes import FakeExecutionBridge
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 def test_voxtral_tts_config_uses_current_stage_schema() -> None:
@@ -31,27 +31,86 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     ]
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_generation": 0, "vocoder": 0}
-    assert "device" not in config.stages[1].factory_args
-    assert "device" not in config.stages[2].factory_args
+    assert config.stages[1].factory.device is None
+    assert config.stages[2].factory.device is None
     assert [stage.process for stage in config.stages] == [
         "pipeline",
         "pipeline",
         "pipeline",
     ]
     assert [
-        stage.runtime.resources.total_gpu_memory_fraction
-        for stage in config.stages
-        if stage.gpu is not None
+        stage.gpu_memory_fraction for stage in config.stages if stage.gpu is not None
     ] == [None, None]
-    build_process_topology_plan(config, build_stage_placement_plan(config))
+    build_compiled_process_topology(config)
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")
         is VoxtralTTSPipelineConfig
     )
 
 
-def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:
-    """Different voice embeddings must not share a placeholder-token cache prefix."""
+def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.voxtral_tts.pipeline import engine_builder
+
+    captured: dict[str, object] = {}
+
+    class FakeBuilder:
+        def build(self, model_path, **kwargs):
+            captured["build"] = (model_path, kwargs)
+            return "generation"
+
+    monkeypatch.setattr(engine_builder, "VoxtralTtsEngineBuilder", FakeBuilder)
+    generation = stages.create_generation_executor("model", gpu_id=3)
+
+    assert generation == "generation"
+    assert captured["build"] == (
+        "model",
+        {
+            "device": None,
+            "gpu_id": 3,
+            "server_args_overrides": None,
+        },
+    )
+
+    stages.create_generation_executor("model", device="cuda:2", gpu_id=5)
+    assert captured["build"] == (
+        "model",
+        {
+            "device": "cuda:2",
+            "gpu_id": 5,
+            "server_args_overrides": None,
+        },
+    )
+
+    seen_devices: list[str] = []
+    resolved_devices: list[tuple[str | None, int | None]] = []
+    import sglang_omni.utils.device as device_mod
+
+    monkeypatch.setattr(
+        device_mod,
+        "resolve_concrete_device",
+        lambda device, gpu_id: (
+            resolved_devices.append((device, gpu_id)) or f"npu:{gpu_id}"
+        ),
+    )
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages,
+        "load_audio_tokenizer",
+        lambda _checkpoint, _config, device: (
+            seen_devices.append(device) or SimpleNamespace()
+        ),
+    )
+
+    stages.create_vocoder_executor("model", gpu_id=4)
+    assert resolved_devices == [(None, 4)]
+    assert seen_devices == ["npu:4"]
+
+
+def test_voxtral_radix_cache_is_namespaced_by_request_lifecycle() -> None:
+    from sglang.srt.mem_cache.radix_cache import RadixKey
+
     model = SimpleNamespace(
         audio_token_id=24,
         voxtral_config=SimpleNamespace(
@@ -87,12 +146,24 @@ def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:
 
     assert cheerful.req.origin_input_ids == neutral.req.origin_input_ids
     assert cheerful.req.extra_key != neutral.req.extra_key
-    assert cheerful.req.extra_key.startswith("voxtral_voice:")
+    reused = build_sglang_voxtral_request(
+        make_payload("r1", "cheerful_female"),
+        model=model,
+        voice_embeddings=voice_embeddings,
+    )
+    assert cheerful.req.extra_key != reused.req.extra_key
+    assert (
+        RadixKey(cheerful.req.origin_input_ids, cheerful.req.extra_key).child_key()
+        != RadixKey(reused.req.origin_input_ids, reused.req.extra_key).child_key()
+    )
+    key = cheerful.req.extra_key
+    cheerful.req.reset_for_retract()
+    assert cheerful.req.extra_key == key
     assert cheerful.voice_embedding is voice_embeddings["cheerful_female"]
 
 
 def test_voxtral_speech_validation_accepts_supported_fields() -> None:
-    stages._validate_voxtral_speech_params(
+    stages.validate_voxtral_speech_params(
         inputs="hello",
         params={
             "max_new_tokens": 128,
@@ -139,7 +210,7 @@ def test_voxtral_speech_validation_rejects_ignored_fields(
     field: str,
 ) -> None:
     with pytest.raises(ValueError, match=field):
-        stages._validate_voxtral_speech_params(
+        stages.validate_voxtral_speech_params(
             inputs=inputs,
             params=params,
             tts_params=tts_params,
@@ -149,7 +220,7 @@ def test_voxtral_speech_validation_rejects_ignored_fields(
 @pytest.mark.parametrize("audio_codes", [None, torch.empty((0, 0), dtype=torch.long)])
 def test_voxtral_vocoder_rejects_empty_audio_codes(audio_codes) -> None:
     with pytest.raises(ValueError, match="generated no audio codes"):
-        stages._ensure_non_empty_audio_codes(audio_codes)
+        stages.ensure_non_empty_audio_codes(audio_codes)
 
 
 def test_voxtral_audio_waveform_payload_is_compact() -> None:
@@ -175,6 +246,31 @@ def test_voxtral_audio_codes_payload_is_compact() -> None:
     assert restored.audio_codes.tolist() == [[1, 2], [3, 4]]
 
 
+def test_voxtral_audio_attention_accepts_non_contiguous_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.voxtral_tts import audio_tokenizer
+
+    monkeypatch.setattr(audio_tokenizer, "HAS_FLASH_ATTN", False)
+    attention = audio_tokenizer.Attention(
+        SimpleNamespace(
+            n_heads=2,
+            n_kv_heads=2,
+            attn_sliding_window_size=8,
+            dim=4,
+            head_dim=2,
+            use_biases=False,
+            qk_norm=False,
+            causal=True,
+        ),
+        layer_id=0,
+    )
+
+    output = attention(torch.randn(3, 4))
+
+    assert output.shape == (3, 4)
+
+
 def test_voxtral_vocoder_preserves_warmup_trim_and_fade(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -191,7 +287,7 @@ def test_voxtral_vocoder_preserves_warmup_trim_and_fade(
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(
         stages,
-        "_load_audio_tokenizer",
+        "load_audio_tokenizer",
         lambda *args, **kwargs: FakeAudioTokenizer(),
     )
 
@@ -206,10 +302,10 @@ def test_voxtral_vocoder_preserves_warmup_trim_and_fade(
         ).to_dict(),
     )
 
-    result = asyncio.run(scheduler._fn(payload))
+    result = asyncio.run(scheduler.fn(payload))
 
-    assert scheduler._max_batch_size == 1
-    assert scheduler._max_batch_wait_s == 0
+    assert scheduler.max_batch_size == 1
+    assert scheduler.max_batch_wait_s == 0
     assert [codes.tolist() for codes in seen_codes] == [
         [[9, 10], [9, 10], [9, 10], [11, 12]]
     ]
@@ -232,8 +328,8 @@ def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> Non
 
     eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
     runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
-    runner._pending_audio_codes = None
-    runner._pending_audio_embeds = None
+    runner.pending_audio_codes = None
+    runner.pending_audio_embeds = None
     runner.model = SimpleNamespace(
         acoustic_transformer=lambda hidden: torch.tensor(
             [[11, 12, 13], [eos_id, 21, 22]], dtype=torch.long
@@ -249,20 +345,28 @@ def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> Non
         SimpleNamespace(
             request_id="active",
             data=SimpleNamespace(
+                req=SimpleNamespace(
+                    is_retracted=False, finished=lambda: False, inflight_middle_chunks=0
+                ),
                 output_codes=[],
                 pending_feedback_queue=[],
+                generated_input_embeds=[],
             ),
         ),
         SimpleNamespace(
             request_id="eos",
             data=SimpleNamespace(
+                req=SimpleNamespace(
+                    is_retracted=False, finished=lambda: False, inflight_middle_chunks=0
+                ),
                 output_codes=[],
                 pending_feedback_queue=[],
+                generated_input_embeds=[],
             ),
         ),
     ]
 
-    runner._collect_audio_step(result, schedule_batch, requests)
+    runner.collect_audio_step(result, schedule_batch, requests)
 
     assert result.next_token_ids.tolist() == [11, eos_id]
     assert requests[0].data.output_codes == []
@@ -279,6 +383,10 @@ def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> Non
 
     assert [chunk.tolist() for chunk in requests[0].data.output_codes] == [[11, 12, 13]]
     assert len(requests[0].data.pending_feedback_queue) == 1
+    assert (
+        requests[0].data.pending_feedback_queue[0]
+        is requests[0].data.generated_input_embeds[0]
+    )
     assert requests[1].data.output_codes == []
     assert requests[1].data.pending_feedback_queue == []
 
@@ -292,7 +400,7 @@ def test_voxtral_decode_writes_feedback_buffer_for_standard_forward() -> None:
     runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
     runner.model = SimpleNamespace(
         hidden_size=3,
-        _decode_input_embed_buffer=torch.zeros(2, 3, dtype=torch.float16),
+        decode_input_embed_buffer=torch.zeros(2, 3, dtype=torch.float16),
     )
     first = SimpleNamespace(
         data=SimpleNamespace(
@@ -308,7 +416,7 @@ def test_voxtral_decode_writes_feedback_buffer_for_standard_forward() -> None:
     assert result is None
     assert not first.data.pending_feedback_queue
     assert torch.equal(
-        runner.model._decode_input_embed_buffer,
+        runner.model.decode_input_embed_buffer,
         torch.tensor(
             [[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]],
             dtype=torch.float16,
@@ -322,16 +430,178 @@ def test_voxtral_decode_empty_batch_keeps_feedback_buffer() -> None:
     runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
     runner.model = SimpleNamespace(
         hidden_size=3,
-        _decode_input_embed_buffer=torch.ones(1, 3, dtype=torch.float16),
+        decode_input_embed_buffer=torch.ones(1, 3, dtype=torch.float16),
     )
 
     result = runner.before_decode(object(), object(), [])
 
     assert result is None
     assert torch.equal(
-        runner.model._decode_input_embed_buffer,
+        runner.model.decode_input_embed_buffer,
         torch.ones(1, 3, dtype=torch.float16),
     )
+
+
+@pytest.mark.parametrize(("start", "end"), [(0, 5), (2, 4), (4, 5)])
+def test_voxtral_reprefill_replays_absolute_rows_and_consumes_queue(
+    start: int, end: int
+) -> None:
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    runner.model = SimpleNamespace(
+        get_input_embeddings=lambda: lambda ids: torch.stack(
+            (ids, ids + 100), dim=1
+        ).float(),
+        hidden_size=2,
+        decode_input_embed_buffer=torch.zeros(1, 2),
+    )
+    history = [torch.tensor([10.0, 11.0]), torch.tensor([20.0, 21.0])]
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            extend_range=SimpleNamespace(start=start, end=end, length=end - start)
+        ),
+        input_ids=torch.tensor([1, 24, 3]),
+        voice_embedding=torch.tensor([[700.0, 701.0]]),
+        audio_token_id=24,
+        generated_input_embeds=history,
+        pending_feedback_queue=collections.deque([history[-1]]),
+    )
+    request = SimpleNamespace(data=data)
+    batch = SimpleNamespace(input_ids=torch.tensor([1, 24, 3, 10, 20])[start:end])
+
+    embeds = runner.build_prefill_input_embeds(batch, [request])
+
+    expected = torch.tensor([[1, 101], [700, 701], [3, 103], [10, 11], [20, 21]])
+    assert torch.equal(embeds, expected[start:end].float())
+    assert not data.pending_feedback_queue
+    assert len(data.generated_input_embeds) == 2
+    data.pending_feedback_queue.append(torch.tensor([30.0, 31.0]))
+    runner.before_decode(None, None, [request])
+    assert runner.model.decode_input_embed_buffer.tolist() == [[30.0, 31.0]]
+
+
+def test_voxtral_reprefill_missing_history_preserves_pending_feedback() -> None:
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    runner.model = SimpleNamespace(
+        get_input_embeddings=lambda: lambda ids: ids[:, None].float()
+    )
+    queued = torch.tensor([9.0])
+    data = SimpleNamespace(
+        req=SimpleNamespace(extend_range=SimpleNamespace(start=1, end=2, length=1)),
+        input_ids=torch.tensor([1]),
+        generated_input_embeds=[],
+        pending_feedback_queue=collections.deque([queued]),
+    )
+    valid_data = SimpleNamespace(
+        req=data.req,
+        input_ids=data.input_ids,
+        generated_input_embeds=[queued],
+        pending_feedback_queue=collections.deque([queued]),
+        voice_embedding=None,
+        audio_token_id=24,
+    )
+    with pytest.raises(RuntimeError, match="missing generated feedback"):
+        runner.build_prefill_input_embeds(
+            SimpleNamespace(input_ids=torch.tensor([9, 9])),
+            [SimpleNamespace(data=valid_data), SimpleNamespace(data=data)],
+        )
+    assert data.pending_feedback_queue[0] is queued
+    assert valid_data.pending_feedback_queue[0] is queued
+
+
+def test_voxtral_middle_prefill_does_not_sample_feedback() -> None:
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    request = SimpleNamespace(
+        data=SimpleNamespace(req=SimpleNamespace(inflight_middle_chunks=1))
+    )
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.ones(1, 2)),
+        next_token_ids=None,
+    )
+    runner.post_prefill(result, None, SimpleNamespace(is_prefill_only=False), [request])
+    assert result.next_token_ids.tolist() == [0]
+    assert runner.pending_audio_codes is runner.pending_audio_embeds is None
+
+
+def test_voxtral_mixed_prefill_samples_only_final_rows_and_keeps_batch_order() -> None:
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+
+    def sample(hidden: torch.Tensor) -> torch.Tensor:
+        assert hidden.tolist() == [[20.0, 21.0]]
+        return torch.tensor([[11, 12]])
+
+    runner.model = SimpleNamespace(
+        acoustic_transformer=sample,
+        audio_token_embedding=lambda codes: codes.float().unsqueeze(-1),
+    )
+    requests = [
+        SimpleNamespace(
+            request_id=str(index),
+            data=SimpleNamespace(
+                req=SimpleNamespace(
+                    inflight_middle_chunks=int(index == 0),
+                    is_retracted=False,
+                    finished=lambda: False,
+                ),
+                output_codes=[],
+                generated_input_embeds=[],
+                pending_feedback_queue=collections.deque(),
+            ),
+        )
+        for index in range(2)
+    ]
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(
+            hidden_states=torch.tensor([[10.0, 11.0], [20.0, 21.0]])
+        ),
+        next_token_ids=None,
+    )
+    runner.post_prefill(result, None, SimpleNamespace(is_prefill_only=False), requests)
+    assert result.next_token_ids.tolist() == [0, 11]
+    runner.post_process_outputs(
+        result,
+        SimpleNamespace(requests=requests),
+        {
+            str(index): RequestOutput(str(index), data=token)
+            for index, token in enumerate([0, 11])
+        },
+    )
+    assert requests[0].data.output_codes == []
+    assert requests[0].data.generated_input_embeds == []
+    assert not requests[0].data.pending_feedback_queue
+    assert requests[1].data.output_codes[0].tolist() == [11, 12]
+    assert requests[1].data.generated_input_embeds[0].tolist() == [23.0]
+
+
+@pytest.mark.parametrize("state", ["middle", "retracted", "finished"])
+def test_voxtral_discarded_outputs_do_not_extend_feedback_history(state: str) -> None:
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    runner.pending_audio_codes = torch.tensor([[11, 12]])
+    runner.pending_audio_embeds = torch.ones(1, 1, 2)
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            is_retracted=state == "retracted",
+            finished=lambda: state == "finished",
+            inflight_middle_chunks=int(state == "middle"),
+        ),
+        output_codes=[],
+        generated_input_embeds=[],
+        pending_feedback_queue=collections.deque(),
+    )
+    batch = SimpleNamespace(requests=[SimpleNamespace(request_id="r", data=data)])
+    runner.post_process_outputs(None, batch, {"r": RequestOutput("r", data=11)})
+    assert data.output_codes == data.generated_input_embeds == []
+    assert not data.pending_feedback_queue
+    assert runner.finalize_skip_rids(batch) == {"r"}
 
 
 def test_voxtral_steady_decode_reports_cuda_graph_ready(
@@ -359,7 +629,7 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
         hidden_size = 3
 
         def __init__(self) -> None:
-            self._decode_input_embed_buffer = torch.zeros(1, 3)
+            self.decode_input_embed_buffer = torch.zeros(1, 3)
 
         def acoustic_transformer(self, hidden):
             assert hidden.shape == (1, 3)
@@ -382,7 +652,7 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
             )
 
     class FakeOutputProcessor:
-        _capture_hidden = False
+        capture_hidden = False
 
         def process(self, model_output, scheduler_output):
             del model_output
@@ -400,7 +670,11 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
 
     data = SimpleNamespace(
         pending_feedback_queue=collections.deque([torch.tensor([1.0, 2.0, 3.0])]),
+        req=SimpleNamespace(
+            is_retracted=False, finished=lambda: False, inflight_middle_chunks=0
+        ),
         output_codes=[],
+        generated_input_embeds=[],
         generation_steps=0,
         extra_model_outputs={},
     )
@@ -416,7 +690,7 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
 
     assert output.can_run_cuda_graph is True
     assert torch.equal(
-        runner.model._decode_input_embed_buffer,
+        runner.model.decode_input_embed_buffer,
         torch.tensor([[1.0, 2.0, 3.0]]),
     )
 
@@ -425,9 +699,7 @@ def test_voxtral_forward_returns_graph_compatible_logits() -> None:
     from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
 
     model = VoxtralSGLangTTSModel.__new__(VoxtralSGLangTTSModel)
-    model._decode_input_embed_buffer = torch.arange(6, dtype=torch.float32).reshape(
-        2, 3
-    )
+    model.decode_input_embed_buffer = torch.arange(6, dtype=torch.float32).reshape(2, 3)
 
     def fake_language_model(input_ids, positions, forward_batch, input_embeds=None):
         del input_ids, positions, forward_batch
@@ -466,7 +738,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     from sglang_omni.scheduling import sglang_backend
 
     build_kwargs: dict = {}
-    infrastructure_saw_graph_disabled: list[bool] = []
+    infrastructure_saw_deferred_capture: list[bool] = []
     init_graph_calls: list[bool] = []
 
     class FakeModel:
@@ -492,12 +764,12 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     )
     monkeypatch.setattr(
         stages,
-        "_write_voxtral_sglang_config",
+        "write_voxtral_sglang_config",
         lambda checkpoint_dir: f"{checkpoint_dir}/config.json",
     )
     monkeypatch.setattr(
         stages,
-        "_load_voxtral_voice_embeddings",
+        "load_voxtral_voice_embeddings",
         lambda checkpoint_dir, device: {},
     )
     monkeypatch.setattr(
@@ -509,7 +781,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
         del model_path, context_length
         build_kwargs.update(kwargs)
-        return FakeServerArgs(
+        return SimpleNamespace(
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
             cuda_graph_config=SimpleNamespace(
@@ -530,12 +802,12 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
         )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        del gpu_id, kwargs
-        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
+        del gpu_id
+        infrastructure_saw_deferred_capture.append(
+            bool(kwargs.get("defer_cuda_graph_capture"))
+        )
         return (
             FakeWorker(server_args),
-            object(),
-            object(),
             object(),
             object(),
             object(),
@@ -568,7 +840,10 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
-    scheduler = stages.create_generation_executor("model", device="cuda:0")
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
+    scheduler = stages.create_generation_executor("model", device="cuda", gpu_id=0)
 
     assert build_kwargs["disable_cuda_graph"] is False
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16]
@@ -576,7 +851,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     assert build_kwargs["enable_torch_compile"] is True
     assert build_kwargs["sampling_backend"] == "pytorch"
     assert build_kwargs["torch_compile_max_bs"] == 16
-    assert infrastructure_saw_graph_disabled == [True]
+    assert infrastructure_saw_deferred_capture == [True]
     assert init_graph_calls == [True]
     assert scheduler.server_args.cuda_graph_bs == [1, 2, 4, 8, 12, 16]
     assert scheduler.server_args.cuda_graph_max_bs == 16
@@ -593,7 +868,7 @@ def test_enable_inductor_gemm_autotune_sets_per_shape_autotuning() -> None:
     try:
         inductor_config.max_autotune_gemm = False
         inductor_config.max_autotune_gemm_backends = "ATEN"
-        stages._enable_inductor_gemm_autotune()
+        stages.enable_inductor_gemm_autotune()
         assert inductor_config.max_autotune_gemm is True
         assert inductor_config.max_autotune_gemm_backends == "TRITON,ATEN"
     finally:

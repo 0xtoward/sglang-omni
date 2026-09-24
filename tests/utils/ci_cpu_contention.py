@@ -145,17 +145,38 @@ class ContentionSampler:
         self._samples: list[float] = []
         self._errors = 0
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread = threading.Thread(target=self._loop, daemon=True)
 
     def start(self) -> None:
-        self._thread.start()
+        self.thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        self._thread.join(timeout=5)
+        self.thread.join(timeout=5)
 
     def peak_foreign_cores(self) -> float:
         return max(self._samples, default=0.0)
+
+    def mean_foreign_cores(self) -> float:
+        if not self._samples:
+            return 0.0
+        return sum(self._samples) / len(self._samples)
+
+    def window_count(self) -> int:
+        return len(self._samples)
+
+    def sustained_foreign_cores(self, windows: int, cores: float) -> bool:
+        """Whether the last ``windows`` samples all exceed ``cores``.
+
+        A caller that acts on intrusion needs to know the lane is taken, not
+        that one window happened to land high: sampling is seconds and a
+        gated stage is minutes, so a single crossing is thinner evidence than
+        the decision it drives. Reading the tail rather than the whole series
+        lets a caller poll this while the session is still running.
+        """
+        if windows <= 0 or len(self._samples) < windows:
+            return False
+        return all(sample > cores for sample in self._samples[-windows:])
 
     def _loop(self) -> None:
         prev_busy = cpuset_busy_ticks(self._cpuset)
@@ -180,8 +201,8 @@ class ContentionSampler:
                 f"[cpuset-contention] cpuset={spec} no completed sample "
                 f"windows (errors={self._errors})"
             )
-        mean = sum(self._samples) / len(self._samples)
-        peak = max(self._samples)
+        mean = self.mean_foreign_cores()
+        peak = self.peak_foreign_cores()
         lines = [
             f"[cpuset-contention] cpuset={spec} windows={len(self._samples)} "
             f"foreign-cores mean={mean:.2f} max={peak:.2f} errors={self._errors}"

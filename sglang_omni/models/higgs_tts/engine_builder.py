@@ -51,6 +51,8 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
                 "Higgs tts_engine total_gpu_memory_fraction must be in (0, 1): "
                 "it drives sglang mem_fraction_static, which requires < 1"
             )
+        else:
+            pass
         self.max_new_tokens = max_new_tokens
         self.max_running_requests = max_running_requests
         self.cuda_graph_max_bs = cuda_graph_max_bs
@@ -70,10 +72,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         dtype: str,
     ) -> dict[str, Any]:
         del dtype
-        # note (luojiaxuan): Radix cache is namespaced per ref-audio via
-        # Req.extra_key (set in build_sglang_higgs_request); shared -100
-        # placeholder prefixes from different ref audios can't cross-contaminate
-        # the KV tree.
+        # note (luojiaxuan): per-lifetime keys isolate full-codebook KV from cb0 collisions.
         return {
             "max_running_requests": self.max_running_requests,
             "cuda_graph_max_bs": self.cuda_graph_max_bs,
@@ -92,13 +91,17 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         # Note: (Jiaxin Deng) an explicit mem_fraction_static override (e.g.
-        # --talker-mem-fraction-static) wins, but never silently.
+        # --tts_engine.engine.mem_fraction_static) wins, but never silently.
         expected = self.total_gpu_memory_fraction
         if expected is None:
             return
+        else:
+            pass
         actual = overrides.get("mem_fraction_static")
         if actual is not None and abs(actual - expected) <= 1e-9:
             return
+        else:
+            pass
         logger.warning(
             "Higgs tts_engine mem_fraction_static=%s overrides the "
             "placement-validated total_gpu_memory_fraction=%s",

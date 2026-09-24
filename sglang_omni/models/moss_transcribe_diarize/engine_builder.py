@@ -35,6 +35,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         mm_embedding_cache_size_bytes: int,
         encoder_cache_size_bytes: int,
         enable_torch_compile: bool,
+        torch_compile_max_bs: int,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
         prefill_coalesce_requests: int,
@@ -56,6 +57,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.encoder_cache_size_bytes = encoder_cache_size_bytes
         self.enable_torch_compile = enable_torch_compile
+        self.torch_compile_max_bs = torch_compile_max_bs
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
@@ -84,7 +86,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
 
         from sglang_omni.models.moss_transcribe_diarize import stages
 
-        with stages._missing_additional_chat_templates_compat():
+        with stages.missing_additional_chat_templates_compat():
             self.processor = AutoProcessor.from_pretrained(
                 checkpoint_dir, trust_remote_code=True
             )
@@ -92,26 +94,35 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         self.max_new_tokens = (
             int(self.requested_max_new_tokens)
             if self.requested_max_new_tokens is not None
-            else stages._default_max_new_tokens(checkpoint_dir)
+            else stages.default_max_new_tokens(checkpoint_dir)
         )
         self.context_length = (
             int(self.requested_context_length)
             if self.requested_context_length is not None
-            else stages._default_context_length(checkpoint_dir)
+            else stages.default_context_length(checkpoint_dir)
         )
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        # note (Xinyu): cached-prefix extends commonly contain one or two new
+        # tokens, so keep exact graph buckets below the shared ladder's 4-token
+        # floor instead of failing the prefill padding-factor replay guard.
+        prefill_cuda_graph_bs = [
+            1,
+            2,
+            *build_default_prefill_cuda_graph_bs(4096),
+        ]
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "enable_torch_compile": self.enable_torch_compile,
+            "torch_compile_max_bs": self.torch_compile_max_bs,
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,
             "sampling_backend": "pytorch",
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
-            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(4096),
+            "cuda_graph_bs_prefill": prefill_cuda_graph_bs,
             "dtype": dtype,
         }
 
@@ -121,6 +132,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         # expands overrides.
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
+        else:
+            pass
 
     def customize_server_args(self, server_args: Any) -> None:
         # note (Dayuxiaoshui): adapters must use the context length finalized by
@@ -140,6 +153,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             model.compile_encoder(self.encoder_chunk_buckets, input_feature_len)
         elif generation_cuda_graph_enabled:
             model.init_encoder_graphs(self.encoder_chunk_buckets, input_feature_len)
+        else:
+            pass
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         model.init_encoder_cache(self.encoder_cache_size_bytes)
 

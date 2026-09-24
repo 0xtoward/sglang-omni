@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from sglang_omni.models.ming_tts.reference_encode import _MingTTSReferenceEncodeHook
+from sglang_omni.models.ming_tts.reference_encode import MingTTSReferenceEncodeHook
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 
@@ -17,14 +17,12 @@ class _StubEncoder:
 
     sample_rate = 44100
     patch_size = 4
+    dtype = torch.bfloat16
 
     def __init__(self) -> None:
         self.encode_calls: list[str] = []
 
-    def _audio_vae_floating_dtype(self):
-        return torch.bfloat16
-
-    def _encode_reference(self, ref_audio: str) -> dict:
+    def encode_reference(self, ref_audio: str) -> dict:
         self.encode_calls.append(ref_audio)
         return {
             "prompt_latent_token_count": 1,
@@ -40,7 +38,7 @@ def _write_wav_like(path: Path, middle: bytes) -> None:
 
 def _hook_and_service(tmp_path) -> tuple[_StubEncoder, ReferenceEncodeService]:
     encoder = _StubEncoder()
-    hook = _MingTTSReferenceEncodeHook(encoder, model_identity=str(tmp_path))
+    hook = MingTTSReferenceEncodeHook(encoder, model_identity=str(tmp_path))
     return encoder, ReferenceEncodeService(hook, max_items=16, max_bytes=1 << 20)
 
 

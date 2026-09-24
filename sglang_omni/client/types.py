@@ -32,6 +32,8 @@ class UsageInfo:
     def from_dict(cls, data: dict[str, Any] | None) -> "UsageInfo | None":
         if not data:
             return None
+        else:
+            pass
         return cls(
             prompt_tokens=data.get("prompt_tokens"),
             completion_tokens=data.get("completion_tokens"),
@@ -47,6 +49,8 @@ class UsageInfo:
         }
         if self.engine_time_s is not None:
             d["engine_time_s"] = self.engine_time_s
+        else:
+            pass
         return d
 
 
@@ -140,6 +144,7 @@ class GenerateChunk:
     stage_id: int | None = None
     stage_name: str | None = None
     modality: str = "text"
+    language: str | None = None
     audio_data: Any = None
     sample_rate: int | None = None
 
@@ -158,6 +163,7 @@ class GenerateChunk:
             "stage_id": self.stage_id,
             "stage_name": self.stage_name,
             "modality": self.modality,
+            "language": self.language,
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
         }
@@ -205,6 +211,7 @@ class CompletionResult:
     output_token_logprobs: list[Any] | None = None
     omni_rollout: dict[str, Any] | None = None
     weight_version: str | None = None
+    language: str | None = None
 
 
 @dataclass

@@ -26,7 +26,12 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.token_text_streaming import (
+    make_token_text_stream_output_builder,
+)
+from sglang_omni.scheduling.types import DeferredAdmission
 
 from .audio_lengths import arkasr_num_audio_tokens
 
@@ -50,7 +55,7 @@ class ArkASRRequestData(SGLangARRequestData):
     engine_start_s: float = 0.0
 
 
-def _decode_token_ids(
+def decode_token_ids(
     tokenizer: Any, token_ids: list[int], skip_special_tokens: bool
 ) -> str:
     try:
@@ -63,7 +68,7 @@ def _decode_token_ids(
         return tokenizer.decode(token_ids, skip_special_tokens=skip_special_tokens)
 
 
-def _build_suppressed_token_ids(tokenizer: Any) -> list[int]:
+def build_suppressed_token_ids(tokenizer: Any) -> list[int]:
     """All special / ``<...>`` added marker token ids except EOS.
 
     The checkpoint ships no ``bad_words_ids`` in its generation config, so plain
@@ -83,6 +88,8 @@ def _build_suppressed_token_ids(tokenizer: Any) -> list[int]:
     for tok, tid in added.items():
         if isinstance(tok, str) and tok.startswith("<") and tok.endswith(">"):
             bad.add(int(tid))
+        else:
+            pass
     bad -= keep
     return sorted(bad)
 
@@ -94,9 +101,15 @@ def make_arkasr_scheduler_adapters(
     feature_extractor: Any = None,
     merge_factor: int = 4,
     audio_token_id: int = 151663,
-) -> tuple[Callable[[StagePayload], ArkASRRequestData], Callable[[Any], StagePayload]]:
+    audio_encoder_service: Any = None,
+) -> tuple[
+    Callable[[StagePayload], ArkASRRequestData | DeferredAdmission],
+    Callable[[Any], StagePayload],
+]:
     if feature_extractor is None:
         raise ValueError("ARK-ASR processor is missing a feature_extractor")
+    else:
+        pass
 
     eos_token_id = int(tokenizer.eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
@@ -107,7 +120,7 @@ def make_arkasr_scheduler_adapters(
     # ``<|audio|>`` into transcripts (``skip_special_tokens`` only strips the few
     # "special" ones, not the non-special added tokens). We suppress at sampling
     # (hard-negative logit_bias) and strip on decode as belt-and-suspenders.
-    _suppressed_ids = _build_suppressed_token_ids(tokenizer)
+    _suppressed_ids = build_suppressed_token_ids(tokenizer)
 
     def _build_prompt_ids(num_audio_tokens: int) -> list[int]:
         prompt = (
@@ -118,7 +131,9 @@ def make_arkasr_scheduler_adapters(
         )
         return list(tokenizer(prompt, add_special_tokens=False).input_ids)
 
-    def request_builder(payload: StagePayload) -> ArkASRRequestData:
+    def request_builder(
+        payload: StagePayload,
+    ) -> ArkASRRequestData | DeferredAdmission:
         params = payload.request.params or {}
         prepared = prepare_audio(
             payload, source_name="ARK-ASR", target_sample_rate=_SAMPLE_RATE
@@ -144,6 +159,8 @@ def make_arkasr_scheduler_adapters(
             feature_attention_mask = torch.ones(
                 (features.shape[0], features.shape[-1]), dtype=torch.long
             )
+        else:
+            pass
         num_mel_frames = int(feature_attention_mask.sum().item())
         num_audio_tokens = arkasr_num_audio_tokens(num_mel_frames, merge_factor)
 
@@ -153,7 +170,13 @@ def make_arkasr_scheduler_adapters(
             modality=Modality.AUDIO,
             hash=prepared.fingerprint_int,
             feature=features,
-            model_specific_data={"feature_attention_mask": feature_attention_mask},
+            model_specific_data={
+                "feature_attention_mask": feature_attention_mask,
+                # Note (Akazaakane): The service reads these to split batched
+                # encoder output and key its embedding cache.
+                "num_audio_tokens": num_audio_tokens,
+                "audio_fingerprint": fingerprint,
+            },
         )
         # scatter contract (same as qwen3_asr): replace <|audio|> placeholders
         # with the item's pad_value and record the span as inclusive offsets.
@@ -193,9 +216,9 @@ def make_arkasr_scheduler_adapters(
             extra_key=fingerprint,
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
+        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
-        return ArkASRRequestData(
+        req_data = ArkASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),
             req=req,
             prompt_token_ids=input_ids,
@@ -205,6 +228,14 @@ def make_arkasr_scheduler_adapters(
             language=str(params.get("language") or "en"),
             engine_start_s=time.perf_counter(),
             stage_payload=payload,
+        )
+        if audio_encoder_service is None:
+            return req_data
+        else:
+            pass
+        return DeferredAdmission(
+            value=req_data,
+            ready=audio_encoder_service.submit_item(audio_item),
         )
 
     def result_adapter(data: ArkASRRequestData) -> StagePayload:
@@ -216,9 +247,9 @@ def make_arkasr_scheduler_adapters(
         if _suppressed_ids:
             _drop = set(_suppressed_ids)
             output_ids = [t for t in output_ids if t not in _drop]
-        text = _decode_token_ids(
-            tokenizer, output_ids, skip_special_tokens=True
-        ).strip()
+        else:
+            pass
+        text = decode_token_ids(tokenizer, output_ids, skip_special_tokens=True).strip()
         engine_time_s = (
             time.perf_counter() - data.engine_start_s if data.engine_start_s else 0.0
         )
@@ -238,4 +269,55 @@ def make_arkasr_scheduler_adapters(
     return request_builder, result_adapter
 
 
-__all__ = ["ArkASRRequestData", "make_arkasr_scheduler_adapters"]
+def make_arkasr_stream_output_builder(
+    tokenizer: Any,
+    eos_token_id: int | None = None,
+    min_emit_interval_s: float = 0.0,
+) -> Callable[[str, Any, Any], list[OutgoingMessage]]:
+    tokenizer_eos = getattr(tokenizer, "eos_token_id", None)
+    resolved_eos = (
+        eos_token_id
+        if eos_token_id is not None
+        else (int(tokenizer_eos) if tokenizer_eos is not None else None)
+    )
+    # note (guozhihao): same belt-and-suspenders drop as result_adapter;
+    # skip_special_tokens does not strip non-special added markers such as
+    # <tool_call>.
+    suppressed = set(build_suppressed_token_ids(tokenizer))
+
+    def _decode_stream_ids(ids: list[int]) -> str:
+        if suppressed:
+            ids = [tid for tid in ids if tid not in suppressed]
+        else:
+            pass
+        # note (guozhihao): do not strip each delta; that would eat spaces
+        # between words. result_adapter strips the full transcript, so
+        # transcript.text.done is authoritative and
+        # "".join(deltas).strip() equals that final text.
+        return decode_token_ids(tokenizer, ids, skip_special_tokens=True)
+
+    return make_token_text_stream_output_builder(
+        decode_fn=_decode_stream_ids,
+        build_message_data=lambda delta: {
+            "text": delta,
+            "modality": "text",
+            "stage_name": "asr",
+        },
+        build_message_metadata=lambda token_id: {
+            "modality": "text",
+            "token_id": token_id,
+        },
+        pending_ids_attr="_arkasr_stream_pending_ids",
+        last_emit_attr="_arkasr_stream_last_emit_t",
+        eos_token_id=resolved_eos,
+        min_emit_interval_s=min_emit_interval_s,
+        allow_terminal_flush=True,
+        emit_trailing_replacement_on_terminal=True,
+    )
+
+
+__all__ = [
+    "ArkASRRequestData",
+    "make_arkasr_scheduler_adapters",
+    "make_arkasr_stream_output_builder",
+]

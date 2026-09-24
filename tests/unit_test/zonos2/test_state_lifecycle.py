@@ -27,6 +27,7 @@ from sglang_omni.models.zonos2.request_builders import (
 from sglang_omni.models.zonos2.sglang_model import Zonos2SGLangModel
 from sglang_omni.models.zonos2.state_pool import Zonos2DecodeStatePool
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 
@@ -34,7 +35,7 @@ class _ModelHarness:
     reset_request = Zonos2SGLangModel.reset_request
 
     def __init__(self, pool: Zonos2DecodeStatePool) -> None:
-        self._decode_state_pool = pool
+        self.decode_state_pool = pool
 
 
 class _FakeCopyStream:
@@ -47,7 +48,7 @@ class _FakeCopyStream:
 
 def _model_and_pool() -> tuple[_ModelHarness, Zonos2DecodeStatePool]:
     pool_owner = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(
             weight=torch.zeros((2, 3), dtype=torch.float32)
         ),
         n_codebooks=N_CODEBOOKS,
@@ -90,7 +91,9 @@ def _terminal_data(request_id: str = "req-zonos2") -> Zonos2SGLangRequestData:
     )
 
 
-def test_length_terminal_releases_pool_row_through_scheduler_result_path() -> None:
+def test_length_terminal_releases_pool_row_through_scheduler_result_path(
+    monkeypatch,
+) -> None:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
@@ -117,19 +120,23 @@ def test_length_terminal_releases_pool_row_through_scheduler_result_path() -> No
     assert req.finished_reason.to_json()["type"] == "length"
 
     scheduler = object.__new__(OmniScheduler)
-    scheduler._request_admission_lock = threading.RLock()
+    scheduler.request_admission_lock = threading.RLock()
     scheduler.outbox = Queue()
-    scheduler._aborted_request_ids = set()
-    scheduler._completed_request_ids = {}
-    scheduler._pending_stream_ingress = {}
-    scheduler._request_finished_callback = None
-    scheduler._first_emit_done = {request_id}
-    scheduler._prefill_start_done = {request_id}
-    scheduler._prefill_end_done = set()
-    scheduler._result_adapter = result_adapter
-    scheduler._model_runner = None
-    scheduler._stream_output_builder = None
-    scheduler.server_args = SimpleNamespace(weight_version=None)
+    scheduler.aborted_request_ids = set()
+    scheduler.completed_request_ids = {}
+    scheduler.pending_stream_ingress = {}
+    scheduler.request_finished_callback = None
+    scheduler.first_emit_done = {request_id}
+    scheduler.prefill_start_done = {request_id}
+    scheduler.prefill_end_done = set()
+    scheduler.result_adapter = result_adapter
+    scheduler.model_runner = None
+    scheduler.stream_output_builder = None
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "get_serving",
+        lambda: SimpleNamespace(weight_version=None),
+    )
 
     scheduler.stream_output([req])
 
@@ -137,8 +144,8 @@ def test_length_terminal_releases_pool_row_through_scheduler_result_path() -> No
     assert result.type == "result"
     assert data.finish_reason == "length"
     assert result.data.data["completion_tokens"] == 1
-    assert request_id not in pool._rid_to_row
-    assert len(pool._free_rows) == pool.padding_row
+    assert request_id not in pool.rid_to_row
+    assert len(pool.free_rows) == pool.padding_row
     _assert_row_reset(pool, row)
 
 
@@ -157,8 +164,8 @@ def test_result_adapter_releases_state_when_serialization_fails(monkeypatch) -> 
     with pytest.raises(RuntimeError, match="serialization failed"):
         result_adapter(_terminal_data(request_id))
 
-    assert request_id not in pool._rid_to_row
-    assert len(pool._free_rows) == pool.padding_row
+    assert request_id not in pool.rid_to_row
+    assert len(pool.free_rows) == pool.padding_row
     _assert_row_reset(pool, row)
 
 
@@ -170,18 +177,18 @@ def test_engine_builder_abort_callback_is_safe_before_and_after_allocation() -> 
     abort_callback = builder.make_abort_callback()
     builder.model = None
 
-    free_rows = list(pool._free_rows)
+    free_rows = list(pool.free_rows)
     abort_callback(request_id)
-    assert pool._free_rows == free_rows
+    assert pool.free_rows == free_rows
 
     row = pool.acquire_row(request_id)
     _poison_row(pool, row)
     abort_callback(request_id)
     abort_callback(request_id)
 
-    assert request_id not in pool._rid_to_row
-    assert len(pool._free_rows) == pool.padding_row
-    assert len(set(pool._free_rows)) == pool.padding_row
+    assert request_id not in pool.rid_to_row
+    assert len(pool.free_rows) == pool.padding_row
+    assert len(set(pool.free_rows)) == pool.padding_row
     _assert_row_reset(pool, row)
 
 
@@ -196,13 +203,13 @@ def test_release_resets_reused_row_without_touching_mixed_batch_survivor() -> No
     _poison_row(pool, live_row, value=11)
 
     model.reset_request(done.request_id)
-    free_rows_after_release = len(pool._free_rows)
+    free_rows_after_release = len(pool.free_rows)
     model.reset_request(done.request_id)
 
-    assert done.request_id not in pool._rid_to_row
+    assert done.request_id not in pool.rid_to_row
     assert pool.row_for(live.request_id) == live_row
-    assert pool._active_ids is None
-    assert pool._active_rows is None
+    assert pool.active_ids is None
+    assert pool.active_rows is None
     _assert_row_reset(pool, done_row)
     assert torch.all(pool.feedback_embeds[live_row] == 11)
     assert bool(pool.eos_frame_set[live_row])
@@ -211,30 +218,40 @@ def test_release_resets_reused_row_without_touching_mixed_batch_survivor() -> No
     assert int(pool.generation_step[live_row]) == 11
     assert torch.all(pool.rep_hist[live_row] == 11)
     assert int(pool.rep_len[live_row]) == 11
-    assert len(pool._free_rows) == free_rows_after_release
-    assert len(set(pool._free_rows)) == len(pool._free_rows)
+    assert len(pool.free_rows) == free_rows_after_release
+    assert len(set(pool.free_rows)) == len(pool.free_rows)
 
     active_rows = pool.prepare_active_rows([live, done])
 
     assert active_rows.tolist() == [live_row, done_row]
     _assert_row_reset(pool, done_row)
-    owned_rows = set(pool._rid_to_row.values())
-    free_rows = set(pool._free_rows)
-    assert len(owned_rows) == len(pool._rid_to_row)
-    assert len(free_rows) == len(pool._free_rows)
+    owned_rows = set(pool.rid_to_row.values())
+    free_rows = set(pool.free_rows)
+    assert len(owned_rows) == len(pool.rid_to_row)
+    assert len(free_rows) == len(pool.free_rows)
     assert owned_rows.isdisjoint(free_rows)
     assert len(owned_rows) + len(free_rows) == pool.padding_row
 
 
-def test_resolve_collects_compact_metadata_without_releasing_state() -> None:
+@pytest.mark.parametrize("state", ["active", "retracted", "finished"])
+def test_resolve_collects_only_active_metadata_without_releasing_state(
+    state: str,
+) -> None:
     request_id = "req-resolve"
     model, pool = _model_and_pool()
     row = pool.acquire_row(request_id)
 
     runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
     runner.model = model
-    runner._copy_stream = _FakeCopyStream()
-    data = SimpleNamespace(output_codes=[], eos_frame=None)
+    runner.decode_requests = {}
+    runner.copy_stream = _FakeCopyStream()
+    data = SimpleNamespace(
+        output_codes=[],
+        eos_frame=None,
+        req=SimpleNamespace(
+            is_retracted=state == "retracted", finished=lambda: state == "finished"
+        ),
+    )
     request = SimpleNamespace(request_id=request_id, data=data)
     codes = list(range(N_CODEBOOKS))
     packed = torch.tensor([codes + [1, 5]], dtype=torch.int64)
@@ -243,10 +260,195 @@ def test_resolve_collects_compact_metadata_without_releasing_state() -> None:
     launch_buf = ([request], packed, N_CODEBOOKS, next_ids, object())
 
     with mock.patch("torch.cuda.stream", lambda _stream: contextlib.nullcontext()):
-        runner._collect_resolve(launch_buf, result)
+        runner.collect_resolve(launch_buf, result)
 
-    assert data.output_codes[0].tolist() == codes
-    assert data.eos_frame == 5
+    if state == "active":
+        assert data.output_codes[0].tolist() == codes
+        assert data.eos_frame == 5
+    else:
+        assert data.output_codes == []
+        assert data.eos_frame is None
     assert torch.equal(result.next_token_ids, next_ids)
     assert pool.row_for(request_id) == row
-    assert row not in pool._free_rows
+    assert row not in pool.free_rows
+
+
+@pytest.mark.parametrize("start", [0, 1, 3])
+@pytest.mark.parametrize("has_eos", [False, True])
+def test_reprefill_replays_full_frames_and_rebuilds_decode_state(
+    start: int, has_eos: bool
+) -> None:
+    prompt = torch.arange(2 * FRAME_WIDTH).reshape(2, FRAME_WIDTH)
+    codes = torch.arange(3 * N_CODEBOOKS).reshape(3, N_CODEBOOKS)
+    if has_eos:
+        codes[1, 2] = 99
+    else:
+        pass
+    model = SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(weight=torch.zeros(2, FRAME_WIDTH)),
+        n_codebooks=N_CODEBOOKS,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        config=SimpleNamespace(text_vocab=100, eoa_id=99),
+        embed_frames=lambda rows: rows.float(),
+    )
+    pool = Zonos2DecodeStatePool(model)
+    model.decode_state_pool = pool
+    row = pool.acquire_row("replay")
+    _poison_row(pool, row)
+    survivor = pool.acquire_row("survivor")
+    _poison_row(pool, survivor, 11)
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            extend_range=SimpleNamespace(start=start, end=5, length=5 - start),
+            output_ids=[1, 2, 3],
+        ),
+        prompt_rows=prompt,
+        output_codes=list(codes.unbind()),
+        speaker_emb=None,
+    )
+    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
+    runner.model = model
+    runner.decode_requests = {}
+
+    actual = runner.build_prefill_embeds(
+        None, [SimpleNamespace(request_id="replay", data=data)]
+    )
+
+    expected = torch.cat([prompt, torch.cat([codes, torch.full((3, 1), 100)], dim=1)])
+    assert torch.equal(actual, expected[start:].float())
+    assert int(pool.generation_step[row]) == 3
+    assert int(pool.rep_len[row]) == 3
+    assert torch.equal(pool.rep_hist[row, -3:], codes)
+    assert torch.all(pool.rep_hist[row, :-3] == -1)
+    assert bool(pool.eos_frame_set[row]) == has_eos
+    assert int(pool.eos_frame_val[row]) == 0
+    assert int(pool.eos_countdown[row]) == (8 if has_eos else 0)
+    assert torch.count_nonzero(pool.feedback_embeds[row]) == 0
+    assert int(pool.generation_step[survivor]) == 11
+    assert torch.all(pool.rep_hist[survivor] == 11)
+
+
+@pytest.mark.parametrize("committed_tokens", [0, 1])
+def test_reprefill_missing_frames_fails_before_resetting_decode_state(
+    committed_tokens: int,
+) -> None:
+    model, pool = _model_and_pool()
+    model.device = torch.device("cpu")
+    row = pool.acquire_row("replay")
+    _poison_row(pool, row)
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            extend_range=SimpleNamespace(start=0, end=3, length=3),
+            output_ids=[1] * committed_tokens,
+        ),
+        prompt_rows=torch.zeros(2, FRAME_WIDTH, dtype=torch.long),
+        output_codes=[],
+    )
+    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
+    runner.model = model
+    runner.decode_requests = {}
+    with pytest.raises(
+        AssertionError, match="missing generated frames|committed tokens"
+    ):
+        runner.build_prefill_embeds(
+            None, [SimpleNamespace(request_id="replay", data=data)]
+        )
+    assert int(pool.generation_step[row]) == 7
+    assert int(pool.eos_countdown[row]) == 7
+    assert torch.all(pool.rep_hist[row] == 7)
+
+
+def test_full_pool_reclaims_waiting_owners_before_prefill_and_reentry() -> None:
+    model = SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(weight=torch.zeros(1, FRAME_WIDTH)),
+        n_codebooks=N_CODEBOOKS,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        config=SimpleNamespace(text_vocab=100, eoa_id=99),
+        embed_frames=lambda rows: rows.float(),
+    )
+    pool = Zonos2DecodeStatePool(model)
+    model.decode_state_pool = pool
+    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
+    runner.model = model
+    runner.decode_requests = {}
+    for request_id in ["waiting", "finished", "survivor-a", "survivor-b"]:
+        row = pool.acquire_row(request_id)
+        _poison_row(pool, row, 11)
+        runner.decode_requests[request_id] = SimpleNamespace(
+            is_retracted=request_id == "waiting",
+            finished=lambda request_id=request_id: request_id == "finished",
+        )
+    assert not pool.free_rows
+    survivor_row = pool.row_for("survivor-a")
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            extend_range=SimpleNamespace(start=0, end=1, length=1),
+            output_ids=[],
+            is_retracted=False,
+            finished=lambda: False,
+        ),
+        prompt_rows=torch.zeros(1, FRAME_WIDTH, dtype=torch.long),
+        output_codes=[],
+        speaker_emb=None,
+        _stream_emit_idx=0,
+    )
+    request = SimpleNamespace(request_id="fresh", data=data)
+
+    runner.build_prefill_embeds(None, [request])
+
+    assert set(pool.rid_to_row) == {"fresh", "survivor-a", "survivor-b"}
+    assert set(runner.decode_requests) == set(pool.rid_to_row)
+    assert int(pool.generation_step[survivor_row]) == 11
+    assert torch.all(pool.feedback_embeds[survivor_row] == 11)
+    codes = torch.arange(2 * N_CODEBOOKS).reshape(2, N_CODEBOOKS)
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            extend_range=SimpleNamespace(start=1, end=3, length=2),
+            output_ids=[1, 2],
+            is_retracted=False,
+            finished=lambda: False,
+        ),
+        prompt_rows=data.prompt_rows,
+        output_codes=list(codes.unbind()),
+        speaker_emb=None,
+        _stream_emit_idx=2,
+    )
+    request = SimpleNamespace(request_id="waiting", data=data)
+
+    embeddings = runner.build_prefill_embeds(None, [request])
+
+    expected = torch.cat([codes, torch.full((2, 1), 100)], dim=1).float()
+    torch.testing.assert_close(embeddings, expected)
+    assert int(pool.generation_step[pool.row_for("waiting")]) == 2
+    assert data._stream_emit_idx == 2
+    assert len(data.output_codes) == 2
+    assert int(pool.generation_step[survivor_row]) == 11
+    runner.on_request_finished("waiting", data)
+    runner.on_request_finished("waiting", data)
+    assert "waiting" not in runner.decode_requests
+
+
+def test_zonos2_radix_namespace_is_unique_per_request_lifecycle() -> None:
+    from sglang.srt.mem_cache.radix_cache import RadixKey
+
+    payload = StagePayload(
+        request_id="reused",
+        request=OmniRequest(inputs=""),
+        data=Zonos2State(
+            input_ids=torch.zeros(2, FRAME_WIDTH, dtype=torch.long)
+        ).to_dict(),
+    )
+    model = SimpleNamespace(config=SimpleNamespace(n_codebooks=N_CODEBOOKS))
+    first = request_builders.build_sglang_zonos2_request(payload, model=model)
+    second = request_builders.build_sglang_zonos2_request(payload, model=model)
+    assert first.req.origin_input_ids == second.req.origin_input_ids
+    assert first.req.extra_key != second.req.extra_key
+    assert (
+        RadixKey(first.req.origin_input_ids, first.req.extra_key).child_key()
+        != RadixKey(second.req.origin_input_ids, second.req.extra_key).child_key()
+    )
+    key = first.req.extra_key
+    first.req.reset_for_retract()
+    assert first.req.extra_key == key

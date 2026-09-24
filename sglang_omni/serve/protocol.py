@@ -195,12 +195,16 @@ class SerializedMultimodalTensor(BaseModel):
     data: str
 
     @model_validator(mode="after")
-    def _validate_payload(self) -> SerializedMultimodalTensor:
+    def validate_payload(self) -> SerializedMultimodalTensor:
         itemsize = _SERIALIZED_DTYPE_ITEMSIZE.get(self.dtype)
         if itemsize is None:
             raise ValueError(f"unsupported tensor dtype {self.dtype!r}")
+        else:
+            pass
         if any(dim < 0 for dim in self.shape):
             raise ValueError(f"invalid tensor shape {self.shape}")
+        else:
+            pass
         try:
             raw_len = len(base64.b64decode(self.data, validate=True))
         except binascii.Error as exc:
@@ -211,6 +215,8 @@ class SerializedMultimodalTensor(BaseModel):
                 f"tensor data has {raw_len} bytes, expected {expected} "
                 f"for shape={self.shape} dtype={self.dtype}"
             )
+        else:
+            pass
         return self
 
 
@@ -352,6 +358,8 @@ class CreateSpeechRequest(BaseModel):
     ref_text: str | None = None  # transcript of reference audio
     references: list[SpeechReference] | None = None  # S2-Pro-style refs
     x_vector_only_mode: bool | None = None
+    stream_codec_output: bool | None = None
+    suppress_bootstrap_silence: bool | None = None
     token_count: int | None = None  # MOSS-TTS duration token target
     duration_tokens: int | None = None  # alias for token_count
     initial_codec_chunk_frames: int | None = Field(default=None, ge=0)
@@ -389,6 +397,8 @@ class SpeechBatchItem(BaseModel):
     ref_text: Any = None
     references: Any = None
     x_vector_only_mode: Any = None
+    stream_codec_output: Any = None
+    suppress_bootstrap_silence: Any = None
     token_count: Any = None
     duration_tokens: Any = None
     max_new_tokens: Any = None
@@ -422,6 +432,8 @@ class CreateSpeechBatchRequest(BaseModel):
     ref_text: str | None = None
     references: list[SpeechReference] | None = None
     x_vector_only_mode: bool | None = None
+    stream_codec_output: bool | None = None
+    suppress_bootstrap_silence: bool | None = None
     token_count: int | None = None
     duration_tokens: int | None = None
     max_new_tokens: int | None = None
@@ -477,6 +489,8 @@ class SpeechStreamSessionConfig(BaseModel):
     ref_text: str | None = None
     references: list[SpeechReference] | None = None
     x_vector_only_mode: bool | None = None
+    stream_codec_output: bool | None = None
+    suppress_bootstrap_silence: bool | None = None
     token_count: int | None = None
     duration_tokens: int | None = None
     max_new_tokens: int | None = None

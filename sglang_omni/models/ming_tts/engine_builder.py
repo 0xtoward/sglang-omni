@@ -6,29 +6,32 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 
 logger = logging.getLogger(__name__)
 
 
-def _coerce_bool(value: Any, *, name: str) -> bool:
+def is_truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
+    else:
+        pass
+    if isinstance(value, int):
+        return value != 0
+    else:
+        pass
     if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "y", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "n", "off"}:
-            return False
-    if isinstance(value, int) and value in (0, 1):
-        return bool(value)
-    raise ValueError(f"{name} must be a boolean value, got {value!r}")
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    else:
+        pass
+    return False
 
 
 class MingTtsEngineBuilder(TtsEngineBuilder):
     model_name = "Ming-Omni-TTS"
-    context_length = 0  # resolved from the checkpoint config in pre_infra_setup
+    context_length = 0
 
     def __init__(
         self,
@@ -47,13 +50,19 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             raise ValueError(
                 f"Ming-Omni-TTS tts_engine tp_size must be positive; got {tp_size}"
             )
+        else:
+            pass
         if tp_rank < 0 or tp_rank >= tp_size:
             raise ValueError(
                 f"Ming-Omni-TTS tts_engine tp_rank={tp_rank} is out of range "
                 f"for tp_size={tp_size}"
             )
+        else:
+            pass
         if tp_size > 1 and nccl_port is None:
             raise ValueError("Ming-Omni-TTS tts_engine TP requires nccl_port")
+        else:
+            pass
 
         self.model_arch_override = MING_TTS_MODEL_ARCH_OVERRIDE
         self.requested_context_length = context_length
@@ -63,16 +72,54 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         self.nccl_port = nccl_port
         self.config: Any = None
         self.tokenizer: Any = None
-        self._model_runner: Any = None
+        self.model_runner: Any = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from sglang_omni.models.ming_tts import stages as ming_stages
 
-        self.config = ming_stages._load_ming_tts_config(checkpoint_dir)
-        ming_stages._check_ming_tts_tp_backbone_config(self.config, self.tp_size)
+        self.config = ming_stages.load_ming_tts_config(checkpoint_dir)
+        if self.tp_size > 1:
+            llm_config = self.config.llm_config
+            hidden_size = int(llm_config.hidden_size)
+            head_dim = int(llm_config.head_dim)
+            num_heads = int(llm_config.num_attention_heads)
+            num_kv_heads = int(llm_config.num_key_value_heads)
+            if min(hidden_size, head_dim, num_heads, num_kv_heads) <= 0:
+                raise ValueError(
+                    "Ming-Omni-TTS TP requires positive hidden/head dimensions: "
+                    f"hidden_size={hidden_size}, head_dim={head_dim}, "
+                    f"num_attention_heads={num_heads}, "
+                    f"num_key_value_heads={num_kv_heads}"
+                )
+            else:
+                pass
+            if head_dim * num_heads != hidden_size:
+                raise ValueError(
+                    "Ming-Omni-TTS TP requires head_dim * num_attention_heads "
+                    f"to equal hidden_size ({head_dim} * {num_heads} != {hidden_size})"
+                )
+            else:
+                pass
+            if hidden_size % self.tp_size != 0:
+                raise ValueError(
+                    "Ming-Omni-TTS TP requires hidden_size divisible by tp_size: "
+                    f"hidden_size={hidden_size}, tp_size={self.tp_size}"
+                )
+            else:
+                pass
+            validate_attention_tp_config(
+                num_attention_heads=num_heads,
+                num_key_value_heads=num_kv_heads,
+                tp_size=self.tp_size,
+                context="Ming-Omni-TTS tts_engine",
+            )
+        else:
+            pass
         context_length = int(self.requested_context_length or 0)
         if context_length <= 0:
-            context_length = ming_stages._resolve_context_length(self.config)
+            context_length = ming_stages.resolve_context_length(self.config)
+        else:
+            pass
         self.context_length = int(context_length)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
@@ -89,17 +136,26 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         }
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        # context_length is supplied by build_sglang_server_args directly.
         overrides.pop("context_length", None)
         overrides["tp_size"] = self.tp_size
 
-        if "disable_radix_cache" in overrides and not _coerce_bool(
-            overrides["disable_radix_cache"],
-            name="server_args_overrides.disable_radix_cache",
-        ):
+        if not is_truthy(overrides["disable_overlap_schedule"]):
             raise ValueError(
-                "Ming-Omni-TTS prefix/radix cache is not currently supported"
+                "Ming-Omni-TTS does not currently support SGLang overlap "
+                "scheduling; set disable_overlap_schedule=true because the "
+                "continuous acoustic feedback state has no overlap-safe lifecycle"
             )
+        else:
+            pass
+        overrides["disable_overlap_schedule"] = True
+
+        if not is_truthy(overrides["disable_radix_cache"]):
+            raise ValueError(
+                "Ming-Omni-TTS requires disable_radix_cache=true because "
+                "prefix/radix cache is not currently supported"
+            )
+        else:
+            pass
         overrides["disable_radix_cache"] = True
 
         if (
@@ -110,9 +166,13 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
                 "Ming-Omni-TTS requires chunked_prefill_size=0 because generated "
                 "continuous state does not have chunk rollback semantics"
             )
+        else:
+            pass
         overrides["chunked_prefill_size"] = 0
-        if bool(overrides.get("enable_torch_compile", False)):
+        if is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Ming-Omni-TTS torch.compile is not currently supported")
+        else:
+            pass
 
     def infra_kwargs(self) -> dict[str, Any]:
         return {
@@ -130,9 +190,11 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
+        from sglang.srt.runtime_context import get_exec, get_memory
+
         from sglang_omni.models.ming_tts.tokenizer import load_ming_tts_tokenizer
 
-        self._model_worker = model_worker
+        self.model_worker = model_worker
         model_worker.model_runner.model.eval()
         self.tokenizer = load_ming_tts_tokenizer(
             checkpoint_dir,
@@ -146,30 +208,32 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             self.tp_rank,
             self.tp_size,
             self.total_gpu_memory_fraction,
-            bool(server_args.disable_cuda_graph),
+            bool(get_exec().graph.disable_cuda_graph),
             get_decode_cuda_graph_bs(server_args),
-            not bool(server_args.disable_radix_cache),
+            not bool(get_memory().disable_radix_cache),
             self.nccl_port,
         )
 
     def get_model_buffer_bs(self, model: Any) -> int | None:
-        return int(model._decode_input_embedding.num_embeddings)
+        return int(model.decode_input_embedding.num_embeddings)
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
         del server_args
-        # The acoustic tail graph replays only on the owning rank; other TP
-        # ranks run the backbone graph and skip latent sampling.
+        # Note (yzxiao): Only the acoustic owner captures tail graphs because
+        # follower ranks run the backbone graph without latent sampling.
         if self.tp_rank != 0:
             return
+        else:
+            pass
         model.init_tail_graphs(
-            list(self._model_worker.model_runner.decode_cuda_graph_runner.capture_bs)
+            list(self.model_worker.model_runner.decode_cuda_graph_runner.capture_bs)
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner
 
-        self._model_runner = MingTTSModelRunner(model_worker, output_proc)
-        return self._model_runner
+        self.model_runner = MingTTSModelRunner(model_worker, output_proc)
+        return self.model_runner
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         from sglang_omni.models.ming_tts.engine_io import (
@@ -179,9 +243,18 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         return make_ming_tts_scheduler_adapters(
             model=model,
             tokenizer=self.tokenizer,
-            reset_request=self._model_runner.reset_request,
+            reset_request=self.model_runner.reset_request,
             owns_acoustic_result=self.tp_rank == 0,
         )
 
+    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+        if self.tp_rank != 0:
+            return {}
+        else:
+            pass
+        from sglang_omni.models.ming_tts.engine_io import build_ming_tts_stream_output
+
+        return {"stream_output_builder": build_ming_tts_stream_output}
+
     def make_abort_callback(self) -> Any | None:
-        return self._model_runner.reset_request
+        return self.model_runner.reset_request

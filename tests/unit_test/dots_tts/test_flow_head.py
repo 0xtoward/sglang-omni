@@ -334,8 +334,8 @@ def test_flow_rematerialization_matches_uninterrupted_next_step(
 def test_validate_request_batched_gates_prompt_and_span_budget() -> None:
     flow = SimpleNamespace(
         is_batched=True,
-        _batched_nfe=4,
-        _tail=SimpleNamespace(spec=SimpleNamespace(patch_capacity=9)),
+        batched_nfe=4,
+        tail=SimpleNamespace(spec=SimpleNamespace(patch_capacity=9)),
     )
     validate = DotsTTSFlowHead.validate_request
 
@@ -519,9 +519,9 @@ def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
     )
     slot = state.slot
     assert slot is not None
-    tail = flow._tail
+    tail = flow.tail
     fm_seq_len = tail.fm_seq_len(slot)
-    encoder_seq_len = tail._encoder_seq_len[slot]
+    encoder_seq_len = tail.encoder_seq_len[slot]
     rng_state = tail.slot_rng_state(slot)
     assert rng_state is not None
     decoded_patches = state.decoded_patches
@@ -537,7 +537,7 @@ def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
             append_hidden=True,
         )
     assert tail.fm_seq_len(slot) == fm_seq_len
-    assert tail._encoder_seq_len[slot] == encoder_seq_len
+    assert tail.encoder_seq_len[slot] == encoder_seq_len
     actual_rng_state = tail.slot_rng_state(slot)
     assert actual_rng_state is not None
     torch.testing.assert_close(actual_rng_state, rng_state, rtol=0, atol=0)
@@ -592,3 +592,55 @@ def test_batched_eos_suppresses_first_check_until_resolve(tmp_path) -> None:
         append_hidden=True,
     )
     assert flow.resolve_batched_eos() == [True]
+
+
+def test_batched_replay_feedback_does_not_count_a_tail_step(tmp_path) -> None:
+    torch.manual_seed(1618)
+    flow = _flow_head(tmp_path)
+    flow.init_batched_tail(num_slots=2, nfe=NFE, max_audio_patches=8)
+    prompt_latents = torch.randn(1, 2 * PATCH_SIZE, LATENT_DIM)
+    prefill_hidden = torch.randn(1, 3, LLM_HIDDEN)
+    prompt_positions = torch.tensor([1, 2])
+    schedule = torch.tensor([[0, 1, 1, 1]])
+
+    state, _ = flow.new_request(
+        max_audio_patch_count=6,
+        prompt_latents=prompt_latents,
+        speaker_embedding=None,
+        speaker_scale=1.0,
+        rng=41,
+    )
+    flow.initialize_history(
+        state,
+        hidden_states=prefill_hidden,
+        prompt_span_positions=prompt_positions,
+        audio_span_token_ids={1},
+        generation_schedule=schedule,
+        prefill_end=3,
+        decoded_latent_patches=[],
+    )
+    [step] = flow.decode_batch(
+        [state],
+        hidden_states=prefill_hidden[:, -1],
+        num_steps=[NFE],
+        ode_methods=["euler"],
+        guidance_scales=[1.0],
+        eos_thresholds=[2.0],
+        append_hidden=False,
+    )
+    assert flow.resolve_batched_eos() == [False]
+    assert flow.tail.tail_steps == 1
+
+    rng_state = flow.suspend_request(state)
+    rematerialized, _ = flow.new_request(
+        max_audio_patch_count=6,
+        prompt_latents=prompt_latents,
+        speaker_embedding=None,
+        speaker_scale=1.0,
+        rng=rng_state,
+    )
+    flow.replay_feedback(rematerialized, [step.latent_patch])
+
+    assert flow.tail.tail_steps == 1
+    assert flow.tail.graph_misses["meanflow"] == 1
+    assert flow.tail.graph_misses["semantic_encoder"] == 2

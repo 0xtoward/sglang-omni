@@ -6,17 +6,26 @@ from __future__ import annotations
 import logging
 import math
 import re
-from contextlib import nullcontext
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.runtime_context import get_forward
+from sglang.srt.runtime_context import (
+    get_exec,
+    get_forward,
+    get_model,
+    get_parallel,
+    get_schedule,
+)
 from torch import nn
 
 from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggregator
+from sglang_omni.models.ming_omni.talker.talker_module.execution import (
+    TalkerExecutionConfig,
+)
 from sglang_omni.models.ming_tts.flow_matching import (
     FlowLoss,
     build_cfm_sde_random,
@@ -36,6 +45,7 @@ from sglang_omni.models.ming_tts.weight_loading import (
     classify_ming_tts_weight,
 )
 from sglang_omni.models.weight_loader import default_weight_loader
+from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import (
     get_tensor_model_parallel_world_size,
@@ -54,8 +64,6 @@ from sglang_omni.vendor.sglang.layers import (
     SiluAndMul,
     TopK,
     VocabParallelEmbedding,
-    get_attention_tp_rank,
-    get_attention_tp_size,
     get_moe_impl_class,
     get_rope,
     should_skip_post_experts_all_reduce,
@@ -64,7 +72,6 @@ from sglang_omni.vendor.sglang.models import (
     create_fused_set_kv_buffer_arg,
     enable_fused_set_kv_buffer,
 )
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import add_prefix
 
 logger = logging.getLogger(__name__)
@@ -88,7 +95,7 @@ class MingTTSTailOutputs:
     stop_prob: torch.Tensor
 
 
-class _MingTTSTailGraph:
+class MingTTSTailGraph:
     def __init__(self, model: Any, batch_size: int) -> None:
         self.model = model
         self.batch_size = int(batch_size)
@@ -100,7 +107,7 @@ class _MingTTSTailGraph:
         self.outputs: MingTTSTailOutputs | None = None
 
     def capture(self) -> None:
-        weight = self.model._decode_input_embedding.weight
+        weight = self.model.decode_input_embedding.weight
         device = weight.device
         hidden_dtype = weight.dtype
         float_dtype = torch.float32
@@ -125,39 +132,35 @@ class _MingTTSTailGraph:
             temperature=torch.zeros(batch_size, device=device, dtype=float_dtype),
         )
         self.noise, self.timesteps, self.sde_random = (
-            self.model._make_tail_sampling_inputs(
+            self.model.make_tail_sampling_inputs(
                 batch_size=batch_size,
                 device=device,
             )
         )
 
-        context = (
-            torch.autocast(device_type="cuda", dtype=hidden_dtype)
-            if device.type == "cuda" and hidden_dtype in (torch.float16, torch.bfloat16)
-            else nullcontext()
-        )
-        with context:
-            warmup_stream = torch.cuda.Stream(device=device)
-            warmup_stream.wait_stream(torch.cuda.current_stream(device))
-            with torch.cuda.stream(warmup_stream):
-                for _ in range(2):
-                    self.model._compute_tail_step(
-                        self.inputs,
-                        noise=self.noise,
-                        timesteps=self.timesteps,
-                        sde_random=self.sde_random,
-                    )
-            torch.cuda.current_stream(device).wait_stream(warmup_stream)
-            torch.cuda.synchronize(device=device)
-
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
-                self.outputs = self.model._compute_tail_step(
+        warmup_stream = torch.cuda.Stream(device=device)
+        warmup_stream.wait_stream(torch.cuda.current_stream(device))
+        with torch.cuda.stream(warmup_stream):
+            for _ in range(2):
+                self.model.compute_tail_step(
                     self.inputs,
                     noise=self.noise,
                     timesteps=self.timesteps,
                     sde_random=self.sde_random,
                 )
+        torch.cuda.current_stream(device).wait_stream(warmup_stream)
+        torch.cuda.synchronize(device=device)
+
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            self.outputs = self.model.compute_tail_step(
+                self.inputs,
+                noise=self.noise,
+                timesteps=self.timesteps,
+                sde_random=self.sde_random,
+            )
+        graph.replay()
+        torch.cuda.synchronize(device)
         self.graph = graph
 
     def replay(
@@ -190,16 +193,16 @@ class _MingTTSTailGraph:
         )
 
 
-class _MingTTSTailGraphCache:
+class MingTTSTailGraphCache:
     def __init__(self, model: Any) -> None:
         self.model = model
-        self.graphs: dict[int, _MingTTSTailGraph] = {}
+        self.graphs: dict[int, MingTTSTailGraph] = {}
         self.buckets: tuple[int, ...] = ()
 
     def capture(self, batch_sizes: list[int]) -> None:
         self.buckets = tuple(sorted({int(batch_size) for batch_size in batch_sizes}))
         for batch_size in reversed(self.buckets):
-            graph = _MingTTSTailGraph(self.model, batch_size)
+            graph = MingTTSTailGraph(self.model, batch_size)
             graph.capture()
             self.graphs[batch_size] = graph
 
@@ -215,6 +218,8 @@ class _MingTTSTailGraphCache:
             if bucket >= batch_size:
                 graph = self.graphs[bucket]
                 return graph.replay(inputs, noise=noise, sde_random=sde_random)
+            else:
+                pass
         raise RuntimeError(
             "Ming TTS tail CUDA graph bucket does not cover active batch "
             f"{batch_size}; captured={list(self.buckets)}"
@@ -239,14 +244,16 @@ class MingBailingMoeAttention(nn.Module):
         self.num_kv_heads = int(config.num_key_value_heads)
         self.head_dim = int(config.head_dim)
 
-        attn_tp_rank = get_attention_tp_rank()
-        attn_tp_size = get_attention_tp_size()
+        attn_tp_rank = get_parallel().attn_tp_rank
+        attn_tp_size = get_parallel().attn_tp_size
         if self.num_heads % attn_tp_size != 0:
             raise ValueError(
                 "Ming BailingMoe attention heads must be divisible by "
                 f"attention TP size, got heads={self.num_heads}, "
                 f"tp_size={attn_tp_size}"
             )
+        else:
+            pass
         if self.num_kv_heads >= attn_tp_size:
             if self.num_kv_heads % attn_tp_size != 0:
                 raise ValueError(
@@ -254,12 +261,16 @@ class MingBailingMoeAttention(nn.Module):
                     f"TP size, got kv_heads={self.num_kv_heads}, "
                     f"tp_size={attn_tp_size}"
                 )
+            else:
+                pass
         elif attn_tp_size % self.num_kv_heads != 0:
             raise ValueError(
                 "Ming BailingMoe KV heads must either divide or be divided by "
                 f"attention TP size, got kv_heads={self.num_kv_heads}, "
                 f"tp_size={attn_tp_size}"
             )
+        else:
+            pass
 
         self.num_heads_per_tp = self.num_heads // attn_tp_size
         self.num_kv_heads_per_tp = max(1, self.num_kv_heads // attn_tp_size)
@@ -291,6 +302,8 @@ class MingBailingMoeAttention(nn.Module):
         rope_scaling = getattr(config, "runtime_rope_scaling", None)
         if rope_scaling is None:
             rope_scaling = getattr(config, "rope_scaling", None)
+        else:
+            pass
         self.rotary_emb = get_rope(
             self.head_dim,
             rotary_dim=self.head_dim,
@@ -307,13 +320,19 @@ class MingBailingMoeAttention(nn.Module):
             prefix=add_prefix("attn", prefix),
         )
 
-    def _prepare_positions(self, positions: torch.Tensor) -> torch.Tensor:
+    def prepare_positions(self, positions: torch.Tensor) -> torch.Tensor:
         if isinstance(self.rotary_emb, MRotaryEmbedding):
             if positions.dim() == 1:
                 return positions.unsqueeze(0).expand(3, -1)
+            else:
+                pass
             return positions
+        else:
+            pass
         if positions.dim() == 2:
             return positions[0]
+        else:
+            pass
         return positions
 
     def forward(
@@ -324,10 +343,12 @@ class MingBailingMoeAttention(nn.Module):
     ) -> torch.Tensor:
         if hidden_states.shape[0] == 0:
             return hidden_states
+        else:
+            pass
 
         qkv, _ = self.query_key_value(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        positions = self._prepare_positions(positions)
+        positions = self.prepare_positions(positions)
         rotary_dim = int(getattr(self.rotary_emb, "rotary_dim", self.head_dim))
         can_fuse_set_kv = (
             not isinstance(self.rotary_emb, MRotaryEmbedding)
@@ -396,6 +417,8 @@ class MingBailingMoeMLP(nn.Module):
     ) -> torch.Tensor:
         if self.tp_size == 1 and hidden_states.shape[0] == 0:
             return hidden_states
+        else:
+            pass
 
         gate_up, _ = self.gate_up_proj(hidden_states)
         hidden_states = self.act_fn(gate_up)
@@ -446,6 +469,8 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
             # coverage even though TTS serving does not use modality masks.
             self.image_gate = MingBailingMoeGate(config)
             self.audio_gate = MingBailingMoeGate(config)
+        else:
+            pass
         self.topk = TopK(
             top_k=self.num_experts_per_tok,
             renormalize=self.norm_topk_prob,
@@ -493,11 +518,15 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
         hidden_states = self.experts(hidden_states, topk_output)
         if self.shared_experts is not None:
             hidden_states = hidden_states + self.shared_experts(shared_input)
+        else:
+            pass
 
         if self.tp_size > 1 and not should_skip_post_experts_all_reduce(
             is_tp_path=True,
         ):
             hidden_states = tensor_model_parallel_all_reduce(hidden_states)
+        else:
+            pass
         return hidden_states.view(original_shape)
 
 
@@ -578,6 +607,8 @@ class MingBailingMoeDecoderLayer(nn.Module):
         )
         if hidden_states.shape[0] != 0:
             hidden_states = self.attention(positions, hidden_states, forward_batch)
+        else:
+            pass
         hidden_states, residual = self.layer_communicator.prepare_mlp(
             hidden_states=hidden_states,
             residual=residual,
@@ -598,7 +629,7 @@ class MingBailingMoeDecoderLayer(nn.Module):
             hidden_states = self.mlp(hidden_states, forward_batch)
 
         if fuse_mlp_allreduce:
-            hidden_states._sglang_needs_allreduce_fusion = True
+            hidden_states._sglang_needs_allreduce_fusion = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         else:
             hidden_states, residual = self.layer_communicator.postprocess_layer(
                 hidden_states,
@@ -619,7 +650,7 @@ class MingBailingMoeTextModel(nn.Module):
     ) -> None:
         super().__init__()
         self.config = config
-        self._check_supported_bailing_moe_config(config)
+        self.check_supported_bailing_moe_config(config)
         self.vocab_size = int(config.vocab_size)
         self.hidden_size = int(config.hidden_size)
         self.word_embeddings = VocabParallelEmbedding(
@@ -644,26 +675,34 @@ class MingBailingMoeTextModel(nn.Module):
         self.norm = RMSNorm(self.hidden_size, eps=float(config.rms_norm_eps))
 
     @staticmethod
-    def _check_supported_bailing_moe_config(config: Any) -> None:
+    def check_supported_bailing_moe_config(config: Any) -> None:
         hidden_act = getattr(config, "hidden_act", "silu")
         if hidden_act != "silu":
             raise ValueError(
                 "Ming-Omni-TTS BailingMoE currently supports only "
                 f"hidden_act='silu'; got {hidden_act!r}"
             )
+        else:
+            pass
         if getattr(config, "use_qk_norm", False):
             raise ValueError(
                 "Ming-Omni-TTS BailingMoE does not yet support use_qk_norm=True"
             )
+        else:
+            pass
         if getattr(config, "use_sliding_window", False):
             raise ValueError(
                 "Ming-Omni-TTS BailingMoE does not yet support sliding-window "
                 "attention"
             )
+        else:
+            pass
         if getattr(config, "moe_router_enable_expert_bias", False):
             raise ValueError(
                 "Ming-Omni-TTS BailingMoE does not yet support router expert bias"
             )
+        else:
+            pass
 
         score_function = getattr(config, "score_function", None)
         if score_function not in (None, "softmax"):
@@ -671,12 +710,16 @@ class MingBailingMoeTextModel(nn.Module):
                 "Ming-Omni-TTS BailingMoE currently supports only softmax "
                 f"routing; got score_function={score_function!r}"
             )
+        else:
+            pass
         router_dtype = getattr(config, "router_dtype", None)
         if router_dtype is not None:
             raise ValueError(
                 "Ming-Omni-TTS BailingMoE does not yet support router_dtype; "
                 f"got {router_dtype!r}"
             )
+        else:
+            pass
 
         for field in ("n_group", "num_expert_group", "topk_group"):
             value = getattr(config, field, None)
@@ -685,6 +728,8 @@ class MingBailingMoeTextModel(nn.Module):
                     "Ming-Omni-TTS BailingMoE does not yet support grouped "
                     f"top-k routing; got {field}={value!r}"
                 )
+            else:
+                pass
 
         shared_intermediate = getattr(
             config,
@@ -700,6 +745,8 @@ class MingBailingMoeTextModel(nn.Module):
                 f"moe_shared_expert_intermediate_size={shared_intermediate!r}, "
                 f"moe_intermediate_size={config.moe_intermediate_size!r}"
             )
+        else:
+            pass
 
     def get_input_embeddings(self) -> nn.Module:
         return self.word_embeddings
@@ -752,6 +799,16 @@ class MingTTSSGLangModel(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        # Note(yzxiao): Ming-TTS requires a platform joint-RoPE implementation;
+        # this release provides CUDA. Resolve it before constructing the model.
+        rope_kernel = current_platform.get_joint_rope_inplace_kernel()
+        if rope_kernel is None:
+            raise RuntimeError(
+                "Ming-TTS requires a joint in-place RoPE kernel, but "
+                f"{type(current_platform).__name__} does not provide one."
+            )
+        else:
+            pass
         self.config = config
         self.llm_config = getattr(config, "llm_config", config)
         self.quant_config = quant_config
@@ -763,35 +820,47 @@ class MingTTSSGLangModel(nn.Module):
         self.hidden_size = int(self.llm_config.hidden_size)
         self.vocab_size = int(self.llm_config.vocab_size)
 
-        max_batch_size = 1
+        tail_batch_capacity = 1
+        aggregator_batch_capacity = 1
         try:
-            server_args = get_global_server_args()
+            graph = get_exec().graph
         except ValueError:
-            server_args = None
-        if server_args is not None:
-            from sglang_omni.scheduling.generation_batch_policy import (
-                get_decode_cuda_graph_max_bs,
-            )
-
-            max_batch_size = int(server_args.max_running_requests)
-            if not bool(server_args.disable_cuda_graph):
-                max_batch_size = max(
-                    max_batch_size,
-                    int(get_decode_cuda_graph_max_bs(server_args) or 1),
+            graph = None
+        if graph is not None:
+            tail_batch_capacity = int(get_schedule().max_running_requests)
+            if not bool(graph.disable_cuda_graph):
+                tail_batch_capacity = max(
+                    tail_batch_capacity,
+                    int(graph.cuda_graph_config.decode.max_bs or 1),
                 )
+            else:
+                pass
+            # Note(yzxiao): Each reference patch becomes one AR prompt token.
+            # Covering the context limit keeps valid reference positions at a
+            # stable address for eager execution and future graph capture.
+            aggregator_batch_capacity = max(
+                tail_batch_capacity,
+                int(get_model().context_length),
+            )
+        else:
+            pass
         tail_attn_backend = MING_TTS_TAIL_ATTN_BACKEND
 
         weight = self.model.word_embeddings.weight
-        self._decode_input_embedding = nn.Embedding(
-            max_batch_size,
+        self.decode_input_embedding = nn.Embedding(
+            tail_batch_capacity,
             self.hidden_size,
             device=weight.device,
             dtype=weight.dtype,
         )
-        self._decode_input_embedding.weight.requires_grad_(False)
+        self.decode_input_embedding.weight.requires_grad_(False)
         self.register_buffer(
-            "_decode_input_row_ids",
-            torch.arange(max_batch_size, dtype=torch.long, device=weight.device),
+            "decode_input_row_ids",
+            torch.arange(
+                tail_batch_capacity,
+                dtype=torch.long,
+                device=weight.device,
+            ),
             persistent=False,
         )
 
@@ -801,6 +870,8 @@ class MingTTSSGLangModel(nn.Module):
                 "not only llm_config, because FlowLoss/Aggregator shapes live "
                 "in audio_tokenizer_config, ditar_config, and aggregator_config."
             )
+        else:
+            pass
 
         audio_config = self.config.audio_tokenizer_config
         self.latent_dim = int(audio_config.enc_kwargs["latent_dim"])
@@ -810,14 +881,31 @@ class MingTTSSGLangModel(nn.Module):
         )
         self.tail_attn_backend = tail_attn_backend
         aggregator_config = dict(self.config.aggregator_config)
-        aggregator_config["attn_backend"] = tail_attn_backend
+        ditar_config = dict(self.config.ditar_config)
+        # note (yzxiao): Preserve Ming's cast-before-weight-multiply RMSNorm semantics.
+        norm_layer = partial(RMSNorm, cast_x_before_out_mul=True)
+        # Note(yzxiao): Runtime policy overrides any checkpoint-provided
+        # execution config. Other shared-component callers keep native.
+        aggregator_config["execution_config"] = TalkerExecutionConfig(
+            attn_backend=tail_attn_backend,
+            rope_kernel=rope_kernel,
+            rope_seq_len=1 + self.patch_size,
+            rope_max_batch_size=aggregator_batch_capacity,
+            norm_layer=norm_layer,
+        )
+        ditar_config["execution_config"] = TalkerExecutionConfig(
+            attn_backend=tail_attn_backend,
+            rope_kernel=rope_kernel,
+            rope_seq_len=1 + self.history_patch_size + self.patch_size,
+            rope_max_batch_size=2 * tail_batch_capacity,
+            norm_layer=norm_layer,
+        )
+
         self.linear_proj_audio = Aggregator(
             in_channels=self.latent_dim,
             llm_input_dim=self.hidden_size,
             **aggregator_config,
         )
-        ditar_config = dict(self.config.ditar_config)
-        ditar_config["attn_backend"] = tail_attn_backend
         self.flowloss = FlowLoss(
             z_channels=self.latent_dim,
             llm_cond_dim=self.hidden_size,
@@ -825,11 +913,20 @@ class MingTTSSGLangModel(nn.Module):
         )
         self.stop_head = nn.Linear(self.hidden_size, 2, bias=True)
         self.spk_head = nn.Linear(192, self.hidden_size, bias=True)
-        self._tail_graphs = None
-        self._cfm_timesteps: torch.Tensor | None = None
+        self.tail_graphs = None
+        self.cfm_timesteps: torch.Tensor | None = None
 
     def get_input_embeddings(self) -> nn.Module:
         return self.model.get_input_embeddings()
+
+    @torch.no_grad()
+    def project_reference_latents(self, latents: torch.Tensor) -> torch.Tensor:
+        weight = self.linear_proj_audio.x_embedder.weight
+        with torch.autocast(device_type=weight.device.type, enabled=False):
+            patches = latents.to(device=weight.device, dtype=weight.dtype).reshape(
+                -1, self.patch_size, self.latent_dim
+            )
+            return self.linear_proj_audio(patches).reshape(-1, self.hidden_size)
 
     @torch.no_grad()
     def stage_decode_feedback(
@@ -837,17 +934,17 @@ class MingTTSSGLangModel(nn.Module):
         feedback_embeddings: torch.Tensor,
     ) -> torch.Tensor:
         batch_size = int(feedback_embeddings.shape[0])
-        weight = self._decode_input_embedding.weight
+        weight = self.decode_input_embedding.weight
         weight[:batch_size].copy_(
             feedback_embeddings.to(device=weight.device, dtype=weight.dtype)
         )
-        return self._decode_input_row_ids[:batch_size]
+        return self.decode_input_row_ids[:batch_size]
 
     @torch.no_grad()
     def init_tail_graphs(self, batch_sizes: list[int]) -> None:
-        graphs = _MingTTSTailGraphCache(self)
+        graphs = MingTTSTailGraphCache(self)
         graphs.capture(batch_sizes)
-        self._tail_graphs = graphs
+        self.tail_graphs = graphs
         logger.info(
             "Ming TTS tail CUDA graphs captured for bs=%s",
             list(graphs.buckets),
@@ -855,25 +952,27 @@ class MingTTSSGLangModel(nn.Module):
 
     @torch.no_grad()
     def run_tail_step(self, inputs: MingTTSTailInputs) -> MingTTSTailOutputs:
-        noise, timesteps, sde_random = self._make_tail_sampling_inputs(
+        noise, timesteps, sde_random = self.make_tail_sampling_inputs(
             batch_size=int(inputs.hidden_states.shape[0]),
             device=inputs.hidden_states.device,
         )
-        tail_graphs = self._tail_graphs
+        tail_graphs = self.tail_graphs
         if tail_graphs is not None:
             return tail_graphs.replay(
                 inputs,
                 noise=noise,
                 sde_random=sde_random,
             )
-        return self._compute_tail_step(
+        else:
+            pass
+        return self.compute_tail_step(
             inputs,
             noise=noise,
             timesteps=timesteps,
             sde_random=sde_random,
         )
 
-    def _compute_tail_step(
+    def compute_tail_step(
         self,
         inputs: MingTTSTailInputs,
         *,
@@ -881,28 +980,36 @@ class MingTTSSGLangModel(nn.Module):
         timesteps: torch.Tensor,
         sde_random: torch.Tensor,
     ) -> MingTTSTailOutputs:
-        sampled = self.flowloss.sample(
-            z=inputs.hidden_states,
-            latent_history=inputs.latent_history,
-            noise=noise,
-            cfg=inputs.cfg,
-            sigma=inputs.sigma,
-            temperature=inputs.temperature,
-            timesteps=timesteps,
-            sde_random=sde_random,
-        )
-        feedback = self.linear_proj_audio(sampled).reshape(
-            int(inputs.hidden_states.shape[0]),
-            -1,
-        )
-        stop_prob = self.stop_head(inputs.hidden_states).softmax(dim=-1)[:, 0, 1]
+        weight = self.decode_input_embedding.weight
+        # Note(yzxiao): Eager and captured tails share one precision policy.
+        # FP32 explicitly disables any autocast inherited from the caller.
+        with torch.autocast(
+            device_type=weight.device.type,
+            dtype=weight.dtype,
+            enabled=weight.dtype in (torch.float16, torch.bfloat16),
+        ):
+            sampled = self.flowloss.sample(
+                z=inputs.hidden_states,
+                latent_history=inputs.latent_history,
+                noise=noise,
+                cfg=inputs.cfg,
+                sigma=inputs.sigma,
+                temperature=inputs.temperature,
+                timesteps=timesteps,
+                sde_random=sde_random,
+            )
+            feedback = self.linear_proj_audio(sampled).reshape(
+                int(inputs.hidden_states.shape[0]),
+                -1,
+            )
+            stop_prob = self.stop_head(inputs.hidden_states).softmax(dim=-1)[:, 0, 1]
         return MingTTSTailOutputs(
             sampled=sampled,
             feedback_embeddings=feedback,
             stop_prob=stop_prob,
         )
 
-    def _make_tail_sampling_inputs(
+    def make_tail_sampling_inputs(
         self,
         *,
         batch_size: int,
@@ -915,14 +1022,16 @@ class MingTTSSGLangModel(nn.Module):
             int(self.patch_size),
             device=device,
         )
-        timesteps = self._cfm_timesteps
+        timesteps = self.cfm_timesteps
         if timesteps is None or timesteps.device != device:
             timesteps = build_cfm_timesteps(
                 steps=_MING_TTS_CFM_STEPS,
                 device=device,
                 dtype=noise.dtype,
             )
-            self._cfm_timesteps = timesteps
+            self.cfm_timesteps = timesteps
+        else:
+            pass
         sde_random = build_cfm_sde_random(
             steps=_MING_TTS_CFM_STEPS,
             device=device,
@@ -946,17 +1055,23 @@ class MingTTSSGLangModel(nn.Module):
 
         if input_embeds is None:
             input_embeds = getattr(forward_batch, "input_embeds", None)
+        else:
+            pass
 
         forward_mode = forward_batch.forward_mode
         is_decode = bool(forward_mode.is_decode())
         is_extend = bool(forward_mode.is_extend())
         if input_embeds is None and is_decode:
-            input_embeds = self._decode_input_embedding(input_ids)
+            input_embeds = self.decode_input_embedding(input_ids)
             input_ids = None
+        else:
+            pass
 
         mrope_positions = getattr(forward_batch, "mrope_positions", None)
         if mrope_positions is not None:
             positions = mrope_positions
+        else:
+            pass
 
         hidden_states = self.model(
             input_ids=input_ids,
@@ -1010,13 +1125,19 @@ class MingTTSSGLangModel(nn.Module):
         ) -> tuple[str, str] | None:
             if ".experts." in name:
                 return None
+            else:
+                pass
             for weight_name, shard_id in ((".gate_proj.", 0), (".up_proj.", 1)):
                 if weight_name not in name:
                     continue
+                else:
+                    pass
                 mapped_name = name.replace(weight_name, ".gate_up_proj.")
                 param = params_dict.get(mapped_name)
                 if param is None:
                     return None
+                else:
+                    pass
                 param.weight_loader(param, loaded_weight, shard_id)
                 return mapped_name, str(shard_id)
             return None
@@ -1027,13 +1148,19 @@ class MingTTSSGLangModel(nn.Module):
         ) -> tuple[str, str] | None:
             if ".experts." not in name:
                 return None
+            else:
+                pass
             match = re.search(r"experts\.(\d+)\.(gate_proj|down_proj|up_proj)", name)
             if match is None:
                 return None
+            else:
+                pass
 
             expert_id = int(match.group(1))
             if expert_id >= num_experts:
                 return None
+            else:
+                pass
 
             weight_type = match.group(2)
             param_name = "experts.w2_weight"
@@ -1044,14 +1171,20 @@ class MingTTSSGLangModel(nn.Module):
             elif weight_type == "up_proj":
                 param_name = "experts.w13_weight"
                 shard_id = "w3"
+            else:
+                pass
 
             weight_name = f"experts.{expert_id}.{weight_type}.weight"
             if weight_name not in name:
                 return None
+            else:
+                pass
             mapped_name = name.replace(weight_name, param_name)
             param = params_dict.get(mapped_name)
             if param is None:
                 return None
+            else:
+                pass
             param.weight_loader(
                 param,
                 loaded_weight,
@@ -1075,6 +1208,8 @@ class MingTTSSGLangModel(nn.Module):
                     name,
                     [f"w2:{expert_id}" for expert_id in range(num_experts)],
                 )
+            else:
+                pass
 
         for original_name, loaded_weight in weights:
             owner = classify_ming_tts_weight(original_name)
@@ -1084,12 +1219,18 @@ class MingTTSSGLangModel(nn.Module):
                     [],
                 ).append(original_name)
                 continue
+            else:
+                pass
             if owner == OWNER_AUDIO_VAE:
                 report.deferred.setdefault(OWNER_AUDIO_VAE, []).append(original_name)
                 continue
+            else:
+                pass
             if owner == OWNER_UNKNOWN:
                 report.leftovers.append(original_name)
                 continue
+            else:
+                pass
             if "rotary_emb." in original_name or original_name.endswith(
                 ".rotary_embed.inv_freq"
             ):
@@ -1098,12 +1239,16 @@ class MingTTSSGLangModel(nn.Module):
                     [],
                 ).append(original_name)
                 continue
+            else:
+                pass
 
             name = original_name
             if name.startswith("model.model."):
                 name = "model." + name[len("model.model.") :]
             elif name.startswith(("word_embeddings.", "layers.", "norm.")):
                 name = "model." + name
+            else:
+                pass
 
             packed = load_fused_expert_weight(name, loaded_weight)
             if packed is not None:
@@ -1112,6 +1257,8 @@ class MingTTSSGLangModel(nn.Module):
                 report.add_loaded(owner, original_name, target_param=target_param)
                 report.add_loaded_shard(target_param, shard_id)
                 continue
+            else:
+                pass
 
             packed = load_gate_up_weight(name, loaded_weight)
             if packed is not None:
@@ -1120,6 +1267,8 @@ class MingTTSSGLangModel(nn.Module):
                 report.add_loaded(owner, original_name, target_param=target_param)
                 report.add_loaded_shard(target_param, shard_id)
                 continue
+            else:
+                pass
 
             param = params_dict.get(name)
             if param is not None:
@@ -1129,13 +1278,15 @@ class MingTTSSGLangModel(nn.Module):
             else:
                 report.leftovers.append(original_name)
 
-        runtime_params = {"_decode_input_embedding.weight"}
+        runtime_params = {"decode_input_embedding.weight"}
         missing_params = sorted(set(params_dict) - loaded_param_names - runtime_params)
         if missing_params:
             report.missing["model_params"] = missing_params
+        else:
+            pass
 
         assert_ming_tts_weight_coverage(report)
-        self._weight_load_report = report
+        self.weight_load_report = report
         logger.info("%s", report.summary())
 
 

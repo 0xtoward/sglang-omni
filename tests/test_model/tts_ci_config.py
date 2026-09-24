@@ -19,6 +19,11 @@ class TtsCiModelPreset:
     startup_timeout: int = 180
     gate_thresholds: bool = True
     num_gpus_per_worker: int = 1
+    # note (luojiaxuan): a checkpoint that serves named voices takes the text
+    # alone, so the reference fields above go unused and the reference-based
+    # similarity stage has nothing to score.
+    voice: str | None = None
+    voice_clone: bool = True
 
 
 @dataclass(frozen=True)
@@ -50,28 +55,28 @@ THRESHOLD_SLACK_LOWER = 1.25
 
 
 # Higgs thresholds.
-HIGGS_VC_WER_MAX_CORPUS = 0.0109
+HIGGS_VC_WER_MAX_CORPUS = 0.0105
 HIGGS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_WER_MAX_CORPUS)
-HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0106
+HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0104
 HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_STREAM_WER_MAX_CORPUS)
-HIGGS_VC_SIMILARITY_MEAN_MIN = 66.06310302734374
-HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.163
+HIGGS_VC_SIMILARITY_MEAN_MIN = 65.95185356140136
+HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1628
 HIGGS_VC_UTMOS_MEAN_MIN = apply_mos_slack(HIGGS_VC_UTMOS_MEAN_REFERENCE)
 
 _HIGGS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 15.846,
-        "output_tok_per_req_s": 131.1,
-        "latency_mean_s": 1.005,
-        "rtf_mean": 0.2451,
+        "throughput_qps": 19.992,
+        "output_tok_per_req_s": 160.7,
+        "latency_mean_s": 0.796,
+        "rtf_mean": 0.1894,
     }
 }
 
 _HIGGS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 17.467,
-        "latency_mean_s": 0.854,
-        "rtf_mean": 0.2049,
+        "throughput_qps": 20.016,
+        "latency_mean_s": 0.796,
+        "rtf_mean": 0.1872,
     }
 }
 
@@ -84,28 +89,28 @@ HIGGS_VC_STREAM_THRESHOLDS = apply_slack(
 
 
 # MOSS Local thresholds.
-MOSS_VC_WER_MAX_CORPUS = 0.0222
+MOSS_VC_WER_MAX_CORPUS = 0.0272
 MOSS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_WER_MAX_CORPUS)
-MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0229
+MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0265
 MOSS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_STREAM_WER_MAX_CORPUS)
-MOSS_VC_SIMILARITY_MEAN_MIN = 62.690567626953126
-MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9545
+MOSS_VC_SIMILARITY_MEAN_MIN = 64.33411296844483
+MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9521
 MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
 
 _MOSS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 14.166,
-        "output_tok_per_req_s": 69.2,
-        "latency_mean_s": 1.123,
-        "rtf_mean": 0.2615,
+        "throughput_qps": 20.463,
+        "output_tok_per_req_s": 90.3,
+        "latency_mean_s": 0.777,
+        "rtf_mean": 0.1795,
     }
 }
 
 _MOSS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 7.209,
-        "latency_mean_s": 2.199,
-        "rtf_mean": 0.5223,
+        "throughput_qps": 16.778,
+        "latency_mean_s": 0.949,
+        "rtf_mean": 0.2176,
     }
 }
 
@@ -121,42 +126,111 @@ MOSS_VC_STREAM_THRESHOLDS = apply_slack(
 # MPS-DP2 pool on peak throughput and holds a several-fold better first-audio
 # latency, so colocation is no longer the recommended topology for it.
 #
-# Note: (Jiaxin Deng) calibrated on the CI host, lane 0,1 pinned cpuset
-# (2-15,66-79), worst-of-5 clean rounds with destructive rejection
-# (run .tune-runs/20260813T021112Z_tts_qwen3tts_r5). Raw pre-slack references
+# Note: (wenyao) recalibrated on the CI host, lane 2,3 pinned cpuset
+# (16-31,80-95), worst-of-5 clean rounds with destructive rejection
+# (run .tune-runs/20260830T024753Z_tts_combined). Raw pre-slack references
 # only; the CI slack calculation is unchanged.
-QWEN3_TTS_VC_WER_MAX_CORPUS = 0.011
+QWEN3_TTS_VC_WER_MAX_CORPUS = 0.0114
 QWEN3_TTS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(QWEN3_TTS_VC_WER_MAX_CORPUS)
-QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.0116
+QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.0109
 QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
     QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS
 )
-QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.4295639038086
-QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.195
+QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.13817592620849
+QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.193
 QWEN3_TTS_VC_UTMOS_MEAN_MIN = apply_mos_slack(QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE)
 
 _QWEN3_TTS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 17.66,
-        "output_tok_per_req_s": 71.1,
-        "latency_mean_s": 0.901,
-        "rtf_mean": 0.2236,
+        "throughput_qps": 21.083,
+        "output_tok_per_req_s": 88.4,
+        "latency_mean_s": 0.755,
+        "rtf_mean": 0.1859,
     }
 }
 
 _QWEN3_TTS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 15.324,
-        "latency_mean_s": 1.039,
-        "rtf_mean": 0.257,
+        "throughput_qps": 19.526,
+        "latency_mean_s": 0.815,
+        "rtf_mean": 0.1992,
     }
 }
+
+# note (luojiaxuan): docs/cookbook/qwen3_tts.md, 1.7B CustomVoice, Ryan/English,
+# concurrency 16 on one H200; single runs, so these are references to print
+# next to, not worst-of-N observations from the CI host.
+_QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_REFERENCE = {
+    16: {
+        "throughput_qps": 14.788,
+        "latency_mean_s": 1.075,
+        "rtf_mean": 0.2335,
+    }
+}
+_QWEN3_TTS_CUSTOM_VOICE_STREAM_REFERENCE = {
+    16: {
+        "throughput_qps": 10.098,
+        "latency_mean_s": 1.573,
+        "rtf_mean": 0.3380,
+    }
+}
+QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_THRESHOLDS = apply_slack(
+    _QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_REFERENCE,
+    THRESHOLD_SLACK_HIGHER,
+    THRESHOLD_SLACK_LOWER,
+)
+QWEN3_TTS_CUSTOM_VOICE_STREAM_THRESHOLDS = apply_slack(
+    _QWEN3_TTS_CUSTOM_VOICE_STREAM_REFERENCE,
+    THRESHOLD_SLACK_HIGHER,
+    THRESHOLD_SLACK_LOWER,
+)
+QWEN3_TTS_CUSTOM_VOICE_WER_CORPUS_THRESHOLD = apply_wer_slack(0.01608)
+QWEN3_TTS_CUSTOM_VOICE_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(0.02085)
+QWEN3_TTS_CUSTOM_VOICE_UTMOS_MEAN_MIN = apply_mos_slack(4.1723)
 
 QWEN3_TTS_VC_NON_STREAM_THRESHOLDS = apply_slack(
     _QWEN3_TTS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 QWEN3_TTS_VC_STREAM_THRESHOLDS = apply_slack(
     _QWEN3_TTS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+)
+
+# Fun-CosyVoice3 0.5B.
+#
+# note(ratish): placeholder references until the H100 calibration fills them,
+# so the preset keeps gate_thresholds off until then.
+COSYVOICE3_VC_WER_MAX_CORPUS = 1.0
+COSYVOICE3_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(COSYVOICE3_VC_WER_MAX_CORPUS)
+COSYVOICE3_VC_STREAM_WER_MAX_CORPUS = 1.0
+COSYVOICE3_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
+    COSYVOICE3_VC_STREAM_WER_MAX_CORPUS
+)
+COSYVOICE3_VC_SIMILARITY_MEAN_MIN = 1.0
+COSYVOICE3_VC_UTMOS_MEAN_REFERENCE = 1.0
+COSYVOICE3_VC_UTMOS_MEAN_MIN = apply_mos_slack(COSYVOICE3_VC_UTMOS_MEAN_REFERENCE)
+
+_COSYVOICE3_VC_NON_STREAM_P95 = {
+    16: {
+        "throughput_qps": 1.0,
+        "output_tok_per_req_s": 1.0,
+        "latency_mean_s": 1.0,
+        "rtf_mean": 1.0,
+    }
+}
+
+_COSYVOICE3_VC_STREAM_P95 = {
+    16: {
+        "throughput_qps": 1.0,
+        "latency_mean_s": 1.0,
+        "rtf_mean": 1.0,
+    }
+}
+
+COSYVOICE3_VC_NON_STREAM_THRESHOLDS = apply_slack(
+    _COSYVOICE3_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+)
+COSYVOICE3_VC_STREAM_THRESHOLDS = apply_slack(
+    _COSYVOICE3_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 
 
@@ -182,16 +256,17 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
         model=TtsCiModelPreset(
             model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
             ref_format="references",
-            # Note: (Jiaxin Deng) the shipped defaults cap the AR engine at 16
-            # running requests and colocate every stage in one process; both are
-            # what kept this variant behind, so CI measures the tuned point.
+            # Note: (Jiaxin Deng) the shipped defaults colocate every stage in one
+            # process, which is what kept this variant behind, so CI splits the
+            # vocoder out and measures the tuned point.
             worker_extra_args=(
-                "--max-running-requests 64 "
-                "--cuda-graph-max-bs 64 "
-                "--talker-torch-compile-max-bs 64 "
-                "--isolate-stage vocoder"
+                "--vocoder.process vocoder "
+                "--tts_engine.gpu_memory_fraction 0.85 "
+                "--vocoder.gpu_memory_fraction 0.10"
             ),
-            startup_timeout=300,
+            # note (luojiaxuan): a cold Inductor cache compiles the vocoder steady
+            # shapes at startup, which takes two workers past five minutes.
+            startup_timeout=900,
             gate_thresholds=True,
         ),
         thresholds=TtsCiThresholdPreset(
@@ -201,6 +276,40 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             stream_wer_corpus=QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD,
             similarity_mean_min=QWEN3_TTS_VC_SIMILARITY_MEAN_MIN,
             utmos_mean_min=QWEN3_TTS_VC_UTMOS_MEAN_MIN,
+        ),
+    ),
+    "qwen3-tts-custom-voice": TtsCiPreset(
+        model=TtsCiModelPreset(
+            model_path="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            voice="Ryan",
+            voice_clone=False,
+            # note (luojiaxuan): same tuned point as the Base arm, so the two
+            # differ only in the checkpoint and the request shape.
+            worker_extra_args=(
+                "--tts_engine.engine.max_running_requests 64 "
+                "--tts_engine.engine.cuda_graph_max_bs 64 "
+                "--tts_engine.engine.torch_compile_max_bs 64 "
+                "--vocoder.process vocoder "
+                "--tts_engine.gpu_memory_fraction 0.85 "
+                "--vocoder.gpu_memory_fraction 0.10"
+            ),
+            # note (luojiaxuan): a cold Inductor cache compiles the vocoder steady
+            # shapes at startup, which takes two workers past five minutes.
+            startup_timeout=900,
+            gate_thresholds=False,
+        ),
+        # note (luojiaxuan): printed next to the stage results; this arm gates
+        # nothing until it is calibrated on the CI host, which a contract test
+        # enforces. The similarity stage skips named voices, so that field is
+        # never read here.
+        thresholds=TtsCiThresholdPreset(
+            non_stream_speed=QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_THRESHOLDS,
+            stream_speed=QWEN3_TTS_CUSTOM_VOICE_STREAM_THRESHOLDS,
+            wer_corpus=QWEN3_TTS_CUSTOM_VOICE_WER_CORPUS_THRESHOLD,
+            stream_wer_corpus=QWEN3_TTS_CUSTOM_VOICE_STREAM_WER_CORPUS_THRESHOLD,
+            similarity_mean_min=0.0,
+            utmos_mean_min=QWEN3_TTS_CUSTOM_VOICE_UTMOS_MEAN_MIN,
+            calibrated=False,
         ),
     ),
     "moss": TtsCiPreset(
@@ -217,6 +326,21 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             stream_wer_corpus=MOSS_VC_STREAM_WER_CORPUS_THRESHOLD,
             similarity_mean_min=MOSS_VC_SIMILARITY_MEAN_MIN,
             utmos_mean_min=MOSS_VC_UTMOS_MEAN_MIN,
+        ),
+    ),
+    "cosyvoice3": TtsCiPreset(
+        model=TtsCiModelPreset(
+            model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+            gate_thresholds=False,
+        ),
+        thresholds=TtsCiThresholdPreset(
+            non_stream_speed=COSYVOICE3_VC_NON_STREAM_THRESHOLDS,
+            stream_speed=COSYVOICE3_VC_STREAM_THRESHOLDS,
+            wer_corpus=COSYVOICE3_VC_WER_CORPUS_THRESHOLD,
+            stream_wer_corpus=COSYVOICE3_VC_STREAM_WER_CORPUS_THRESHOLD,
+            similarity_mean_min=COSYVOICE3_VC_SIMILARITY_MEAN_MIN,
+            utmos_mean_min=COSYVOICE3_VC_UTMOS_MEAN_MIN,
+            calibrated=False,
         ),
     ),
 }

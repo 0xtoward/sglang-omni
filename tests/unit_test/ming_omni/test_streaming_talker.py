@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from typing import Any
@@ -16,7 +17,7 @@ from sglang_omni.models.ming_omni.components.streaming_talker import (
 from sglang_omni.models.ming_omni.components.streaming_text import text_to_uint8_tensor
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 
 class _FakeTalker:
@@ -68,7 +69,7 @@ def _drain(
     while time.monotonic() < deadline:
         try:
             msg = scheduler.outbox.get(timeout=0.2)
-        except Exception:
+        except queue.Empty:
             continue
         collected.append(msg)
         if msg.request_id == until_request_id and msg.type == "result":

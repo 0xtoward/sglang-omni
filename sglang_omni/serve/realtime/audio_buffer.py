@@ -7,8 +7,10 @@ import base64
 import io
 import wave
 
+PCM_SAMPLE_RATE = 16000
+
 # 60 seconds hard cap for audio buffer.
-DEFAULT_MAX_BUFFER_BYTES = 60 * 16000 * 2
+DEFAULT_MAX_BUFFER_BYTES = 60 * PCM_SAMPLE_RATE * 2
 
 
 class BufferOverflow(ValueError):
@@ -25,8 +27,8 @@ class RealtimeAudioBuffer:
     def __init__(
         self,
         *,
-        source_sr: int = 16000,
-        target_sr: int = 16000,
+        source_sr: int = PCM_SAMPLE_RATE,
+        target_sr: int = PCM_SAMPLE_RATE,
         channels: int = 1,
         max_bytes: int = DEFAULT_MAX_BUFFER_BYTES,
     ) -> None:
@@ -38,8 +40,13 @@ class RealtimeAudioBuffer:
 
     def append_b64(self, audio_b64: str) -> int:
         chunk = base64.b64decode(audio_b64, validate=False)
+        return self.append_bytes(chunk)
+
+    def append_bytes(self, chunk: bytes) -> int:
         if len(self.buf) + len(chunk) > self.max_bytes:
             raise BufferOverflow(self.max_bytes)
+        else:
+            pass
         self.buf.extend(chunk)
         return len(chunk)
 
@@ -49,9 +56,13 @@ class RealtimeAudioBuffer:
     def drop_prefix(self, num_bytes: int) -> None:
         if num_bytes <= 0:
             return
+        else:
+            pass
         if num_bytes >= len(self.buf):
             self.buf.clear()
             return
+        else:
+            pass
         del self.buf[:num_bytes]
 
     @property
@@ -69,18 +80,26 @@ class RealtimeAudioBuffer:
         return self.to_sliced_wav_data_uri(start_byte=0, end_byte=len(self.buf))
 
     def to_sliced_wav_data_uri(self, *, start_byte: int, end_byte: int) -> str:
-        chunk = bytes(self.buf[start_byte:end_byte])
+        wav_bytes = self.to_sliced_wav_bytes(start_byte=start_byte, end_byte=end_byte)
+        b64 = base64.b64encode(wav_bytes).decode("ascii")
+        return f"data:audio/wav;base64,{b64}"
+
+    def to_sliced_wav_bytes(self, *, start_byte: int, end_byte: int) -> bytes:
+        return self.pcm_to_wav_bytes(bytes(self.buf[start_byte:end_byte]))
+
+    def pcm_to_wav_bytes(self, pcm: bytes) -> bytes:
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(self.channels)
             wf.setsampwidth(2)
             wf.setframerate(self.source_sr)
-            wf.writeframes(chunk)
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:audio/wav;base64,{b64}"
+            wf.writeframes(pcm)
+        return buf.getvalue()
 
     def tail(self, num_bytes: int) -> bytes:
         assert 0 <= num_bytes <= len(self.buf), "Invalid tail length"
         if num_bytes == 0:
             return b""
+        else:
+            pass
         return bytes(self.buf[-num_bytes:])

@@ -46,7 +46,7 @@ _QUALITY_FEATURES = [
 _DEFAULT_QUALITY_BUCKETS = {"trailing_silence_s": 3}
 
 
-def _default_quality_list() -> list[int | None]:
+def default_quality_list() -> list[int | None]:
     return [_DEFAULT_QUALITY_BUCKETS.get(f) for f in _QUALITY_FEATURES]
 
 
@@ -56,11 +56,15 @@ def _default_quality_list() -> list[int | None]:
 def create_preprocessing_executor(
     model_path: str,
     *,
+    device: str | None = None,
+    gpu_id: int | None = None,
     max_concurrency: int = 16,
     tts_norm: bool = True,
     tts_norm_cache_dir: str | None = None,
-    **_: Any,
 ) -> SimpleScheduler:
+    # note (lennox): CPU-only stage declaring gpu only to share the pipeline
+    # process; it does not touch the device.
+    del device, gpu_id
     configure_tts_norm_cache_root(tts_norm_cache_dir)
 
     def _preprocess(payload: StagePayload) -> StagePayload:
@@ -68,7 +72,7 @@ def create_preprocessing_executor(
         rows = build_prompt_rows(
             state.text,
             language=state.language,
-            quality_buckets=_default_quality_list(),
+            quality_buckets=default_quality_list(),
             normalize=tts_norm,
         )
         state.input_ids = rows.to(torch.long)
@@ -83,16 +87,17 @@ def create_preprocessing_executor(
 def create_speaker_encode_executor(
     model_path: str,
     *,
-    gpu_id: int | None = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     speaker_cache_max_items: int = 256,
     max_concurrency: int = 4,
     spk_compile: bool = False,
-    **_: Any,
 ) -> SimpleScheduler:
     from sglang_omni.models.zonos2.components.speaker_encoder import SpeakerEncoder
+    from sglang_omni.utils.device import resolve_concrete_device
 
     encoder = SpeakerEncoder(
-        device=_device(gpu_id),
+        device=str(resolve_concrete_device(device, gpu_id)),
         cache_max_items=speaker_cache_max_items,
         compile_forward=spk_compile,
     )
@@ -104,6 +109,8 @@ def create_speaker_encode_executor(
             state.speaker_emb, state.speaker_fingerprint = (
                 encoder.encode_with_fingerprint(ref)
             )
+        else:
+            pass
         return store_state(payload, state)
 
     return SimpleScheduler(_speaker, max_concurrency=max_concurrency)
@@ -115,18 +122,19 @@ def create_speaker_encode_executor(
 def create_vocoder_executor(
     model_path: str,
     *,
-    gpu_id: int | None = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     dac_batch: bool = False,
     vocoder_warmup: bool = False,
-    **_: Any,
 ) -> Any:
     from sglang_omni.models.zonos2.components.streaming_vocoder import (
         Zonos2StreamingVocoderScheduler,
         decode_batch,
         decode_to_pcm,
     )
+    from sglang_omni.utils.device import resolve_concrete_device
 
-    device = _device(gpu_id)
+    device = str(resolve_concrete_device(device, gpu_id))
 
     def _result_payload(
         payload: StagePayload, state: Zonos2State, pcm: Any
@@ -146,6 +154,8 @@ def create_vocoder_executor(
         usage = build_usage(state)
         if usage is not None:
             data["usage"] = usage
+        else:
+            pass
         return StagePayload(
             request_id=payload.request_id, request=payload.request, data=data
         )
@@ -154,8 +164,12 @@ def create_vocoder_executor(
         codes = state.audio_codes
         if isinstance(codes, torch.Tensor):
             return codes
+        else:
+            pass
         if codes is None:
             return torch.empty((0, 9), dtype=torch.long)
+        else:
+            pass
         return torch.as_tensor(codes, dtype=torch.long)
 
     def _vocode(payload: StagePayload) -> StagePayload:
@@ -163,8 +177,12 @@ def create_vocoder_executor(
         codes = state.audio_codes
         if codes is None or (isinstance(codes, torch.Tensor) and codes.numel() == 0):
             raise ValueError("ZONOS2 generated no audio codes")
+        else:
+            pass
         if not isinstance(codes, torch.Tensor):
             codes = torch.tensor(codes, dtype=torch.long)
+        else:
+            pass
         pcm = decode_to_pcm(codes, state.eos_frame, device=device)
         return _result_payload(payload, state, pcm)
 
@@ -181,6 +199,8 @@ def create_vocoder_executor(
         codes = Zonos2State.from_dict(payload.data).audio_codes
         if codes is None:
             return 0
+        else:
+            pass
         try:
             return int(codes.shape[0])
         except (AttributeError, IndexError):
@@ -213,11 +233,9 @@ def create_vocoder_executor(
             logger.info("ZONOS2 DAC vocoder warmed up at startup")
         except Exception:  # noqa: BLE001 - warmup must never block server start
             logger.warning("ZONOS2 vocoder warmup failed", exc_info=True)
+    else:
+        pass
     return scheduler
-
-
-def _device(gpu_id: int | None) -> str:
-    return f"cuda:{gpu_id}" if gpu_id is not None else "cpu"
 
 
 # ---- AR engine stage (OmniScheduler-backed ZONOS2 backbone) ----
@@ -226,7 +244,8 @@ def _device(gpu_id: int | None) -> str:
 def create_sglang_omni_tts_engine_executor(
     model_path: str,
     *,
-    gpu_id: int | None = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     mem_fraction_static: float = 0.5,
     fp8: bool = False,
@@ -238,7 +257,6 @@ def create_sglang_omni_tts_engine_executor(
     max_running_requests: int = 16,
     cuda_graph_max_bs: int = 16,
     server_args_overrides: dict | None = None,
-    **_: Any,
 ) -> Any:
     from sglang_omni.models.zonos2.engine_builder import Zonos2EngineBuilder
 
@@ -254,6 +272,7 @@ def create_sglang_omni_tts_engine_executor(
         mem_fraction_static=mem_fraction_static,
     ).build(
         model_path,
+        device=device,
         gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,

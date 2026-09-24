@@ -36,13 +36,29 @@ def test_higgs_reference_audio_namespaces_radix_cache() -> None:
         )
 
 
+@pytest.mark.parametrize("reference_codes", [None, [[1, 2], [3, 4]]])
+def test_higgs_radix_key_is_unique_per_request_lifetime(
+    reference_codes: list[list[int]] | None,
+) -> None:
+    state = HiggsTtsState(
+        prompt_token_ids=[42], reference_codes_delayed=reference_codes
+    )
+    first = request_builders.build_sglang_higgs_request(state, request_id="reused")
+    second = request_builders.build_sglang_higgs_request(state, request_id="reused")
+
+    assert first.req.extra_key != second.req.extra_key
+    original_key = first.req.extra_key
+    first.req.output_ids.append(1)
+    assert first.req.extra_key == original_key
+
+
 def test_higgs_scheduler_adapters_clamp_cap_and_record_engine_time(
     monkeypatch,
 ) -> None:
     ticks = iter([10.0, 12.5])
     monkeypatch.setattr(
         request_builders,
-        "_perf_counter",
+        "perf_counter",
         lambda: next(ticks),
     )
     request_builder, result_adapter = request_builders.make_higgs_scheduler_adapters(

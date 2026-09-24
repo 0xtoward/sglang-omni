@@ -88,13 +88,13 @@ def test_model_runner_rejects_greedy_sampling_graph_batch() -> None:
         sampling_graph_available=lambda batch_size: batch_size == 1,
     )
 
-    assert runner._can_use_sampling_cuda_graph(
+    assert runner.can_use_sampling_cuda_graph(
         [_sampling_data(profile="default")], is_audio=True
     )
-    assert not runner._can_use_sampling_cuda_graph(
+    assert not runner.can_use_sampling_cuda_graph(
         [_sampling_data(profile="greedy")], is_audio=True
     )
-    assert not runner._can_use_sampling_cuda_graph(
+    assert not runner.can_use_sampling_cuda_graph(
         [_sampling_data(profile="default"), _sampling_data(profile="greedy")],
         is_audio=True,
     )
@@ -125,6 +125,15 @@ def test_engine_builder_uses_backbone_capture_buckets() -> None:
     builder.post_cuda_graph_setup(model, SimpleNamespace())
 
     assert calls == [([1, 2, 4], True)]
+
+
+def test_engine_builder_allows_breakable_prefill_as_an_opt_in() -> None:
+    builder = MossTtsEngineBuilder()
+
+    assert builder.supports_breakable_prefill_cuda_graph is True
+    assert "cuda_graph_backend_prefill" not in builder.generation_defaults(
+        dtype="bfloat16"
+    )
 
 
 def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
@@ -166,13 +175,13 @@ def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
             )
 
         @staticmethod
-        def _prepare_multi_modal_inputs(rows):
+        def prepare_multi_modal_inputs(rows):
             return rows.to(torch.float32)
 
     runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
     runner.model = FakeModel()
-    runner._pending_rows = None
-    runner._pending_embeds = None
+    runner.pending_rows = None
+    runner.pending_embeds = None
     profile = _sampling_data(profile="default")
     data = SimpleNamespace(
         is_audio=True,
@@ -196,7 +205,7 @@ def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
     )
     schedule_batch = SimpleNamespace()
 
-    runner._collect_moss_step(
+    runner.collect_moss_step(
         result,
         SimpleNamespace(),
         schedule_batch,
@@ -205,7 +214,7 @@ def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
 
     assert len(calls) == 1
     assert result.next_token_ids.tolist() == [12]
-    assert runner._pending_rows.tolist() == [[12, 2, 4]]
+    assert runner.pending_rows.tolist() == [[12, 2, 4]]
     assert data.delay_state.tolist() == [2, _INT64_MAX, 1]
 
 
@@ -223,7 +232,7 @@ def test_sampling_cuda_graph_setup_failure_uses_eager(
 
     monkeypatch.setattr(
         MossTTSDelaySamplingCudaGraphRunner,
-        "_make_static_inputs",
+        "make_static_inputs",
         fail_static_input_allocation,
     )
 
@@ -233,7 +242,7 @@ def test_sampling_cuda_graph_setup_failure_uses_eager(
     )
 
     assert runner.graphs == {}
-    assert runner._inputs is None
+    assert runner.inputs is None
     assert not runner.can_replay(1)
 
 
@@ -288,6 +297,7 @@ def _request_data(
     )
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
     device = torch.device("cuda")
@@ -340,7 +350,7 @@ def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
         ],
     ]
 
-    eager_rows = runner._sample_rows(
+    eager_rows = runner.sample_rows(
         [logits.clone() for logits in channel_logits],
         datas,
         n_vq=_MOSS_DELAY_N_VQ,
@@ -363,6 +373,7 @@ def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
     assert torch.equal(eager_state, fixed.next_delay_state)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
     device = torch.device("cuda")
@@ -422,7 +433,7 @@ def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
         assert torch.equal(expected.rows, actual_rows)
         assert torch.equal(expected.next_delay_state, actual_state)
         if batch_size == 1:
-            static_inputs = runner._require_inputs()
+            static_inputs = runner.require_inputs()
             assert not torch.count_nonzero(static_inputs.control_logits[1:2])
             assert not torch.count_nonzero(static_inputs.audio_logits[1:2])
             assert not torch.count_nonzero(static_inputs.delay_state[1:2])

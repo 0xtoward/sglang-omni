@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 
 class SchedulerStatus(Enum):
@@ -26,6 +29,12 @@ class SchedulerRequest:
     error: Exception | None = None
     arrival_time: float = 0.0
     finish_time: float | None = None
+
+
+@dataclass(slots=True)
+class DeferredAdmission:
+    value: Any
+    ready: Future[Any]
 
 
 @dataclass
@@ -78,6 +87,10 @@ class ARRequestData:
     max_new_tokens: int | None = None
     enforce_request_limits: bool = False
     temperature: float = 0.0
+    # note(ratish): the scheduler clears both on every request it finishes and
+    # compacts the history of every request it retracts, whatever the model.
+    prefill_input_embeds: "torch.Tensor | None" = None
+    decode_input_embeds: list["torch.Tensor"] | None = field(default_factory=list)
 
 
 def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:
@@ -90,6 +103,8 @@ def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:
 
     if next_token_logprobs is None:
         return None
+    else:
+        pass
     if hasattr(next_token_logprobs, "detach"):
         values = next_token_logprobs.detach().float().cpu().tolist()
     elif hasattr(next_token_logprobs, "tolist"):
@@ -98,14 +113,22 @@ def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:
         values = next_token_logprobs
     if isinstance(values, (int, float)):
         return [float(values)]
+    else:
+        pass
     if not isinstance(values, (list, tuple)):
         return None
+    else:
+        pass
 
     out: list[float] = []
     for value in values:
         if isinstance(value, (list, tuple)):
             if len(value) != 1:
                 return None
+            else:
+                pass
             value = value[0]
+        else:
+            pass
         out.append(float(value))
     return out

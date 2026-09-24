@@ -19,7 +19,7 @@ import logging
 import os
 import time
 import wave
-from typing import AsyncIterator, Protocol
+from typing import AsyncIterator, Literal, Protocol, TypedDict
 
 import aiohttp
 import numpy as np
@@ -41,6 +41,7 @@ from benchmarks.metrics.performance import (
     load_tts_speed_summary,
     print_saved_tts_speed_summary,
 )
+from benchmarks.metrics.playback_continuity import compute_max_playback_underrun_s
 from benchmarks.metrics.speaker_similarity import WavLMSpeakerSimilarity
 from benchmarks.metrics.speaker_similarity_assets import (
     ensure_speaker_similarity_assets,
@@ -68,6 +69,7 @@ MOSS_TTS_ZH_TOKENS_PER_CHAR = 3.098411951313033
 MOSS_TTS_EN_TOKENS_PER_CHAR = 0.8673376262755219
 MOSS_TTS_MIN_AUTO_TOKEN_COUNT = 32
 UTMOS_BATCH_SIZE = 8
+ReferenceAudioField = Literal["audios", "audio.ref_audio"]
 
 
 # ---------------------------------------------------------------------------
@@ -769,6 +771,46 @@ class VoiceCloneTTS:
         return transcribe_and_compute_wer(output, wav_path, asr, lang, device)
 
 
+def preload_reference_audio(samples: list[SampleInput]) -> dict[str, str]:
+    """Encode each reference WAV as a data URI, keyed by path, before timing starts."""
+    reference_audio_by_path: dict[str, str] = {}
+    for sample in samples:
+        if sample.ref_audio in reference_audio_by_path:
+            continue
+        with open(sample.ref_audio, "rb") as reference_file:
+            encoded_audio = base64.b64encode(reference_file.read()).decode("ascii")
+        reference_audio_by_path[sample.ref_audio] = (
+            f"data:audio/wav;base64,{encoded_audio}"
+        )
+    return reference_audio_by_path
+
+
+class TalkerSamplingParams(TypedDict, total=False):
+    talker_temperature: float
+    talker_top_p: float
+    talker_top_k: int
+    talker_repetition_penalty: float
+
+
+def talker_sampling_params(
+    *,
+    talker_temperature: float | None,
+    talker_top_p: float | None,
+    talker_top_k: int | None,
+    talker_repetition_penalty: float | None,
+) -> TalkerSamplingParams:
+    talker_params: TalkerSamplingParams = {}
+    if talker_temperature is not None:
+        talker_params["talker_temperature"] = talker_temperature
+    if talker_top_p is not None:
+        talker_params["talker_top_p"] = talker_top_p
+    if talker_top_k is not None:
+        talker_params["talker_top_k"] = talker_top_k
+    if talker_repetition_penalty is not None:
+        talker_params["talker_repetition_penalty"] = talker_repetition_penalty
+    return talker_params
+
+
 class VoiceCloneOmni:
     """Voice cloning via /v1/chat/completions (Omni API format).
 
@@ -787,16 +829,20 @@ class VoiceCloneOmni:
         speaker: str = "Ethan",
         max_tokens: int | None = None,
         temperature: float = 0.7,
+        seed: int | None = None,
         voice_clone: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
         chunk_times_out: list[float] | None = None,
         text_first_time_holder: list[float] | None = None,
+        reference_audio_field: ReferenceAudioField = "audios",
+        reference_audio_data: str | None = None,
+        talker_params: TalkerSamplingParams | None = None,
     ) -> tuple[bytes, float, dict]:
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
 
-        if voice_clone:
+        if voice_clone and reference_audio_field == "audios":
             if lang == "en":
                 prompt_text = (
                     f'Listen to the audio above. The speaker is reading: "{sample.ref_text}". '
@@ -831,8 +877,24 @@ class VoiceCloneOmni:
             "temperature": temperature,
             "stream": stream,
         }
+        if seed is not None:
+            payload["seed"] = seed
+        if talker_params:
+            payload.update(talker_params)
         if voice_clone:
-            payload["audios"] = [sample.ref_audio]
+            if reference_audio_field == "audios":
+                payload["audios"] = [sample.ref_audio]
+            elif reference_audio_field == "audio.ref_audio":
+                if reference_audio_data is None:
+                    raise ValueError(
+                        f"audio.ref_audio needs preloaded reference audio for "
+                        f"sample {sample.sample_id}; see preload_reference_audio"
+                    )
+                payload["audio"]["ref_audio"] = reference_audio_data
+            else:
+                raise ValueError(
+                    f"Unsupported reference audio field: {reference_audio_field}"
+                )
 
         t0 = time.perf_counter()
         async with session.post(api_url, json=payload) as response:
@@ -926,6 +988,7 @@ class VoiceCloneOmni:
         voice_clone: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
+        reference_audio_field: ReferenceAudioField = "audios",
     ) -> SampleOutput:
         output = SampleOutput(
             sample_id=sample.sample_id,
@@ -945,6 +1008,7 @@ class VoiceCloneOmni:
                 voice_clone=voice_clone,
                 stream=stream,
                 system_prompt=system_prompt,
+                reference_audio_field=reference_audio_field,
             )
             with open(wav_path, "wb") as f:
                 f.write(wav_bytes)
@@ -972,6 +1036,7 @@ def _build_tts_payload(
     initial_codec_chunk_frames: int | None = None,
     no_ref_audio: bool = False,
     ref_format: str = "flat",
+    no_ref_text: bool = False,
     voice: str | None = None,
     task_type: str | None = None,
     instructions: str | None = None,
@@ -983,13 +1048,17 @@ def _build_tts_payload(
         "response_format": "pcm" if stream else response_format,
     }
     if not no_ref_audio:
+        # no_ref_text keeps ref_audio (voice cloning) but drops the
+        # reference transcript, for cross-lingual-style runs.
         if ref_format == "references":
-            payload["references"] = [
-                {"audio_path": sample.ref_audio, "text": sample.ref_text}
-            ]
+            reference: dict = {"audio_path": sample.ref_audio}
+            if not no_ref_text:
+                reference["text"] = sample.ref_text
+            payload["references"] = [reference]
         else:
             payload["ref_audio"] = sample.ref_audio
-            payload["ref_text"] = sample.ref_text
+            if not no_ref_text:
+                payload["ref_text"] = sample.ref_text
     if voice is not None:
         payload["voice"] = voice
     if task_type is not None:
@@ -1143,6 +1212,13 @@ async def _handle_raw_pcm_streaming_response(
         )
         return
 
+    result.chunk_audio_duration_s = [
+        len(chunk) / bytes_per_second for chunk in pcm_chunks
+    ]
+    result.max_playback_underrun_s = compute_max_playback_underrun_s(
+        chunk_times,
+        result.chunk_audio_duration_s,
+    )
     result.audio_duration_s = len(pcm_bytes) / bytes_per_second
     elapsed = time.perf_counter() - start_time
     result.rtf = elapsed / result.audio_duration_s
@@ -1250,6 +1326,7 @@ def make_tts_send_fn(
     initial_codec_chunk_frames: int | None = None,
     no_ref_audio: bool = False,
     ref_format: str = "flat",
+    no_ref_text: bool = False,
     voice: str | None = None,
     task_type: str | None = None,
     instructions: str | None = None,
@@ -1273,6 +1350,7 @@ def make_tts_send_fn(
             initial_codec_chunk_frames=initial_codec_chunk_frames,
             no_ref_audio=no_ref_audio,
             ref_format=ref_format,
+            no_ref_text=no_ref_text,
             voice=voice,
             task_type=task_type,
             instructions=instructions,
