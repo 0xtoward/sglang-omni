@@ -7,7 +7,7 @@ import triton.language as tl
 
 
 @triton.jit
-def _gather_kv(
+def gather_kv_kernel(
     K,
     V,
     Slots,
@@ -42,7 +42,7 @@ def _gather_kv(
 
 
 @triton.jit
-def _scatter_kv(
+def scatter_kv_kernel(
     K,
     V,
     Slots,
@@ -101,7 +101,7 @@ def gather_kv(
         return
     block = 1024
     with torch.cuda.device_of(pool_k):
-        _gather_kv[(triton.cdiv(tokens * dim, block), layers * rows * heads)](
+        gather_kv_kernel[(triton.cdiv(tokens * dim, block), layers * rows * heads)](
             pool_k,
             pool_v,
             slots,
@@ -140,7 +140,7 @@ def scatter_kv(
         return
     block = min(1024, triton.next_power_of_2(tokens * dim))
     with torch.cuda.device_of(pool_k):
-        _scatter_kv[(triton.cdiv(tokens * dim, block), layers * rows * heads)](
+        scatter_kv_kernel[(triton.cdiv(tokens * dim, block), layers * rows * heads)](
             keys,
             values,
             slots,

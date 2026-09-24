@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Select padded aux graphs.
-
-Callers must isolate filler writes from live state and slice outputs back to
-the real row count. Positional captures require gather-mode replacements.
-"""
+"""Select padded auxiliary graphs; callers isolate filler state and trim outputs."""
 
 from __future__ import annotations
 
@@ -21,15 +17,9 @@ def select_padded_graph(
     extra: dict[tuple[int, int], GraphT] | None = None,
     max_batch_ratio: float | None = None,
 ) -> tuple[GraphT | None, int]:
-    """Pick the smallest captured graph a ``rows``-row batch can pad up to.
+    """Return the smallest compatible graph and filler count, or (None, 0).
 
-    Candidates need ``batch_size > rows`` and ``bucket_capacity >= capacity``;
-    ties resolve to the smallest batch then the smallest capacity. Entries in
-    ``graphs`` whose batch equals ``skip_batch`` are ignored (captures that
-    read state positionally instead of via the slot-index input buffer);
-    ``extra`` supplies gather-mode replacements for such batches.
-    ``max_batch_ratio`` optionally bounds captured rows / real rows. Returns
-    ``(graph, filler_row_count)`` or ``(None, 0)``.
+    Skip positional captures at skip_batch; extra supplies gather-mode twins.
     """
     pool = [
         (batch_size, bucket_capacity, graphs)
