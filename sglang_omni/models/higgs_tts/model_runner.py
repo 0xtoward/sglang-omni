@@ -107,7 +107,10 @@ class HiggsTTSModelRunner(ModelRunner):
             self.sampler_requests[req.request_id] = req.data.req
             codes = self.generated_codes(req.data)
             assert len(codes) == len(req.data.req.output_ids)
-            self.model.restore_sampler(req.request_id, codes)
+            if req.data.req.retraction_count > 0:
+                self.model.restore_sampler(req.request_id, codes)
+            else:
+                pass
             self.model.set_request_seed(
                 req.request_id, req.data.req.sampling_params.sampling_seed
             )

@@ -117,6 +117,7 @@ def test_higgs_prefill_embeddings_attach_private_sidecar() -> None:
             req=SimpleNamespace(
                 sampling_params=SimpleNamespace(sampling_seed=17),
                 inflight_middle_chunks=0,
+                retraction_count=0,
                 output_ids=[],
             ),
             output_code_buffer=None,
@@ -303,13 +304,18 @@ def test_higgs_middle_prefill_chunk_does_not_sample() -> None:
     assert result.next_token_logits.shape == (2, 16)
 
 
-def test_higgs_full_sampler_pool_releases_retracts_and_restores_on_reentry() -> None:
+@pytest.mark.parametrize("committed_count", [0, 2])
+def test_higgs_full_sampler_pool_releases_retracts_and_restores_on_reentry(
+    committed_count: int,
+) -> None:
     model = object.__new__(HiggsTTSModel)
     model.rid_to_row = {}
     model.free_rows = [0, 1]
     model.output_codes = {}
     model.sampler_pool = HiggsBatchedSamplerState(2, 4, device="cpu")
-    model.acquire_row("waiting")
+    waiting_row = model.acquire_row("waiting")
+    model.sampler_pool.step_count[waiting_row] = 999
+    model.sampler_pool.generation_done[waiting_row] = True
     model.acquire_row("running")
     waiting = SimpleNamespace(is_retracted=True, finished=lambda: False)
     running = SimpleNamespace(is_retracted=False, finished=lambda: False)
@@ -321,7 +327,8 @@ def test_higgs_full_sampler_pool_releases_retracts_and_restores_on_reentry() -> 
     fresh = SimpleNamespace(
         is_retracted=False,
         finished=lambda: False,
-        inflight_middle_chunks=0,
+        inflight_middle_chunks=1,
+        retraction_count=0,
         output_ids=[],
         sampling_params=SimpleNamespace(sampling_seed=17),
     )
@@ -338,29 +345,46 @@ def test_higgs_full_sampler_pool_releases_retracts_and_restores_on_reentry() -> 
     runner.before_prefill(batch, None, [request])
 
     assert set(model.rid_to_row) == {"fresh", "running"}
+    row = model.rid_to_row["fresh"]
+    assert model.sampler_pool.step_count[row] == 0
+    assert not model.sampler_pool.generation_done[row]
+    assert model.sampler_pool.seeds[row] == 17
+    fresh.inflight_middle_chunks = 0
+    runner.before_prefill(batch, None, [request])
+    assert model.sampler_pool.delay_count[row] == 0
+    assert model.sampler_pool.step_count[row] == 0
+    assert model.sampler_pool.eoc_countdown[row] == -1
+    assert model.sampler_pool.seeds[row] == 17
     assert len(data.stream_code_buffer) == 1
     assert data.stream_code_seen_rows == 1
     fresh.is_retracted = True
     waiting.is_retracted = False
     waiting.inflight_middle_chunks = 0
-    waiting.output_ids = [1, 2]
+    waiting.retraction_count = 1
+    waiting.output_ids = [1, 2][:committed_count]
     waiting.sampling_params = SimpleNamespace(sampling_seed=42)
     data.req = waiting
     data.output_codes = [
         torch.tensor([1, 1024, 1024, 1024]),
         torch.tensor([2, 3, 1024, 1024]),
-    ]
+    ][:committed_count]
     request.request_id = "waiting"
 
     runner.before_prefill(batch, None, [request])
 
     assert set(model.rid_to_row) == {"waiting", "running"}
     row = model.rid_to_row["waiting"]
-    assert model.sampler_pool.step_count[row] == 2
+    assert model.sampler_pool.step_count[row] == committed_count
+    assert model.sampler_pool.delay_count[row] == committed_count
     assert model.sampler_pool.seeds[row] == 42
-    torch.testing.assert_close(
-        model.sampler_pool.last_codes[row], data.output_codes[-1]
-    )
+    assert not model.sampler_pool.generation_done[row]
+    assert model.sampler_pool.eoc_countdown[row] == -1
+    if committed_count:
+        torch.testing.assert_close(
+            model.sampler_pool.last_codes[row], data.output_codes[-1]
+        )
+    else:
+        assert torch.count_nonzero(model.sampler_pool.last_codes[row]) == 0
 
 
 def test_higgs_shared_share_the_stride_between_both_consumers() -> None:
