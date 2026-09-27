@@ -430,17 +430,50 @@ class FunCosyVoice3StreamingVocoderScheduler(
             logger.info(f"Fun-CosyVoice3 causal Flow batch size={len(items)}")
             mels = self.vocoder.hop_batch(items)
             decoded: dict[str, torch.Tensor] = {}
-            for (request_id, state), mel in zip(participants, mels, strict=True):
-                delta, state.hift_mel, state.speech_offset = self.vocoder.hift_delta(
-                    mel[:, :, state.token_offset * TOKEN_MEL_RATIO :],
-                    hift_mel=state.hift_mel,
-                    speech_offset=state.speech_offset,
-                    finalize=False,
+            mel_deltas = [
+                mel[:, :, state.token_offset * TOKEN_MEL_RATIO :]
+                for (_, state), mel in zip(participants, mels, strict=True)
+            ]
+            can_batch_hift = (
+                len(participants) > 1
+                and all(
+                    state.hift_mel is None and state.speech_offset == 0
+                    for _, state in participants
                 )
-                if delta.numel() > 0:
-                    decoded[request_id] = delta
-                else:
-                    pass
+                and len({tuple(mel.shape) for mel in mel_deltas}) == 1
+            )
+            if can_batch_hift:
+                logger.info(
+                    f"Fun-CosyVoice3 first-hop HiFT batch size={len(participants)}"
+                )
+                speech, _ = self.vocoder.hift.inference(
+                    speech_feat=torch.cat(mel_deltas, dim=0), finalize=False
+                )
+                waves = speech.detach().cpu()
+                for index, (request_id, state) in enumerate(participants):
+                    state.hift_mel = mel_deltas[index].detach()
+                    state.speech_offset = int(speech.shape[1])
+                    delta = waves[index : index + 1]
+                    if delta.numel() > 0:
+                        decoded[request_id] = delta
+                    else:
+                        pass
+            else:
+                for (request_id, state), mel in zip(
+                    participants, mel_deltas, strict=True
+                ):
+                    delta, state.hift_mel, state.speech_offset = (
+                        self.vocoder.hift_delta(
+                            mel,
+                            hift_mel=state.hift_mel,
+                            speech_offset=state.speech_offset,
+                            finalize=False,
+                        )
+                    )
+                    if delta.numel() > 0:
+                        decoded[request_id] = delta
+                    else:
+                        pass
             now = self.clock()
             for request_id, state in participants:
                 state.token_offset += state.hop_len

@@ -1653,7 +1653,7 @@ class CosyVoice3Vocoder(BatchVocoderBase):
     def hop_batch(self, items: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         """Causal Flow for one hop per row, the rows packed along the sequence
         with attention within each row; the scheduler keeps the frames past
-        token_offset. HiFT stays per request.
+        token_offset.
         """
         with torch.autocast(
             device_type=current_platform.device_type,
