@@ -161,10 +161,10 @@ def run_async(monkeypatch, **kw):
 def test_async_resolve_does_not_commit_retracted_codes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner, requests, result, batch, reqs, datas = _build_runner(
-        async_enabled=True, **_MIXED
+    runner, requests, result, batch, reqs, datas = build_runner(
+        async_enabled=True, **MIXED
     )
-    _patch_cpu_host_staging(monkeypatch)
+    patch_cpu_host_staging(monkeypatch)
     snapshot = runner.post_decode_launch(result, batch, requests)
     reqs[2].is_retracted = True
 

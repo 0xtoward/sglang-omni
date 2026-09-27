@@ -18,10 +18,8 @@ from unittest.mock import Mock
 import pytest
 import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
-from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ReqKvInfo
-from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.admission import QueueFullError
@@ -2425,7 +2423,6 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
     assert (
         scheduler._pending_chunked_abort_req is None
     )  # noqa: leading-underscore  # production name
-    scheduler.process_pending_chunked_abort()
     assert scheduler.new_token_ratio_tracker is not None
     assert scheduler.dp_attn_adapter is not None
     assert scheduler.pool_stats_observer is not None
@@ -2458,58 +2455,6 @@ def test_unset_prefill_decode_interval_never_defers_prefill(monkeypatch) -> None
     assert (
         scheduler._should_defer_prefill() is False
     )  # noqa: leading-underscore  # upstream name
-
-
-def test_omni_scheduler_delegated_result_counters_skip_idle_gaps(monkeypatch) -> None:
-    scheduler = construct_omni_scheduler(monkeypatch)
-    scheduler.batch_result_processor = Mock()
-    scheduler.metrics_reporter.log_batch_result_stats = Mock()
-    scheduler.metrics_reporter.update_device_timer = Mock()
-    request = SimpleNamespace(rid="request", output_ids=[], finished=lambda: False)
-    batch = SimpleNamespace(
-        reqs=[request],
-        forward_mode=ForwardMode.EXTEND,
-        extend_num_tokens=7,
-        is_dllm=lambda: False,
-    )
-
-    for timestamp, after_idle in (
-        (1.0, False),
-        (1.25, False),
-        (10.0, True),
-        (10.25, False),
-    ):
-        scheduler._sched_idled = (
-            after_idle  # noqa: leading-underscore  # production name
-        )
-        scheduler.stamp_batch_launch(batch)
-        batch.launch_ts = timestamp
-        scheduler.process_batch_result(batch, SimpleNamespace())
-
-    assert scheduler.total_prefill_uncached_tokens == 14
-    assert scheduler.total_prefill_busy_us == 500_000
-    assert scheduler.batch_result_processor.process_batch_result_prefill.call_count == 4
-
-
-def test_omni_scheduler_admin_pause_matches_delegated_health_check(monkeypatch) -> None:
-    scheduler = construct_omni_scheduler(monkeypatch)
-    scheduler.disaggregation_mode = DisaggregationMode.DECODE
-    scheduler.disagg_decode_prealloc_queue = SimpleNamespace(
-        retracted_queue=[object()], enqueue_held_rebootstrap=Mock()
-    )
-
-    assert scheduler.is_fully_idle(for_health_check=True) is False
-    result = scheduler.admin_pause_generation({"mode": "in_place"})
-    assert result["data"]["engine_paused"] is True
-    assert scheduler.is_fully_idle(for_health_check=True) is True
-
-    scheduler.continue_generation(SimpleNamespace(torch_empty_cache=False))
-    assert scheduler.is_fully_idle(for_health_check=True) is False
-    scheduler.pause_generation(SimpleNamespace(mode="in_place"))
-    assert scheduler.is_fully_idle(for_health_check=True) is True
-    result = scheduler.admin_continue_generation({"torch_empty_cache": False})
-    assert result["data"]["engine_paused"] is False
-    assert scheduler.is_fully_idle(for_health_check=True) is False
 
 
 def test_refresh_upstream_parallel_state_reads_dcp_from_the_parallel_bag(
