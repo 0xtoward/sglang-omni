@@ -96,7 +96,8 @@ class FakeHiFT(torch.nn.Module):
 
     def inference(self, *, speech_feat, finalize):
         self.calls.append((speech_feat, finalize))
-        return torch.arange(speech_feat.shape[-1]).reshape(1, -1).float(), None
+        waveform = torch.arange(speech_feat.shape[-1]).reshape(1, -1).float()
+        return waveform.expand(speech_feat.shape[0], -1), None
 
 
 def drain(scheduler: FunCosyVoice3StreamingVocoderScheduler) -> list[OutgoingMessage]:
@@ -446,12 +447,22 @@ def test_streaming_vocoder_fallback_errors_on_empty_audio_codes(codes) -> None:
     assert "req-empty" not in scheduler.stream_states
 
 
-def test_equal_first_hops_share_one_causal_flow_batch() -> None:
+def test_equal_first_hops_share_flow_and_hift_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     flow, scheduler = make_scheduler(max_batch_size=8)
+
+    def inference(
+        *, speech_feat: torch.Tensor, finalize: bool
+    ) -> tuple[torch.Tensor, None]:
+        scheduler.vocoder.hift.calls.append((speech_feat, finalize))
+        return speech_feat[:, 0, :], None
+
+    monkeypatch.setattr(scheduler.vocoder.hift, "inference", inference)
     for request_id in ("req-a", "req-b"):
         scheduler.handle_streaming_new_request(request_id, stream_payload(request_id))
-    for request_id in ("req-a", "req-b"):
-        scheduler.ingest_stream_item(request_id, item(list(range(28))))
+    for token, request_id in enumerate(("req-a", "req-b"), start=1):
+        scheduler.ingest_stream_item(request_id, item([token] * 28))
     with scheduler.state_lock:
         failed = scheduler.pump_streams()
     assert failed == []
@@ -462,6 +473,19 @@ def test_equal_first_hops_share_one_causal_flow_batch() -> None:
     assert {waveform(message.data).shape[0] for message in messages} == {
         TOKEN_HOP_LEN * TOKEN_MEL_RATIO
     }
+    assert len(scheduler.vocoder.hift.calls) == 1
+    speech_feat, finalize = scheduler.vocoder.hift.calls[0]
+    assert speech_feat.shape == (2, 80, TOKEN_HOP_LEN * TOKEN_MEL_RATIO)
+    assert finalize is False
+    assert stream_ids(messages) == ["req-a", "req-b"]
+    assert not torch.equal(speech_feat[0], speech_feat[1])
+    for index, message in enumerate(messages):
+        np.testing.assert_array_equal(
+            waveform(message.data), speech_feat[index, 0].numpy()
+        )
+        state = scheduler.stream_states[message.request_id]
+        torch.testing.assert_close(state.hift_mel, speech_feat[index : index + 1])
+        assert state.speech_offset == TOKEN_HOP_LEN * TOKEN_MEL_RATIO
 
 
 def test_late_payloads_share_one_causal_flow_batch() -> None:
@@ -521,6 +545,13 @@ def test_equal_follow_up_hops_share_one_causal_flow_batch() -> None:
     messages = [m for m in drain(scheduler) if m.type == "stream"]
     shapes = {waveform(m.data).shape[0] for m in messages}
     assert 100 in shapes
+    assert [
+        speech_feat.shape[0] for speech_feat, _ in scheduler.vocoder.hift.calls
+    ] == [
+        2,
+        1,
+        1,
+    ]
 
 
 def test_mixed_prompt_follow_ups_share_one_causal_flow_batch() -> None:
