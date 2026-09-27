@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+
+import torch
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.runtime_context import get_memory, get_schedule
 
@@ -46,3 +49,15 @@ def create_tree_cache(
     from sglang.srt.mem_cache.radix_cache import RadixCache
 
     return RadixCache(params)
+
+
+def prompt_cache_key(model_name: str, *tensors: torch.Tensor | None) -> str:
+    digest = hashlib.sha256()
+    for tensor in tensors:
+        if tensor is None:
+            digest.update(b"None;")
+        else:
+            tensor = tensor.detach().cpu().contiguous()
+            digest.update(f"{tensor.dtype}:{tuple(tensor.shape)};".encode())
+            digest.update(tensor.reshape(-1).view(torch.uint8).numpy().tobytes())
+    return f"{model_name}:{digest.hexdigest()}"

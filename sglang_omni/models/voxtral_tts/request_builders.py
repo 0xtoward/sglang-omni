@@ -4,16 +4,17 @@
 from __future__ import annotations
 
 import collections
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+from sglang.srt.managers.schedule_batch import Req
 
 from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.cache import prompt_cache_key
 
 
 @dataclass
@@ -32,8 +33,8 @@ def build_sglang_voxtral_request(
     *,
     model: Any,
     voice_embeddings: dict[str, torch.Tensor],
+    voice_cache_keys: dict[str | None, str] | None = None,
 ) -> VoxtralSGLangRequestData:
-    from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     state = VoxtralTTSState.from_dict(payload.data)
@@ -41,6 +42,10 @@ def build_sglang_voxtral_request(
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
     voice = state.voice or "cheerful_female"
     voice_embedding = voice_embeddings.get(voice)
+    if voice_cache_keys is None:
+        cache_key = prompt_cache_key("voxtral_tts", voice_embedding)
+    else:
+        cache_key = voice_cache_keys.get(voice, voice_cache_keys[None])
 
     eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
     sampling_params = SamplingParams(
@@ -58,9 +63,10 @@ def build_sglang_voxtral_request(
         sampling_params=sampling_params,
         eos_token_ids={eos_id},
         vocab_size=model.voxtral_config.text_config.vocab_size,
-        # note (luojiaxuan): Scalar IDs omit acoustic codes; isolate each lifecycle.
-        extra_key=f"voxtral_tts:{uuid.uuid4().hex}",
+        extra_key=cache_key,
     )
+    req._omni_prompt_only_radix = True  # noqa: leading-underscore
+    req.use_private_radix_on_retract = True
     req.tokenizer = None
     req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
@@ -100,11 +106,19 @@ def make_voxtral_scheduler_adapters(
     model: Any,
     voice_embeddings: dict[str, torch.Tensor],
 ):
+    # note (Eric): Fixed GPU voice embeddings must not be copied on each admission.
+    voice_cache_keys: dict[str | None, str] = {
+        voice: prompt_cache_key("voxtral_tts", embedding)
+        for voice, embedding in voice_embeddings.items()
+    }
+    voice_cache_keys[None] = prompt_cache_key("voxtral_tts", None)
+
     def request_builder(payload: StagePayload) -> VoxtralSGLangRequestData:
         return build_sglang_voxtral_request(
             payload,
             model=model,
             voice_embeddings=voice_embeddings,
+            voice_cache_keys=voice_cache_keys,
         )
 
     def result_adapter(data: VoxtralSGLangRequestData) -> StagePayload:

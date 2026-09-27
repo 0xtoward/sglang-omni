@@ -18,6 +18,10 @@ class VoxtralTTSModelRunner(ModelRunner):
         self.pending_audio_codes: torch.Tensor | None = None
         self.pending_audio_embeds: torch.Tensor | None = None
 
+    def lookahead_eligible(self, batch: Any) -> bool:
+        # note (Eric): Feedback is committed at resolve, too late for lookahead.
+        return False
+
     def before_prefill(
         self,
         forward_batch: Any,

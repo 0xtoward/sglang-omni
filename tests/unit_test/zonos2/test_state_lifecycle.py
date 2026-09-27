@@ -430,7 +430,7 @@ def test_full_pool_reclaims_waiting_owners_before_prefill_and_reentry() -> None:
     assert "waiting" not in runner.decode_requests
 
 
-def test_zonos2_radix_namespace_is_unique_per_request_lifecycle() -> None:
+def test_zonos2_radix_namespace_shares_identical_prompt() -> None:
     from sglang.srt.mem_cache.radix_cache import RadixKey
 
     payload = StagePayload(
@@ -444,10 +444,12 @@ def test_zonos2_radix_namespace_is_unique_per_request_lifecycle() -> None:
     first = request_builders.build_sglang_zonos2_request(payload, model=model)
     second = request_builders.build_sglang_zonos2_request(payload, model=model)
     assert first.req.origin_input_ids == second.req.origin_input_ids
-    assert first.req.extra_key != second.req.extra_key
+    assert first.req.use_private_radix_on_retract
+    assert first.req._omni_prompt_only_radix
+    assert first.req.extra_key == second.req.extra_key
     assert (
         RadixKey(first.req.origin_input_ids, first.req.extra_key).child_key()
-        != RadixKey(second.req.origin_input_ids, second.req.extra_key).child_key()
+        == RadixKey(second.req.origin_input_ids, second.req.extra_key).child_key()
     )
     key = first.req.extra_key
     first.req.reset_for_retract()

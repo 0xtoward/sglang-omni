@@ -1618,7 +1618,7 @@ def test_fish_retract_replays_decode_inputs_at_absolute_positions(
         )
 
 
-def test_fish_retract_cache_key_is_unique_for_each_request_lifetime() -> None:
+def test_fish_retract_preserves_shared_prompt_key() -> None:
     tokenizer = FakeFishTokenizer()
     first = build_sglang_tts_request(make_s2pro_state(), tokenizer, request_id="reused")
     second = build_sglang_tts_request(
@@ -1628,7 +1628,9 @@ def test_fish_retract_cache_key_is_unique_for_each_request_lifetime() -> None:
     first.req.output_ids.extend([201, 202])
     first.req.reset_for_retract()
     assert first.req.extra_key == key
-    assert first.req.extra_key != second.req.extra_key
+    assert first.req.use_private_radix_on_retract
+    assert first.req._omni_prompt_only_radix
+    assert first.req.extra_key == second.req.extra_key
     assert list(first.req.output_ids) == [201, 202]
 
 

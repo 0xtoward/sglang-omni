@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.models.voxtral_tts import request_builders
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline import stages
@@ -108,7 +109,9 @@ def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocod
     assert seen_devices == ["npu:4"]
 
 
-def test_voxtral_radix_cache_is_namespaced_by_request_lifecycle() -> None:
+def test_voxtral_radix_cache_is_namespaced_by_voice_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from sglang.srt.mem_cache.radix_cache import RadixKey
 
     model = SimpleNamespace(
@@ -119,7 +122,7 @@ def test_voxtral_radix_cache_is_namespaced_by_request_lifecycle() -> None:
     )
     voice_embeddings = {
         "cheerful_female": torch.ones(4, 8),
-        "neutral_female": torch.ones(4, 8),
+        "neutral_female": torch.zeros(4, 8),
     }
 
     def make_payload(request_id: str, voice: str) -> StagePayload:
@@ -138,23 +141,28 @@ def test_voxtral_radix_cache_is_namespaced_by_request_lifecycle() -> None:
         model=model,
         voice_embeddings=voice_embeddings,
     )
-    neutral = build_sglang_voxtral_request(
-        make_payload("r2", "neutral_female"),
-        model=model,
-        voice_embeddings=voice_embeddings,
+    request_builder, _ = request_builders.make_voxtral_scheduler_adapters(
+        model=model, voice_embeddings=voice_embeddings
     )
+
+    def unexpected_hash(model_name: str, embedding: torch.Tensor | None) -> str:
+        pytest.fail("Request admission must reuse the precomputed voice fingerprint")
+
+    monkeypatch.setattr(request_builders, "prompt_cache_key", unexpected_hash)
+    neutral = request_builder(make_payload("r2", "neutral_female"))
 
     assert cheerful.req.origin_input_ids == neutral.req.origin_input_ids
     assert cheerful.req.extra_key != neutral.req.extra_key
-    reused = build_sglang_voxtral_request(
-        make_payload("r1", "cheerful_female"),
-        model=model,
-        voice_embeddings=voice_embeddings,
-    )
-    assert cheerful.req.extra_key != reused.req.extra_key
+    reused = request_builder(make_payload("r1", "cheerful_female"))
+    unconditioned = request_builder(make_payload("r3", "unknown"))
+    assert unconditioned.voice_embedding is None
+    assert unconditioned.req.extra_key != cheerful.req.extra_key
+    assert cheerful.req.use_private_radix_on_retract
+    assert cheerful.req._omni_prompt_only_radix
+    assert cheerful.req.extra_key == reused.req.extra_key
     assert (
         RadixKey(cheerful.req.origin_input_ids, cheerful.req.extra_key).child_key()
-        != RadixKey(reused.req.origin_input_ids, reused.req.extra_key).child_key()
+        == RadixKey(reused.req.origin_input_ids, reused.req.extra_key).child_key()
     )
     key = cheerful.req.extra_key
     cheerful.req.reset_for_retract()
@@ -442,6 +450,13 @@ def test_voxtral_decode_empty_batch_keeps_feedback_buffer() -> None:
     )
 
 
+def test_voxtral_decode_requires_committed_feedback() -> None:
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    assert not runner.lookahead_eligible(SimpleNamespace())
+
+
 @pytest.mark.parametrize(("start", "end"), [(0, 5), (2, 4), (4, 5)])
 def test_voxtral_reprefill_replays_absolute_rows_and_consumes_queue(
     start: int, end: int
@@ -450,9 +465,9 @@ def test_voxtral_reprefill_replays_absolute_rows_and_consumes_queue(
 
     runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
     runner.model = SimpleNamespace(
-        get_input_embeddings=lambda: lambda ids: torch.stack(
-            (ids, ids + 100), dim=1
-        ).float(),
+        get_input_embeddings=lambda: (
+            lambda ids: torch.stack((ids, ids + 100), dim=1).float()
+        ),
         hidden_size=2,
         decode_input_embed_buffer=torch.zeros(1, 2),
     )
@@ -621,7 +636,9 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
         forward_batch_info.ForwardBatch,
         "init_new",
         staticmethod(
-            lambda model_worker_batch, model_runner, *, capture_hidden_mode=None, return_hidden_states_before_norm: fake_forward_batch
+            lambda model_worker_batch, model_runner, *, capture_hidden_mode=None, return_hidden_states_before_norm: (
+                fake_forward_batch
+            )
         ),
     )
 

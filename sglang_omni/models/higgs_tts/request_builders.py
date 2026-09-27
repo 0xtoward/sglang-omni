@@ -6,7 +6,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
-from uuid import uuid4
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -23,6 +22,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.cache import prompt_cache_key
 from sglang_omni.scheduling.streaming_vocoder import (
     INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     resolve_initial_codec_chunk_frames,
@@ -87,15 +87,18 @@ def build_sglang_higgs_request(
     sampling_params.normalize(tokenizer=None)
 
     # vocab_size = backbone text vocab so cb0 rides sglang's standard sampler path.
-    # note (luojiaxuan): cb0 keys omit the other codebooks, even for the same voice.
     req = Req(
         rid=request_id,
         origin_input_text="",
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
         vocab_size=151_936,
-        extra_key=uuid4().hex,
+        extra_key=prompt_cache_key(
+            "higgs", torch.tensor(state.reference_codes_delayed or [], dtype=torch.long)
+        ),
     )
+    req._omni_prompt_only_radix = True  # noqa: leading-underscore
+    req.use_private_radix_on_retract = True
     # V1's prefill manager probes these attrs; absence triggers AttributeError.
     req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     req._input_embeds_are_projected = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken

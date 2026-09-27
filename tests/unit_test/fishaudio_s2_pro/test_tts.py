@@ -585,7 +585,24 @@ def test_fish_tts_request_builder_maps_finish_contract_onto_req() -> None:
     same_ref = request_builder(
         make_s2pro_payload(make_s2pro_state(max_new_tokens=6), request_id="req-again")
     )
-    assert data.req.extra_key != same_ref.req.extra_key
+    assert data.req.extra_key == same_ref.req.extra_key
+    longer_text = request_builder(
+        make_s2pro_payload(
+            make_s2pro_state(
+                input_ids=[10, 11, 12, 13, 14],
+                vq_mask_tokens=[False, True, False, False, False],
+            ),
+            request_id="req-longer-text",
+        )
+    )
+    assert longer_text.req.extra_key == data.req.extra_key
+    shifted_reference = request_builder(
+        make_s2pro_payload(
+            make_s2pro_state(vq_mask_tokens=[False, False, True]),
+            request_id="req-shifted-reference",
+        )
+    )
+    assert shifted_reference.req.extra_key != data.req.extra_key
 
     other_cb1 = request_builder(
         make_s2pro_payload(

@@ -4,16 +4,17 @@
 from __future__ import annotations
 
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+from sglang.srt.managers.schedule_batch import Req
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.cache import prompt_cache_key
 
 _S2PRO_GRAPH_TOP_K = 30
 
@@ -69,7 +70,6 @@ def build_sglang_tts_request(
     im_end_token_id: int | None = None,
     vocab_size: int | None = None,
 ) -> S2ProSGLangRequestData:
-    from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     input_ids_list = list(state.input_ids)
@@ -147,10 +147,14 @@ def build_sglang_tts_request(
         sampling_params=sampling_params,
         vocab_size=vocab_size,
         eos_token_ids={im_end_token_id},
-        # note (Gaokai): scalar IDs omit acoustic codebooks from reference audio.
-        # note (luojiaxuan): isolate generated KV too, retaining reuse within a request.
-        extra_key=f"fish:{uuid.uuid4().hex}",
+        extra_key=prompt_cache_key(
+            "fish",
+            vq_mask_tokens.nonzero() if vq_mask_tokens is not None else None,
+            *(vq_parts or []),
+        ),
     )
+    req._omni_prompt_only_radix = True  # noqa: leading-underscore
+    req.use_private_radix_on_retract = True
     req.tokenizer = tokenizer
     req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     req._input_embeds_are_projected = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken

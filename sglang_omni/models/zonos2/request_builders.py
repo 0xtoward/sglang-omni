@@ -10,11 +10,11 @@ from __future__ import annotations
 import base64
 import re
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+from sglang.srt.managers.schedule_batch import Req
 
 from sglang_omni.models.moss_tts.request_builders import (
     normalize_moss_tts_inputs,
@@ -32,6 +32,7 @@ from sglang_omni.models.zonos2.streaming_contract import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.cache import prompt_cache_key
 from sglang_omni.scheduling.streaming_vocoder import (
     INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     resolve_initial_codec_chunk_frames,
@@ -192,7 +193,6 @@ def marker_row(cfg, tok: int) -> torch.Tensor:
 def build_sglang_zonos2_request(
     payload: StagePayload, *, model: Any
 ) -> Zonos2SGLangRequestData:
-    from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     cfg = model.config
@@ -235,9 +235,10 @@ def build_sglang_zonos2_request(
         sampling_params=sp,
         eos_token_ids={RADIX_HASH_SPACE},
         vocab_size=RADIX_HASH_SPACE + 1,
-        # note (luojiaxuan): Frame hashes can collide; isolate each request lifecycle.
-        extra_key=f"zonos2:{uuid.uuid4().hex}",
+        extra_key=prompt_cache_key("zonos2", rows, speaker_emb),
     )
+    req._omni_prompt_only_radix = True  # noqa: leading-underscore
+    req.use_private_radix_on_retract = True
     req.tokenizer = None
 
     data = Zonos2SGLangRequestData(

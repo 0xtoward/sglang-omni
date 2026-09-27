@@ -72,7 +72,6 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         dtype: str,
     ) -> dict[str, Any]:
         del dtype
-        # note (luojiaxuan): per-lifetime keys isolate full-codebook KV from cb0 collisions.
         return {
             "max_running_requests": self.max_running_requests,
             "cuda_graph_max_bs": self.cuda_graph_max_bs,
