@@ -47,7 +47,9 @@ def test_higgs_radix_key_shares_identical_reference(
     second = request_builders.build_sglang_higgs_request(state, request_id="reused")
 
     assert first.req.use_private_radix_on_retract
-    assert first.req._omni_prompt_only_radix
+    assert (
+        first.req._omni_prompt_only_radix
+    )  # noqa: leading-underscore  # Existing request or scheduler interface.
     assert first.req.extra_key == second.req.extra_key
     original_key = first.req.extra_key
     first.req.output_ids.append(1)

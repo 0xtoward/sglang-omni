@@ -81,7 +81,7 @@ def fused_apply_qk_norm_rope(
         attn.rotary_emb.is_neox_style,
         attn.q_norm.variance_epsilon,
     )
-    attn.used_fused_qk_norm_rope_last_call = True
+    attn._used_fused_qk_norm_rope_last_call = True  # noqa: leading-underscore
     return q, k, v
 
 

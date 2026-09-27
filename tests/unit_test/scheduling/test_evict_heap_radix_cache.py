@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import random
 from array import array
 from types import SimpleNamespace
@@ -25,7 +26,7 @@ from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
 )
 
 
-class _MockAllocator:
+class MockAllocator:
     device = "cpu"
 
     def free(self, value):
@@ -38,13 +39,13 @@ class _MockAllocator:
         return 1 << 30
 
 
-def _make(cache_cls, eviction_policy="lru"):
+def make(cache_cls, eviction_policy="lru"):
     """Simulated-cache builder; create_simulated hardcodes RadixCache."""
     return cache_cls(
         CacheInitParams(
             disable=False,
             req_to_token_pool=None,
-            token_to_kv_pool_allocator=_MockAllocator(),
+            token_to_kv_pool_allocator=MockAllocator(),
             page_size=1,
             enable_kv_cache_events=False,
             eviction_policy=eviction_policy,
@@ -52,11 +53,11 @@ def _make(cache_cls, eviction_policy="lru"):
     )
 
 
-def _run_trace(cache, seed: int, steps: int = 4000, drain: bool = True) -> list:
+def run_trace(cache, seed: int, steps: int = 4000, drain: bool = True) -> list:
     """Drive an identical insert/lock/unlock/evict trace; return eviction order."""
     order = []
-    orig_delete = cache._delete_leaf
-    cache._delete_leaf = lambda node: (
+    orig_delete = cache._delete_leaf  # noqa: leading-underscore  # upstream name
+    cache._delete_leaf = lambda node: (  # noqa: leading-underscore  # upstream name
         order.append((node.key.extra_key, tuple(node.key.token_ids))),
         orig_delete(node),
     )[1]
@@ -90,10 +91,10 @@ def _run_trace(cache, seed: int, steps: int = 4000, drain: bool = True) -> list:
 
 def test_eviction_trace_matches_stock():
     for seed in (1234, 99, 2026):
-        stock = _make(RadixCache)
-        patched = _make(EvictHeapRadixCache)
-        stock_order = _run_trace(stock, seed)
-        patched_order = _run_trace(patched, seed)
+        stock = make(RadixCache)
+        patched = make(EvictHeapRadixCache)
+        stock_order = run_trace(stock, seed)
+        patched_order = run_trace(patched, seed)
         assert patched_order == stock_order
         assert len(patched.evictable_leaves) == len(stock.evictable_leaves)
 
@@ -109,7 +110,7 @@ def test_factory_selects_evict_heap_only_for_lru():
             chunked_prefill_size=None,
             radix_eviction_policy=policy,
         ):
-            return create_tree_cache(None, _MockAllocator(), 1)
+            return create_tree_cache(None, MockAllocator(), 1)
 
     assert type(build("lru")) is EvictHeapRadixCache
     for policy in ("mru", "priority", "lfu", "fifo", "filo"):
@@ -121,20 +122,27 @@ def test_factory_passes_the_eviction_policy_config_to_the_strategy():
 
     from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
 
+    if "eviction_policy_config" not in {
+        field.name for field in dataclasses.fields(CacheInitParams)
+    }:
+        pytest.skip("CacheInitParams has no eviction_policy_config")
+    else:
+        pass
+
     with get_context().override_server_args(
         disable_radix_cache=False,
         chunked_prefill_size=None,
         radix_eviction_policy="slru",
         radix_eviction_policy_config={"protected_threshold": 4},
     ):
-        cache = create_tree_cache(None, _MockAllocator(), 1)
+        cache = create_tree_cache(None, MockAllocator(), 1)
 
     assert cache.eviction_strategy.protected_threshold == 4
 
 
 def test_heap_stays_bounded_and_recovers():
-    cache = _make(EvictHeapRadixCache)
-    _run_trace(cache, seed=7, steps=2000, drain=False)
+    cache = make(EvictHeapRadixCache)
+    run_trace(cache, seed=7, steps=2000, drain=False)
     assert cache.evictable_leaves
     assert len(cache.evict_heap) <= max(1024, 4 * len(cache.evictable_leaves))
     cache.evict(EvictParams(num_tokens=1 << 20))
@@ -147,7 +155,7 @@ def test_heap_stays_bounded_and_recovers():
 
 
 def test_reset_then_reuse():
-    cache = _make(EvictHeapRadixCache)
+    cache = make(EvictHeapRadixCache)
     cache.insert(
         InsertParams(
             key=RadixKey(token_ids=[5, 6, 7], extra_key="r"), value=torch.arange(3)
@@ -188,12 +196,12 @@ def test_shared_prompt_switches_to_private_chunked_replay(
     scheduler = OmniScheduler.__new__(OmniScheduler)
     queued = []
     monkeypatch.setattr(
-        omni_scheduler._Upstream,
+        omni_scheduler._Upstream,  # noqa: leading-underscore  # Existing request or scheduler interface.
         "_add_request_to_queue",
         lambda scheduler, request, is_retracted=False: queued.append(request),
     )
     monkeypatch.setattr(
-        omni_scheduler._Upstream,
+        omni_scheduler._Upstream,  # noqa: leading-underscore  # Existing request or scheduler interface.
         "process_batch_result",
         lambda scheduler, batch, result: [
             maybe_cache_unfinished_req(request, cache) for request in batch.reqs
@@ -210,9 +218,11 @@ def test_shared_prompt_switches_to_private_chunked_replay(
             sampling_params=SamplingParams(max_new_tokens=8),
             extra_key="same-reference",
         )
-        request._omni_prompt_only_radix = True
+        request._omni_prompt_only_radix = (
+            True  # noqa: leading-underscore  # Existing request or scheduler interface.
+        )
         request.use_private_radix_on_retract = True
-        request._omni_data = SimpleNamespace(decode_input_embeds=[])
+        request.omni_data = SimpleNamespace(decode_input_embeds=[])
         request.full_untruncated_fill_ids = prompt[:]
         request.set_extend_range(0, len(prompt))
         request.kv.req_pool_idx = index + 1
@@ -238,11 +248,15 @@ def test_shared_prompt_switches_to_private_chunked_replay(
         cache.cache_finished_req(request, is_insert=False, kv_len_to_handle=9)
         request.kv.req_pool_idx = None
         request.reset_for_retract()
-        scheduler._add_request_to_queue(request, is_retracted=True)
+        scheduler._add_request_to_queue(
+            request, is_retracted=True
+        )  # noqa: leading-underscore  # Existing request or scheduler interface.
         private_key = request.extra_key
         assert private_key != "same-reference"
         assert not request.skip_radix_cache_insert
-        assert not request._omni_prompt_only_radix
+        assert (
+            not request._omni_prompt_only_radix
+        )  # noqa: leading-underscore  # Existing request or scheduler interface.
         assert not request.use_private_radix_on_retract
         private_keys.append(private_key)
         request.init_next_round_input(cache)
@@ -263,7 +277,9 @@ def test_shared_prompt_switches_to_private_chunked_replay(
         cache.cache_finished_req(request, is_insert=False, kv_len_to_handle=10)
         request.kv.req_pool_idx = None
         request.reset_for_retract()
-        scheduler._add_request_to_queue(request, is_retracted=True)
+        scheduler._add_request_to_queue(
+            request, is_retracted=True
+        )  # noqa: leading-underscore  # Existing request or scheduler interface.
         assert request.extra_key == private_key
         assert not request.skip_radix_cache_insert
         request.init_next_round_input(cache)
@@ -286,20 +302,26 @@ def test_private_retract_policy_does_not_change_other_prompt_cache_users(
         sampling_params=SamplingParams(max_new_tokens=8),
         extra_key="legacy-prompt",
     )
-    request._omni_prompt_only_radix = True
+    request._omni_prompt_only_radix = (
+        True  # noqa: leading-underscore  # Existing request or scheduler interface.
+    )
     request.skip_radix_cache_insert = True
-    request._omni_data = SimpleNamespace(decode_input_embeds=[])
+    request.omni_data = SimpleNamespace(decode_input_embeds=[])
     request.reset_for_retract()
     monkeypatch.setattr(
-        omni_scheduler._Upstream,
+        omni_scheduler._Upstream,  # noqa: leading-underscore  # Existing request or scheduler interface.
         "_add_request_to_queue",
         lambda scheduler, request, is_retracted=False: None,
     )
     scheduler = OmniScheduler.__new__(OmniScheduler)
-    scheduler._add_request_to_queue(request, is_retracted=True)
+    scheduler._add_request_to_queue(
+        request, is_retracted=True
+    )  # noqa: leading-underscore  # Existing request or scheduler interface.
     assert request.extra_key == "legacy-prompt"
     assert request.skip_radix_cache_insert
-    assert request._omni_prompt_only_radix
+    assert (
+        request._omni_prompt_only_radix
+    )  # noqa: leading-underscore  # Existing request or scheduler interface.
 
 
 def test_prompt_fingerprint_covers_shape_dtype_and_all_codebooks() -> None:

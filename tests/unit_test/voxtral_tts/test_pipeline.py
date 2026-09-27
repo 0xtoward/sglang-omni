@@ -99,7 +99,7 @@ def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocod
     monkeypatch.setattr(
         stages,
         "load_audio_tokenizer",
-        lambda _checkpoint, _config, device: (
+        lambda _checkpoint, config, device: (
             seen_devices.append(device) or SimpleNamespace()
         ),
     )
@@ -158,7 +158,9 @@ def test_voxtral_radix_cache_is_namespaced_by_voice_embedding(
     assert unconditioned.voice_embedding is None
     assert unconditioned.req.extra_key != cheerful.req.extra_key
     assert cheerful.req.use_private_radix_on_retract
-    assert cheerful.req._omni_prompt_only_radix
+    assert (
+        cheerful.req._omni_prompt_only_radix
+    )  # noqa: leading-underscore  # Existing request or scheduler interface.
     assert cheerful.req.extra_key == reused.req.extra_key
     assert (
         RadixKey(cheerful.req.origin_input_ids, cheerful.req.extra_key).child_key()

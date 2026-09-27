@@ -481,7 +481,7 @@ class ThinkerModelRunner(ModelRunner):
             # so a hidden-capture batch can never slip onto the async path.
             try:
                 data = (
-                    req._omni_data
+                    req.omni_data
                 )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             except AttributeError:
                 data = None

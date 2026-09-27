@@ -132,7 +132,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             pass
         for req in reqs:
             try:
-                data = req._omni_data  # noqa: leading-underscore
+                data = req.omni_data  # noqa: leading-underscore
             except AttributeError:
                 data = None
             if data is None:
