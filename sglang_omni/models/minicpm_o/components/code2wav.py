@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Vocode MiniCPM-o codec tokens with a cached speaker reference."""
+"""Vocode MiniCPM-o codec tokens with cached speaker references."""
 
 from __future__ import annotations
 
+import io
 import os
-import tempfile
-from collections import defaultdict
+import threading
+from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Sequence
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import numpy as np
@@ -23,9 +25,16 @@ OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
 SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
 
+SpeakerPrompt = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+
 
 class MiniCPMOCode2Wav(nn.Module):
-    """Convert codec tokens into a float32 waveform with Token2wav."""
+    """Convert codec tokens into a float32 waveform with Token2wav.
+
+    vocode runs on one compute thread. prefetch_reference and release_reference
+    may run concurrently from the stage event loop; reference_lock guards the
+    prompt cache, the in-flight preparations, and the per-request reservations.
+    """
 
     def __init__(
         self,
@@ -35,6 +44,9 @@ class MiniCPMOCode2Wav(nn.Module):
         dtype: str | torch.dtype | None = None,
         n_timesteps: int = 10,
         prompt_wav: str | None = None,
+        enable_flow_variable_length: bool,
+        reference_workers: int,
+        prompt_cache_capacity: int,
     ) -> None:
         super().__init__()
         from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
@@ -42,6 +54,11 @@ class MiniCPMOCode2Wav(nn.Module):
         dev = torch.device(device)
         if dev.type not in {"cuda", "xpu"}:
             raise ValueError(f"Token2wav requires a CUDA or XPU device, got {device}")
+        elif reference_workers < 1 or prompt_cache_capacity < 1:
+            raise ValueError(
+                "reference_workers and prompt_cache_capacity must be positive, got "
+                f"{reference_workers} and {prompt_cache_capacity}"
+            )
         else:
             pass
         self.device_context = torch.get_device_module(dev).device(dev.index or 0)
@@ -71,6 +88,9 @@ class MiniCPMOCode2Wav(nn.Module):
             self.token2wav = Token2Wav(
                 Path(asset_dir), device=dev, dtype=torch_dtype, n_timesteps=n_timesteps
             )
+        self.token2wav.flow.decoder.estimator.enable_variable_length = (
+            enable_flow_variable_length
+        )
 
         if prompt_wav is None:
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")
@@ -78,7 +98,16 @@ class MiniCPMOCode2Wav(nn.Module):
         else:
             pass
         self.default_prompt_wav = prompt_wav
-        self.prompt_cache_key: str | None = None
+        self.prompt_cache_capacity = prompt_cache_capacity
+        self.prompt_cache: OrderedDict[str, SpeakerPrompt] = OrderedDict()
+        self.pending_references: dict[str, Future[SpeakerPrompt]] = {}
+        self.reserved_keys_by_request: dict[str, str] = {}
+        self.reference_reservations: Counter[str] = Counter()
+        # Reentrant because a future that is already done runs its callback on submit.
+        self.reference_lock = threading.RLock()
+        self.reference_executor = ThreadPoolExecutor(
+            max_workers=reference_workers, thread_name_prefix="minicpmo-reference"
+        )
         self.sample_rate = OUTPUT_SAMPLE_RATE
         self.eval()
 
@@ -96,8 +125,7 @@ class MiniCPMOCode2Wav(nn.Module):
             waveform = np.zeros(0, dtype=np.float32)
         else:
             with self.device_context:
-                reference = self.resolve_prompt_wav(prompt_wav)
-                waveform = self.vocode([tokens], reference)[0]
+                waveform = self.vocode([tokens], [prompt_wav])[0]
         return {"waveform": waveform, "sample_rate": OUTPUT_SAMPLE_RATE}
 
     def resolve_prompt_wav(self, prompt_wav: str | bytes | None) -> str | bytes:
@@ -109,102 +137,176 @@ class MiniCPMOCode2Wav(nn.Module):
             resolved = self.default_prompt_wav
         return resolved
 
-    def speaker_prompt(
-        self, prompt_wav: str | bytes | None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        prompt_wav = self.resolve_prompt_wav(prompt_wav)
-        prompt_key = (
-            f"bytes:{hash_bytes(prompt_wav)}"
-            if isinstance(prompt_wav, bytes)
-            else reference_path_cache_key(prompt_wav)
-        )
-        if (
-            self.token2wav.cache is None
-            or prompt_key is None
-            or prompt_key != self.prompt_cache_key
-        ):
-            if isinstance(prompt_wav, bytes):
-                with tempfile.NamedTemporaryFile(suffix=".wav") as reference:
-                    reference.write(prompt_wav)
-                    reference.flush()
-                    prompt = self.token2wav.prepare_prompt(reference.name)
+    def resolve_reference_key(
+        self, reference: str | bytes | None
+    ) -> tuple[str, str | bytes]:
+        resolved = self.resolve_prompt_wav(reference)
+        if isinstance(resolved, bytes):
+            key = f"bytes:{hash_bytes(resolved)}"
+        else:
+            key = reference_path_cache_key(resolved) or f"path:{resolved}"
+        return key, resolved
+
+    def submit_reference(
+        self, key: str, reference: str | bytes
+    ) -> Future[SpeakerPrompt]:
+        """Start preparing one reference; the caller holds reference_lock."""
+        source = io.BytesIO(reference) if isinstance(reference, bytes) else reference
+        future = self.reference_executor.submit(self.token2wav.prepare_prompt, source)
+        self.pending_references[key] = future
+        future.add_done_callback(lambda done: self.store_reference(key, done))
+        return future
+
+    def store_reference(self, key: str, future: Future[SpeakerPrompt]) -> None:
+        with self.reference_lock:
+            if self.pending_references.get(key) is future:
+                del self.pending_references[key]
             else:
-                prompt = self.token2wav.prepare_prompt(prompt_wav)
-            self.token2wav.cache = prompt
-            self.prompt_cache_key = prompt_key
+                pass
+            # A failed preparation is not cached, so the next batch retries it.
+            if future.exception() is None:
+                self.prompt_cache[key] = future.result()
+                self.prompt_cache.move_to_end(key)
+            else:
+                pass
+            self.evict_unreserved_references()
+
+    def evict_unreserved_references(self) -> None:
+        """Trim the cache to capacity, least recent first; the caller holds reference_lock.
+
+        Queued requests pin their prompts, so the cache may exceed capacity by at
+        most the number of queued requests.
+        """
+        overflow = len(self.prompt_cache) - self.prompt_cache_capacity
+        if overflow <= 0:
+            return
         else:
             pass
-        return self.token2wav.cache
+        evictable_keys = [
+            key for key in self.prompt_cache if key not in self.reference_reservations
+        ][:overflow]
+        for key in evictable_keys:
+            del self.prompt_cache[key]
+
+    def prefetch_reference(
+        self, request_id: str, reference: str | bytes | None
+    ) -> None:
+        """Start preparing a queued request's reference and pin it until release."""
+        key, resolved = self.resolve_reference_key(reference)
+        with self.reference_lock:
+            self.reserved_keys_by_request[request_id] = key
+            self.reference_reservations[key] += 1
+            if key in self.prompt_cache:
+                self.prompt_cache.move_to_end(key)
+            elif key not in self.pending_references:
+                self.submit_reference(key, resolved)
+            else:
+                pass
+
+    def release_reference(self, request_id: str) -> None:
+        """Unpin a request's prompt once its batch consumed it or it was aborted."""
+        with self.reference_lock:
+            key = self.reserved_keys_by_request.pop(request_id, None)
+            if key is None:
+                return
+            else:
+                pass
+            self.reference_reservations[key] -= 1
+            if self.reference_reservations[key] == 0:
+                del self.reference_reservations[key]
+            else:
+                pass
+            self.evict_unreserved_references()
+
+    def prepare_references(
+        self, references: Sequence[str | bytes | None]
+    ) -> list[SpeakerPrompt]:
+        """Prepare each distinct reference once, in parallel, and keep row order."""
+        row_keys: list[str] = []
+        references_by_key: dict[str, str | bytes] = {}
+        for reference in references:
+            key, resolved = self.resolve_reference_key(reference)
+            row_keys.append(key)
+            references_by_key[key] = resolved
+
+        prompts_by_key: dict[str, SpeakerPrompt] = {}
+        futures_by_key: dict[str, Future[SpeakerPrompt]] = {}
+        with self.reference_lock:
+            for key, reference in references_by_key.items():
+                if key in self.prompt_cache:
+                    self.prompt_cache.move_to_end(key)
+                    prompts_by_key[key] = self.prompt_cache[key]
+                elif key in self.pending_references:
+                    futures_by_key[key] = self.pending_references[key]
+                else:
+                    futures_by_key[key] = self.submit_reference(key, reference)
+        # note (MayDomine): failed batches must drain GPU preparation too.
+        wait(futures_by_key.values())
+        for key, future in futures_by_key.items():
+            prompts_by_key[key] = future.result()
+        return [prompts_by_key[key] for key in row_keys]
+
+    def close_reference_pool(self) -> None:
+        """Drain reference preparation and reject later submissions."""
+        self.reference_executor.shutdown(wait=True)
 
     def vocode(
         self,
         token_sequences: Sequence[Sequence[int]],
-        prompt_wav: str | bytes | None,
+        references: Sequence[str | bytes | None],
     ) -> list[np.ndarray]:
-        """Vocode a prompt-homogeneous batch of codec-token sequences."""
+        """Batch flow across references and keep each HiFT sequence boundary exact."""
+        assert len(references) == len(token_sequences)
         if not token_sequences:
-            waveforms: list[np.ndarray] = []
+            return []
         elif any(len(tokens) == 0 for tokens in token_sequences):
             raise ValueError("codec token sequences must be non-empty")
         else:
-            (
-                prompt_speech_tokens,
-                prompt_speech_tokens_lens,
-                speaker_embedding,
-                prompt_mels,
-            ) = self.speaker_prompt(prompt_wav)
-            batch_size = len(token_sequences)
-            token_lens = [len(tokens) for tokens in token_sequences]
-            speech_tokens = pad_sequence(
-                [
-                    torch.tensor(
-                        tokens, dtype=torch.int32, device=self.token2wav.device
-                    )
-                    for tokens in token_sequences
-                ],
-                batch_first=True,
+            pass
+
+        device = self.token2wav.device
+        token_lengths = [len(tokens) for tokens in token_sequences]
+        speech_tokens = pad_sequence(
+            [torch.tensor(tokens, dtype=torch.int32) for tokens in token_sequences],
+            batch_first=True,
+        ).to(device)
+        speech_token_lengths = torch.tensor(
+            token_lengths, dtype=torch.int32, device=device
+        )
+        prompt_tokens, prompt_token_lengths, speaker_embeddings, prompt_mels = zip(
+            *self.prepare_references(references)
+        )
+        # The flow reads each row's real prompt width from prompt_token_lengths.
+        with torch.amp.autocast(
+            self.token2wav.device.type,
+            dtype=self.token2wav.dtype,
+            enabled=self.token2wav.dtype != torch.float32,
+        ):
+            mel = self.token2wav.flow.inference(
+                speech_tokens,
+                speech_token_lengths,
+                pad_sequence([tokens[0] for tokens in prompt_tokens], batch_first=True),
+                torch.cat(prompt_token_lengths),
+                pad_sequence([mels[0] for mels in prompt_mels], batch_first=True),
+                torch.cat(speaker_embeddings),
+                self.token2wav.n_timesteps,
             )
-            speech_tokens_lens = torch.tensor(
-                token_lens, dtype=torch.int32, device=self.token2wav.device
-            )
-            prompt_speech_tokens = prompt_speech_tokens.expand(
-                batch_size, -1
-            ).contiguous()
-            prompt_speech_tokens_lens = prompt_speech_tokens_lens.expand(
-                batch_size
-            ).contiguous()
-            speaker_embedding = speaker_embedding.expand(batch_size, -1).contiguous()
-            prompt_mels = prompt_mels.expand(batch_size, -1, -1).contiguous()
-            with torch.amp.autocast(
-                self.token2wav.device.type,
-                dtype=self.token2wav.dtype,
-                enabled=self.token2wav.dtype != torch.float32,
-            ):
-                mel = self.token2wav.flow.inference(
-                    speech_tokens,
-                    speech_tokens_lens,
-                    prompt_speech_tokens,
-                    prompt_speech_tokens_lens,
-                    prompt_mels,
-                    speaker_embedding,
-                    self.token2wav.n_timesteps,
-                )
-            length_groups: dict[int, list[int]] = defaultdict(list)
-            for idx, token_len in enumerate(token_lens):
-                length_groups[token_len * self.token2wav.flow.up_rate].append(idx)
-            waveforms_by_index: dict[int, np.ndarray] = {}
-            for mel_len, indices in length_groups.items():
-                speech_feat = torch.stack(
-                    [mel[idx, :, :mel_len] for idx in indices],
-                    dim=0,
-                ).float()
-                # note (MayDomine): HiFT stays FP32 when the flow runs in half precision.
-                wav, _ = self.token2wav.hift(speech_feat=speech_feat)
-                wav = wav.float().cpu()
-                for local_idx, batch_idx in enumerate(indices):
-                    n_samples = token_lens[batch_idx] * SAMPLES_PER_CODEC_TOKEN
-                    waveforms_by_index[batch_idx] = (
-                        wav[local_idx].reshape(-1)[:n_samples].numpy()
-                    )
-            waveforms = [waveforms_by_index[idx] for idx in range(batch_size)]
-        return waveforms
+
+        up_rate = self.token2wav.flow.up_rate
+        rows_by_length: defaultdict[int, list[int]] = defaultdict(list)
+        for row, token_length in enumerate(token_lengths):
+            rows_by_length[token_length].append(row)
+        waveforms_by_row: dict[int, torch.Tensor] = {}
+        # note (MayDomine): padding changes HiFT's noncausal convolution boundaries.
+        for token_length, rows in rows_by_length.items():
+            speech_feat = mel[rows, :, : token_length * up_rate].float().contiguous()
+            group_waveforms, _ = self.token2wav.hift(speech_feat=speech_feat)
+            for group_row, row in enumerate(rows):
+                waveforms_by_row[row] = group_waveforms[group_row].reshape(-1)[
+                    : token_length * SAMPLES_PER_CODEC_TOKEN
+                ]
+        host_waveforms = torch.cat(
+            [waveforms_by_row[row] for row in range(len(token_lengths))]
+        ).cpu()
+        sample_counts = [length * SAMPLES_PER_CODEC_TOKEN for length in token_lengths]
+        return [waveform.numpy() for waveform in host_waveforms.split(sample_counts)]

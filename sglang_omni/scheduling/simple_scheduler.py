@@ -15,11 +15,16 @@ import logging
 import queue as _queue_mod
 import threading
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol
 
+from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
+
+
+class RequestArrivalHook(Protocol):
+    def __call__(self, payload: StagePayload) -> None: ...
 
 
 class SimpleScheduler:
@@ -43,6 +48,7 @@ class SimpleScheduler:
         max_concurrency: int = 1,
         abort_callback: Callable[[str], None] | None = None,
         shutdown_callback: Callable[[], None] | None = None,
+        request_arrival_hook: RequestArrivalHook | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -70,6 +76,7 @@ class SimpleScheduler:
             pass
         self.abort_callback = abort_callback
         self.shutdown_callback = shutdown_callback
+        self.request_arrival_hook = request_arrival_hook
         self.shutdown_lock = threading.Lock()
         self.aborted: set[str] = set()
         self.abort_lock = threading.Lock()
@@ -99,6 +106,14 @@ class SimpleScheduler:
             self.aborted.discard(request_id)
         self.cleanup_aborted_request(request_id)
         return True
+
+    def enqueue(self, msg: IncomingMessage) -> None:
+        """Runs on the stage event loop, so the arrival hook must not block."""
+        if msg.type == "new_request" and self.request_arrival_hook is not None:
+            self.request_arrival_hook(msg.data)
+        else:
+            pass
+        self.inbox.put(msg)
 
     def message_cost(self, msg: IncomingMessage) -> int:
         if self.request_cost_fn is None or msg.type != "new_request":
