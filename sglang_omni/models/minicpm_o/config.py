@@ -116,9 +116,7 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         factory_path=f"{PKG}.stages.create_code2wav_executor",
         factory=FactoryArgs(
             max_batch_size=8,
-            # Prefetched references make batches form quickly; the window keeps
-            # them full so flow does not steal GPU time from the talker.
-            max_batch_wait_ms=100.0,
+            max_batch_wait_ms=0,
             batch_wait_when_idle=False,
             enable_flow_variable_length=True,
             reference_workers=8,
@@ -129,7 +127,7 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         # underutilized GPU/SMs. To address this, we recommend users to set
         # batchs for your compute but never wait for grouping the batchs.
         # As SGLang Omni Runtime moves better, we shall probably wait several
-        # ms for grouping the batchs; code2wav already does, see the factory.
+        # ms for grouping the batchs, but right now, set it to 0.0.
         gpu=gpu,
         terminal=True,
     )

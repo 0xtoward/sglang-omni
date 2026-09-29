@@ -16,6 +16,10 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
+from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
+    SpeakerPrompt,
+    Token2Wav,
+)
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 
@@ -25,16 +29,9 @@ OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
 SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
 
-SpeakerPrompt = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
-
 
 class MiniCPMOCode2Wav(nn.Module):
-    """Convert codec tokens into a float32 waveform with Token2wav.
-
-    vocode runs on one compute thread. prefetch_reference and release_reference
-    may run concurrently from the stage event loop; reference_lock guards the
-    prompt cache, the in-flight preparations, and the per-request reservations.
-    """
+    """Convert codec tokens into a float32 waveform with Token2wav."""
 
     def __init__(
         self,
@@ -49,10 +46,8 @@ class MiniCPMOCode2Wav(nn.Module):
         prompt_cache_capacity: int,
     ) -> None:
         super().__init__()
-        from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
-
-        dev = torch.device(device)
-        if dev.type not in {"cuda", "xpu"}:
+        resolved_device = torch.device(device)
+        if resolved_device.type not in {"cuda", "xpu"}:
             raise ValueError(f"Token2wav requires a CUDA or XPU device, got {device}")
         elif reference_workers < 1 or prompt_cache_capacity < 1:
             raise ValueError(
@@ -61,7 +56,9 @@ class MiniCPMOCode2Wav(nn.Module):
             )
         else:
             pass
-        self.device_context = torch.get_device_module(dev).device(dev.index or 0)
+        self.device_context = torch.get_device_module(resolved_device).device(
+            resolved_device.index or 0
+        )
 
         model_dir = str(resolve_model_path(model_path))
         asset_dir = os.path.join(model_dir, "assets", "token2wav")
@@ -86,7 +83,10 @@ class MiniCPMOCode2Wav(nn.Module):
             pass
         with self.device_context:
             self.token2wav = Token2Wav(
-                Path(asset_dir), device=dev, dtype=torch_dtype, n_timesteps=n_timesteps
+                Path(asset_dir),
+                device=resolved_device,
+                dtype=torch_dtype,
+                n_timesteps=n_timesteps,
             )
         self.token2wav.flow.decoder.estimator.enable_variable_length = (
             enable_flow_variable_length
@@ -101,9 +101,8 @@ class MiniCPMOCode2Wav(nn.Module):
         self.prompt_cache_capacity = prompt_cache_capacity
         self.prompt_cache: OrderedDict[str, SpeakerPrompt] = OrderedDict()
         self.pending_references: dict[str, Future[SpeakerPrompt]] = {}
-        self.reserved_keys_by_request: dict[str, str] = {}
+        self.reserved_reference_keys_by_request: dict[str, str] = {}
         self.reference_reservations: Counter[str] = Counter()
-        # Reentrant because a future that is already done runs its callback on submit.
         self.reference_lock = threading.RLock()
         self.reference_executor = ThreadPoolExecutor(
             max_workers=reference_workers, thread_name_prefix="minicpmo-reference"
@@ -142,78 +141,80 @@ class MiniCPMOCode2Wav(nn.Module):
     ) -> tuple[str, str | bytes]:
         resolved = self.resolve_prompt_wav(reference)
         if isinstance(resolved, bytes):
-            key = f"bytes:{hash_bytes(resolved)}"
+            reference_key = f"bytes:{hash_bytes(resolved)}"
         else:
-            key = reference_path_cache_key(resolved) or f"path:{resolved}"
-        return key, resolved
+            reference_key = reference_path_cache_key(resolved) or f"path:{resolved}"
+        return reference_key, resolved
 
     def submit_reference(
-        self, key: str, reference: str | bytes
+        self, reference_key: str, reference: str | bytes
     ) -> Future[SpeakerPrompt]:
         """Start preparing one reference; the caller holds reference_lock."""
         source = io.BytesIO(reference) if isinstance(reference, bytes) else reference
         future = self.reference_executor.submit(self.token2wav.prepare_prompt, source)
-        self.pending_references[key] = future
-        future.add_done_callback(lambda done: self.store_reference(key, done))
+        self.pending_references[reference_key] = future
+        future.add_done_callback(
+            lambda completed: self.store_reference(reference_key, completed)
+        )
         return future
 
-    def store_reference(self, key: str, future: Future[SpeakerPrompt]) -> None:
+    def store_reference(
+        self, reference_key: str, future: Future[SpeakerPrompt]
+    ) -> None:
         with self.reference_lock:
-            if self.pending_references.get(key) is future:
-                del self.pending_references[key]
+            if self.pending_references.get(reference_key) is future:
+                del self.pending_references[reference_key]
             else:
                 pass
-            # A failed preparation is not cached, so the next batch retries it.
             if future.exception() is None:
-                self.prompt_cache[key] = future.result()
-                self.prompt_cache.move_to_end(key)
+                self.prompt_cache[reference_key] = future.result()
+                self.prompt_cache.move_to_end(reference_key)
             else:
                 pass
             self.evict_unreserved_references()
 
     def evict_unreserved_references(self) -> None:
-        """Trim the cache to capacity, least recent first; the caller holds reference_lock.
-
-        Queued requests pin their prompts, so the cache may exceed capacity by at
-        most the number of queued requests.
-        """
         overflow = len(self.prompt_cache) - self.prompt_cache_capacity
         if overflow <= 0:
             return
         else:
             pass
-        evictable_keys = [
-            key for key in self.prompt_cache if key not in self.reference_reservations
+        evictable_reference_keys = [
+            reference_key
+            for reference_key in self.prompt_cache
+            if reference_key not in self.reference_reservations
         ][:overflow]
-        for key in evictable_keys:
-            del self.prompt_cache[key]
+        for reference_key in evictable_reference_keys:
+            del self.prompt_cache[reference_key]
 
     def prefetch_reference(
         self, request_id: str, reference: str | bytes | None
     ) -> None:
         """Start preparing a queued request's reference and pin it until release."""
-        key, resolved = self.resolve_reference_key(reference)
+        reference_key, resolved = self.resolve_reference_key(reference)
         with self.reference_lock:
-            self.reserved_keys_by_request[request_id] = key
-            self.reference_reservations[key] += 1
-            if key in self.prompt_cache:
-                self.prompt_cache.move_to_end(key)
-            elif key not in self.pending_references:
-                self.submit_reference(key, resolved)
+            self.reserved_reference_keys_by_request[request_id] = reference_key
+            self.reference_reservations[reference_key] += 1
+            if reference_key in self.prompt_cache:
+                self.prompt_cache.move_to_end(reference_key)
+            elif reference_key not in self.pending_references:
+                self.submit_reference(reference_key, resolved)
             else:
                 pass
 
     def release_reference(self, request_id: str) -> None:
         """Unpin a request's prompt once its batch consumed it or it was aborted."""
         with self.reference_lock:
-            key = self.reserved_keys_by_request.pop(request_id, None)
-            if key is None:
+            reference_key = self.reserved_reference_keys_by_request.pop(
+                request_id, None
+            )
+            if reference_key is None:
                 return
             else:
                 pass
-            self.reference_reservations[key] -= 1
-            if self.reference_reservations[key] == 0:
-                del self.reference_reservations[key]
+            self.reference_reservations[reference_key] -= 1
+            if self.reference_reservations[reference_key] == 0:
+                del self.reference_reservations[reference_key]
             else:
                 pass
             self.evict_unreserved_references()
@@ -222,29 +223,38 @@ class MiniCPMOCode2Wav(nn.Module):
         self, references: Sequence[str | bytes | None]
     ) -> list[SpeakerPrompt]:
         """Prepare each distinct reference once, in parallel, and keep row order."""
-        row_keys: list[str] = []
-        references_by_key: dict[str, str | bytes] = {}
+        row_reference_keys: list[str] = []
+        references_by_reference_key: dict[str, str | bytes] = {}
         for reference in references:
-            key, resolved = self.resolve_reference_key(reference)
-            row_keys.append(key)
-            references_by_key[key] = resolved
+            reference_key, resolved = self.resolve_reference_key(reference)
+            row_reference_keys.append(reference_key)
+            references_by_reference_key[reference_key] = resolved
 
-        prompts_by_key: dict[str, SpeakerPrompt] = {}
-        futures_by_key: dict[str, Future[SpeakerPrompt]] = {}
+        prompts_by_reference_key: dict[str, SpeakerPrompt] = {}
+        futures_by_reference_key: dict[str, Future[SpeakerPrompt]] = {}
         with self.reference_lock:
-            for key, reference in references_by_key.items():
-                if key in self.prompt_cache:
-                    self.prompt_cache.move_to_end(key)
-                    prompts_by_key[key] = self.prompt_cache[key]
-                elif key in self.pending_references:
-                    futures_by_key[key] = self.pending_references[key]
+            for reference_key, reference in references_by_reference_key.items():
+                if reference_key in self.prompt_cache:
+                    self.prompt_cache.move_to_end(reference_key)
+                    prompts_by_reference_key[reference_key] = self.prompt_cache[
+                        reference_key
+                    ]
+                elif reference_key in self.pending_references:
+                    futures_by_reference_key[reference_key] = self.pending_references[
+                        reference_key
+                    ]
                 else:
-                    futures_by_key[key] = self.submit_reference(key, reference)
+                    futures_by_reference_key[reference_key] = self.submit_reference(
+                        reference_key, reference
+                    )
         # note (MayDomine): failed batches must drain GPU preparation too.
-        wait(futures_by_key.values())
-        for key, future in futures_by_key.items():
-            prompts_by_key[key] = future.result()
-        return [prompts_by_key[key] for key in row_keys]
+        wait(futures_by_reference_key.values())
+        for reference_key, future in futures_by_reference_key.items():
+            prompts_by_reference_key[reference_key] = future.result()
+        return [
+            prompts_by_reference_key[reference_key]
+            for reference_key in row_reference_keys
+        ]
 
     def close_reference_pool(self) -> None:
         """Drain reference preparation and reject later submissions."""
@@ -273,10 +283,7 @@ class MiniCPMOCode2Wav(nn.Module):
         speech_token_lengths = torch.tensor(
             token_lengths, dtype=torch.int32, device=device
         )
-        prompt_tokens, prompt_token_lengths, speaker_embeddings, prompt_mels = zip(
-            *self.prepare_references(references)
-        )
-        # The flow reads each row's real prompt width from prompt_token_lengths.
+        speaker_prompts = self.prepare_references(references)
         with torch.amp.autocast(
             self.token2wav.device.type,
             dtype=self.token2wav.dtype,
@@ -285,22 +292,28 @@ class MiniCPMOCode2Wav(nn.Module):
             mel = self.token2wav.flow.inference(
                 speech_tokens,
                 speech_token_lengths,
-                pad_sequence([tokens[0] for tokens in prompt_tokens], batch_first=True),
-                torch.cat(prompt_token_lengths),
-                pad_sequence([mels[0] for mels in prompt_mels], batch_first=True),
-                torch.cat(speaker_embeddings),
+                pad_sequence(
+                    [prompt.prompt_tokens[0] for prompt in speaker_prompts],
+                    batch_first=True,
+                ),
+                torch.cat([prompt.prompt_token_lengths for prompt in speaker_prompts]),
+                pad_sequence(
+                    [prompt.prompt_mel[0] for prompt in speaker_prompts],
+                    batch_first=True,
+                ),
+                torch.cat([prompt.speaker_embedding for prompt in speaker_prompts]),
                 self.token2wav.n_timesteps,
             )
 
         up_rate = self.token2wav.flow.up_rate
-        rows_by_length: defaultdict[int, list[int]] = defaultdict(list)
+        rows_by_token_length: defaultdict[int, list[int]] = defaultdict(list)
         for row, token_length in enumerate(token_lengths):
-            rows_by_length[token_length].append(row)
+            rows_by_token_length[token_length].append(row)
         waveforms_by_row: dict[int, torch.Tensor] = {}
         # note (MayDomine): padding changes HiFT's noncausal convolution boundaries.
-        for token_length, rows in rows_by_length.items():
-            speech_feat = mel[rows, :, : token_length * up_rate].float().contiguous()
-            group_waveforms, _ = self.token2wav.hift(speech_feat=speech_feat)
+        for token_length, rows in rows_by_token_length.items():
+            speech_mel = mel[rows, :, : token_length * up_rate].float().contiguous()
+            group_waveforms, _ = self.token2wav.hift(speech_feat=speech_mel)
             for group_row, row in enumerate(rows):
                 waveforms_by_row[row] = group_waveforms[group_row].reshape(-1)[
                     : token_length * SAMPLES_PER_CODEC_TOKEN

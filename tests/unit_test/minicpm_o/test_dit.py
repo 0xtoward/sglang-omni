@@ -67,16 +67,22 @@ def test_timestep_embedding_autocast_keeps_fp32_frequencies(
 def test_packed_causal_conv_preserves_sequence_boundaries() -> None:
     torch.manual_seed(0)
     block = CausalConvBlock(4, 4).eval()
-    guard_width = block.kernel_size - 1
+    causal_padding_frames = block.kernel_size - 1
     rows = [torch.randn(length, 4) for length in (3, 5, 2)]
     expected = torch.cat([block(row.unsqueeze(0)).squeeze(0) for row in rows])
-    lengths = torch.tensor([len(row) for row in rows])
-    frame_count = int(lengths.sum())
-    sequence_ids = torch.repeat_interleave(torch.arange(len(rows)), lengths)
-    positions = torch.arange(frame_count) + (sequence_ids + 1) * guard_width
-    guarded_valid = torch.zeros(frame_count + len(rows) * guard_width, dtype=torch.bool)
-    guarded_valid[positions] = True
-    actual = block.forward_packed(torch.cat(rows), positions, guarded_valid)
+    sequence_lengths = torch.tensor([len(row) for row in rows])
+    frame_count = int(sequence_lengths.sum())
+    sequence_ids = torch.repeat_interleave(torch.arange(len(rows)), sequence_lengths)
+    real_frame_positions = (
+        torch.arange(frame_count) + (sequence_ids + 1) * causal_padding_frames
+    )
+    real_frame_mask = torch.zeros(
+        frame_count + len(rows) * causal_padding_frames, dtype=torch.bool
+    )
+    real_frame_mask[real_frame_positions] = True
+    actual = block.forward_packed(
+        torch.cat(rows), real_frame_positions, real_frame_mask
+    )
     torch.testing.assert_close(actual, expected)
 
 
@@ -115,3 +121,50 @@ def test_packed_dit_matches_padded_dit_on_valid_frames() -> None:
             packed[row, :, :length].float(), padded[row, :, :length]
         )
         assert error < PACKED_MAX_RELATIVE_RMS_ERROR, f"row {row}"
+
+
+def test_variable_length_stays_padded_off_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch.manual_seed(0)
+    channels = 8
+    lengths = [5, 9, 3]
+    batch_size, padded_length = len(lengths), max(lengths)
+    model = DiT(
+        in_channels=4 * channels,
+        out_channels=channels,
+        depth=2,
+        num_heads=2,
+        head_dim=32,
+        hidden_size=64,
+    ).eval()
+    for parameter in model.parameters():
+        torch.nn.init.normal_(parameter, std=0.2)
+    frame_indices = torch.arange(padded_length).unsqueeze(0)
+    mask = (frame_indices < torch.tensor(lengths).unsqueeze(1)).unsqueeze(1).float()
+    noisy_mel, mu, cond = (
+        torch.randn(batch_size, channels, padded_length) for _ in range(3)
+    )
+    speaker_embeddings = torch.randn(batch_size, channels)
+    timesteps = torch.rand(batch_size)
+
+    def reject_packed_forward(
+        hidden: torch.Tensor,
+        conditioning: torch.Tensor,
+        sequence_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        raise AssertionError(
+            "packed attention is unavailable off CUDA, "
+            f"hidden={tuple(hidden.shape)} conditioning={tuple(conditioning.shape)} "
+            f"sequence_lengths={tuple(sequence_lengths.shape)}"
+        )
+
+    monkeypatch.setattr(model, "forward_packed", reject_packed_forward)
+    model.enable_variable_length = True
+    with torch.inference_mode():
+        variable_length = model(
+            noisy_mel, mask, mu, timesteps, speaker_embeddings, cond
+        )
+        model.enable_variable_length = False
+        padded = model(noisy_mel, mask, mu, timesteps, speaker_embeddings, cond)
+    torch.testing.assert_close(variable_length, padded)
