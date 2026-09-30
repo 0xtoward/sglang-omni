@@ -232,6 +232,7 @@ def model_capabilities_log_summary(
         "breakable_prefill_cuda_graph": (
             capabilities.supports_breakable_prefill_cuda_graph
         ),
+        "full_prefill_cuda_graph": capabilities.supports_full_prefill_cuda_graph,
     }
 
 

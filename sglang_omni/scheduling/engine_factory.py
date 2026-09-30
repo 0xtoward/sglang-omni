@@ -9,9 +9,14 @@ from collections.abc import Mapping
 from numbers import Integral
 from typing import Any, ClassVar
 
-from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
+from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.scheduling.generation_batch_policy import (
+    FULL_PREFILL_ATTENTION_BACKENDS,
     CudaGraphBackend,
     build_generation_batch_overrides,
     get_prefill_cuda_graph_backend,
@@ -56,6 +61,19 @@ class SGLangGenerationEngineBuilder(ABC):
     # Set True only by builders whose model has adopted the breakable prefill
     # CUDA graph contract; a deployment override cannot enable it otherwise.
     supports_breakable_prefill_cuda_graph: bool = False
+    supports_full_prefill_cuda_graph: bool = False
+
+    def allowed_prefill_cuda_graph_backends(self) -> tuple[str, ...]:
+        """Prefill graph backends the policy may accept for this model.
+
+        The breakable backend stays in the set for every builder because
+        ``build`` refuses it separately with a message naming the contract;
+        the full backend is only valid where the model declares it.
+        """
+        if self.supports_full_prefill_cuda_graph:
+            return (CudaGraphBackend.BREAKABLE, CudaGraphBackend.FULL)
+        else:
+            return (CudaGraphBackend.BREAKABLE,)
 
     def build(
         self,
@@ -144,12 +162,36 @@ class SGLangGenerationEngineBuilder(ABC):
             pass
         sglang_backend.pin_resolved_device_type(overrides, concrete_device.type)
 
-        server_args = sglang_backend.build_sglang_server_args(
-            checkpoint_dir,
-            context_length=self.context_length,
-            **overrides,
-        )
-        self.customize_server_args(server_args)
+        def resolve_server_args() -> ServerArgs:
+            server_args = sglang_backend.build_sglang_server_args(
+                checkpoint_dir,
+                context_length=self.context_length,
+                **overrides,
+            )
+            self.customize_server_args(server_args)
+            return server_args
+
+        server_args = resolve_server_args()
+        if (
+            not operator_selected
+            and get_prefill_cuda_graph_backend(server_args) == CudaGraphBackend.FULL
+        ):
+            # note (luojiaxuan): full is only the model's default here, so a
+            # prefill attention backend that cannot capture it keeps the
+            # breakable graph; an operator's explicit full fails validation.
+            attention_backend = attention_backends_of(resolved_view(server_args))[0]
+            if attention_backend not in FULL_PREFILL_ATTENTION_BACKENDS:
+                logger.info(
+                    f"{self.model_name}: prefill attention backend "
+                    f"{attention_backend!r} cannot capture a full prefill graph; "
+                    "using the breakable prefill graph"
+                )
+                overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
+                server_args = resolve_server_args()
+            else:
+                pass
+        else:
+            pass
         cfg = resolved_view(server_args)
         if (
             overrides.get("chunked_prefill_size") is None
@@ -188,6 +230,16 @@ class SGLangGenerationEngineBuilder(ABC):
                     "CUDA graph contract "
                     "(supports_breakable_prefill_cuda_graph=False); refusing "
                     "cuda_graph_backend_prefill='breakable'"
+                )
+            else:
+                pass
+            infra_kwargs.setdefault("enable_prefill_input_embeds", True)
+        elif prefill_graph_backend == CudaGraphBackend.FULL:
+            if not self.supports_full_prefill_cuda_graph:
+                raise RuntimeError(
+                    f"{self.model_name} has not adopted the full prefill CUDA "
+                    "graph contract (supports_full_prefill_cuda_graph=False); "
+                    "refusing cuda_graph_backend_prefill='full'"
                 )
             else:
                 pass
@@ -447,6 +499,7 @@ class AsrEngineBuilder(SGLangGenerationEngineBuilder):
         validate_generation_batch_policy(
             model_name=self.model_name,
             server_args=server_args,
+            allowed_prefill_backends=self.allowed_prefill_cuda_graph_backends(),
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
@@ -485,6 +538,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder):
             model_name=self.model_name,
             server_args=server_args,
             model_buffer_bs=self.get_model_buffer_bs(model),
+            allowed_prefill_backends=self.allowed_prefill_cuda_graph_backends(),
         )
 
     def make_scheduler(
