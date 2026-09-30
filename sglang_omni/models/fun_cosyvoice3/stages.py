@@ -2143,6 +2143,8 @@ def create_vocoder_executor(
     flow_merge_max_gap_frames: int = 384,
     flow_merge_pad_budget_percent: float = 25.0,
     enable_dit_torch_compile: bool = False,
+    enable_dit_mlx_compile: bool = False,
+    mlx_dit_compile_cache_size: int = 4,
     enable_flow_cuda_graph: bool = True,
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     enable_flow_estimator_trt: bool = False,
@@ -2160,6 +2162,15 @@ def create_vocoder_executor(
 
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
+    else:
+        pass
+
+    if (
+        not isinstance(mlx_dit_compile_cache_size, int)
+        or isinstance(mlx_dit_compile_cache_size, bool)
+        or mlx_dit_compile_cache_size <= 0
+    ):
+        raise ValueError("mlx_dit_compile_cache_size must be a positive integer")
     else:
         pass
 
@@ -2194,15 +2205,20 @@ def create_vocoder_executor(
             )
         else:
             pass
-        vocoder = CosyVoice3MlxVocoderAdapter(
-            load_cosyvoice3_mlx_vocoder(
-                mlx_model_path, revision=mlx_model_revision, expected_dtype=dtype
-            )
+        native_vocoder = load_cosyvoice3_mlx_vocoder(
+            mlx_model_path, revision=mlx_model_revision, expected_dtype=dtype
         )
+        if enable_dit_mlx_compile:
+            native_vocoder.flow.decoder.enable_compile(mlx_dit_compile_cache_size)
+        else:
+            pass
+        vocoder = CosyVoice3MlxVocoderAdapter(native_vocoder)
         return FunCosyVoice3MlxStreamingVocoderScheduler(
             vocoder,
             max_batch_wait_ms=max_batch_wait_ms,
         )
+    elif enable_dit_mlx_compile:
+        raise ValueError("enable_dit_mlx_compile requires the native MLX vocoder")
     else:
         pass
 
