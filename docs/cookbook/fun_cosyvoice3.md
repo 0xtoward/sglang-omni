@@ -76,6 +76,26 @@ SGLANG_USE_MLX=1 sgl-omni serve \
   --port 8000
 ```
 
+Add these options to opt into compiling each complete MLX DiT forward:
+
+```bash
+--vocoder.factory.enable_dit_mlx_compile true \
+--vocoder.factory.mlx_dit_compile_cache_size 4
+```
+
+This compiles the estimator while preserving the Euler step count, guidance,
+per-step evaluation and native HiFT. Compilation is lazy: the first request
+for a new shape and dtype pays the tracing and compilation cost. Four cached
+specializations usually cover two lengths because the first Euler step and
+later steps can use different activation dtypes. Evicted specializations are
+compiled again when revisited.
+
+Rotary tables are prepared outside tracing and passed as inputs; model weights
+remain explicit state inputs. The capacity limits live traced specializations,
+not Metal library, allocator or process memory. The option defaults to false
+and applies to the serialized, batch-one native MLX vocoder; it is independent
+of the PyTorch DiT compilation option.
+
 ### Torch/MPS
 
 Without `SGLANG_USE_MLX=1`, the same model runs through PyTorch MPS and does

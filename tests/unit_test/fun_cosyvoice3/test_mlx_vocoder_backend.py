@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+import weakref
 
 import numpy as np
 import pytest
@@ -15,12 +16,17 @@ from mlx.utils import tree_flatten  # noqa: E402
 from sglang_omni.models.fun_cosyvoice3.mlx.vocoder import (  # noqa: E402
     FunCosyVoice3MlxVocoder,
 )
+from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.compiled_dit import (  # noqa: E402
+    CompiledDiT,
+    RotaryEstimator,
+)
 from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.config import (  # noqa: E402
     FlowConfig,
     HiFTConfig,
 )
 from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.dit import (  # noqa: E402
     Attention,
+    DiT,
     affine_modulation,
     gated_residual,
     layer_norm,
@@ -197,6 +203,168 @@ def test_dit_pointwise_fusion_preserves_views_and_fresh_inputs(
             rtol=1e-3,
             atol=1e-3,
         )
+
+
+@pytest.fixture
+def tiny_dit() -> DiT:
+    mx.random.seed(31)
+    estimator = DiT(
+        dim=32, depth=2, heads=2, dim_head=8, mel_dim=4, mu_dim=4, spk_dim=4
+    )
+    estimator.set_dtype(mx.float16)
+    estimator.eval()
+    mx.eval(estimator.parameters())
+    return estimator
+
+
+def dit_inputs(
+    mel_frames: int, dtype: mx.Dtype
+) -> tuple[mx.array, mx.array, mx.array, mx.array, mx.array, mx.array]:
+    hidden_states = mx.random.normal((2, 4, mel_frames)).astype(dtype)
+    mask = mx.ones((2, 1, mel_frames), dtype=dtype)
+    conditioning = mx.random.normal(hidden_states.shape).astype(mx.float16)
+    timestep = mx.full((2,), 0.25, dtype=dtype)
+    speakers = mx.random.normal((2, 4)).astype(mx.float16)
+    prompt = mx.random.normal(hidden_states.shape).astype(mx.float16)
+    mx.eval(hidden_states, mask, conditioning, timestep, speakers, prompt)
+    return hidden_states, mask, conditioning, timestep, speakers, prompt
+
+
+def assert_dit_parity(
+    native: DiT,
+    compiled: CompiledDiT,
+    inputs: tuple[mx.array, mx.array, mx.array, mx.array, mx.array, mx.array],
+) -> np.ndarray:
+    compiled.prepare()
+    expected = native(*inputs)
+    actual = compiled(*inputs)
+    mx.eval(expected, actual)
+    mx.synchronize()
+    assert actual.shape == inputs[0].shape
+    assert actual.dtype == expected.dtype
+    actual_numpy = np.asarray(actual)
+    assert np.isfinite(actual_numpy).all()
+    np.testing.assert_allclose(actual_numpy, np.asarray(expected), rtol=1e-3, atol=1e-3)
+    return actual_numpy.copy()
+
+
+@pytest.mark.parametrize("activation_dtype", [mx.float16, mx.float32])
+def test_compiled_dit_tracks_lengths_inputs_weights_and_rotary(
+    tiny_dit: DiT, activation_dtype: mx.Dtype
+) -> None:
+    parameter_keys = [name for name, _ in tree_flatten(tiny_dit.parameters())]
+    compiled = CompiledDiT(tiny_dit, cache_size=2)
+    for mel_frames in (9, 5, 15, 9):
+        inputs = dit_inputs(mel_frames, activation_dtype)
+        assert_dit_parity(tiny_dit, compiled, inputs)
+    previous = assert_dit_parity(tiny_dit, compiled, inputs)
+    fresh_inputs = dit_inputs(9, activation_dtype)
+    fresh_output = assert_dit_parity(tiny_dit, compiled, fresh_inputs)
+    assert not np.allclose(previous, fresh_output)
+
+    tiny_dit.update({"proj_out": {"bias": tiny_dit.proj_out.bias + 0.5}})
+    updated_output = assert_dit_parity(tiny_dit, compiled, fresh_inputs)
+    assert not np.allclose(fresh_output, updated_output)
+
+    rotary = tiny_dit.rotary_embed
+    rotary.cos = mx.zeros_like(rotary.cos)
+    rotary.sin = mx.ones_like(rotary.sin)
+    mx.eval(rotary.cos, rotary.sin)
+    rotary_output = assert_dit_parity(tiny_dit, compiled, fresh_inputs)
+    assert not np.allclose(updated_output, rotary_output)
+    assert parameter_keys == [name for name, _ in tree_flatten(tiny_dit.parameters())]
+
+
+def test_compiled_dit_lru_reuses_and_releases_closures(
+    tiny_dit: DiT, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    native_compile = mx.compile
+    closures: list[weakref.ReferenceType[RotaryEstimator]] = []
+
+    def tracking_compile(
+        function: RotaryEstimator, *, inputs: DiT, shapeless: bool
+    ) -> RotaryEstimator:
+        closures.append(weakref.ref(function))
+        return native_compile(function, inputs=inputs, shapeless=shapeless)
+
+    monkeypatch.setattr(mx, "compile", tracking_compile)
+    compiled = CompiledDiT(tiny_dit, cache_size=2)
+    for mel_frames, dtype, expected_count in (
+        (9, mx.float16, 1),
+        (9, mx.float16, 1),
+        (5, mx.float16, 2),
+        (15, mx.float16, 3),
+        (9, mx.float16, 4),
+        (9, mx.float32, 5),
+        (9, mx.float32, 5),
+    ):
+        assert_dit_parity(tiny_dit, compiled, dit_inputs(mel_frames, dtype))
+        assert len(closures) == expected_count
+        assert len(compiled.cache) <= 2
+    assert closures[0]() is None
+    assert closures[1]() is None
+    assert closures[2]() is None
+
+    tiny_dit.set_dtype(mx.float32)
+    compiled.prepare()
+    assert len(compiled.cache) == 0
+    assert all(closure() is None for closure in closures)
+    assert_dit_parity(tiny_dit, compiled, dit_inputs(9, mx.float32))
+    assert len(closures) == 6
+
+
+@pytest.mark.parametrize("step_count", [2, 3])
+def test_compiled_cfm_preserves_euler_and_parameter_keys(
+    tiny_dit: DiT, step_count: int
+) -> None:
+    solver = CausalConditionalCFM(tiny_dit)
+    parameter_keys = [name for name, _ in tree_flatten(solver.parameters())]
+    mu = mx.random.normal((1, 4, 9)).astype(mx.float16)
+    mask = mx.ones((1, 1, 9), dtype=mx.float16)
+    speakers = mx.random.normal((1, 4)).astype(mx.float16)
+    prompt = mx.random.normal(mu.shape).astype(mx.float16)
+    noise = mx.random.normal(mu.shape).astype(mx.float16)
+    mx.eval(mu, mask, speakers, prompt, noise)
+    expected = solver(mu, mask, speakers, prompt, step_count, noise=noise)
+    mx.eval(expected)
+    solver.enable_compile(cache_size=2)
+    actual = solver(mu, mask, speakers, prompt, step_count, noise=noise)
+    mx.eval(actual)
+    assert actual.shape == expected.shape
+    assert actual.dtype == expected.dtype
+    assert np.isfinite(np.asarray(actual)).all()
+    np.testing.assert_allclose(
+        np.asarray(actual), np.asarray(expected), rtol=1e-3, atol=1e-3
+    )
+    compiled_estimator = solver.compiled_estimator
+    for change_dtype in (False, True):
+        if change_dtype:
+            tiny_dit.set_dtype(mx.float32)
+        else:
+            tiny_dit.update({"proj_out": {"bias": tiny_dit.proj_out.bias + 0.5}})
+        solver.compiled_estimator = None
+        updated_expected = solver(mu, mask, speakers, prompt, step_count, noise=noise)
+        mx.eval(updated_expected)
+        solver.compiled_estimator = compiled_estimator
+        updated_actual = solver(mu, mask, speakers, prompt, step_count, noise=noise)
+        mx.eval(updated_actual)
+        assert updated_actual.dtype == updated_expected.dtype
+        np.testing.assert_allclose(
+            np.asarray(updated_actual),
+            np.asarray(updated_expected),
+            rtol=1e-3,
+            atol=1e-3,
+        )
+    assert not np.allclose(np.asarray(actual), np.asarray(updated_actual))
+    assert parameter_keys == [name for name, _ in tree_flatten(solver.parameters())]
+
+
+@pytest.mark.parametrize("cache_size", [0, -1])
+def test_compiled_dit_rejects_nonpositive_cache_size(
+    tiny_dit: DiT, cache_size: int
+) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        CompiledDiT(tiny_dit, cache_size)
 
 
 def test_fused_attention_matches_explicit_reference():

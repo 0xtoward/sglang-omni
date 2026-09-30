@@ -365,14 +365,28 @@ class DiT(nn.Module):
         mask: mx.array,
         mu: mx.array,
         t: mx.array,
-        spks: Optional[mx.array] = None,
-        cond: Optional[mx.array] = None,
+        spks: mx.array | None = None,
+        cond: mx.array | None = None,
+    ) -> mx.array:
+        cos, sin = self.rotary_embed.forward_from_seq_len(x.shape[-1])
+        return self.forward_with_rope(x, mask, mu, t, spks, cond, cos, sin)
+
+    def forward_with_rope(
+        self,
+        x: mx.array,
+        mask: mx.array,
+        mu: mx.array,
+        t: mx.array,
+        spks: mx.array | None,
+        cond: mx.array | None,
+        cos: mx.array,
+        sin: mx.array,
     ) -> mx.array:
         x = mx.transpose(x, (0, 2, 1))
         mu = mx.transpose(mu, (0, 2, 1))
         cond = mx.transpose(cond, (0, 2, 1))
 
-        B, N = x.shape[0], x.shape[1]
+        B = x.shape[0]
         if t.ndim == 0:
             t = mx.broadcast_to(t, (B,))
         else:
@@ -381,7 +395,7 @@ class DiT(nn.Module):
         t = self.time_embed(t)
         x = self.input_embed(x, cond, mu, spks)
 
-        rope = self.rotary_embed.forward_from_seq_len(N)
+        rope = (cos, sin)
 
         residual = x if self.long_skip_connection is not None else None
 

@@ -23,7 +23,8 @@ from typing import Optional
 import mlx.core as mx
 import mlx.nn as nn
 
-from .dit import DiT
+from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.compiled_dit import CompiledDiT
+from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.dit import DiT
 
 
 class CausalConditionalCFM(nn.Module):
@@ -36,6 +37,7 @@ class CausalConditionalCFM(nn.Module):
     ):
         super().__init__()
         self.estimator = estimator
+        self.compiled_estimator: CompiledDiT | None = None
         self.inference_cfg_rate = inference_cfg_rate
         self.t_scheduler = t_scheduler
         self.out_channels = estimator.out_channels
@@ -44,6 +46,9 @@ class CausalConditionalCFM(nn.Module):
         self._rand_noise = mx.random.normal(  # noqa: leading-underscore
             (1, self.out_channels, max_len), key=mx.random.key(0)
         )
+
+    def enable_compile(self, cache_size: int) -> None:
+        self.compiled_estimator = CompiledDiT(self.estimator, cache_size)
 
     def solve_euler(
         self,
@@ -63,10 +68,19 @@ class CausalConditionalCFM(nn.Module):
         spks_in = mx.concatenate([spks, mx.zeros_like(spks)], axis=0)
         cond_in = mx.concatenate([cond, mx.zeros_like(cond)], axis=0)
 
+        if self.compiled_estimator is not None:
+            self.compiled_estimator.prepare()
+        else:
+            pass
+        active_estimator = (
+            self.compiled_estimator
+            if self.compiled_estimator is not None
+            else self.estimator
+        )
         for step in range(1, len(t_span)):
             x_in = mx.concatenate([x, x], axis=0)
             t_in = mx.concatenate([t, t], axis=0)
-            dphi_dt = self.estimator(x_in, mask_in, mu_in, t_in, spks_in, cond_in)
+            dphi_dt = active_estimator(x_in, mask_in, mu_in, t_in, spks_in, cond_in)
             dphi_dt, cfg_dphi_dt = mx.split(dphi_dt, 2, axis=0)
             dphi_dt = (
                 1.0 + self.inference_cfg_rate
