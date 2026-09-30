@@ -11,6 +11,7 @@ def gather_kv_kernel(
     K,
     V,
     Slots,
+    ValidLengths,
     OutK,
     OutV,
     N: tl.constexpr,
@@ -27,6 +28,7 @@ def gather_kv_kernel(
     batch = row // H % B
     layer = row // (H * B)
     slot = tl.load(Slots + batch)
+    valid_length = tl.load(ValidLengths + batch)
     offset = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     token, feature = offset // D, offset % D
     source = layer * SRC_STRIDES[0] + slot * SRC_STRIDES[1] + head * SRC_STRIDES[2]
@@ -34,7 +36,7 @@ def gather_kv_kernel(
     target = layer * DST_STRIDES[0] + batch * DST_STRIDES[1] + head * DST_STRIDES[2]
     target += token * DST_STRIDES[3] + feature * DST_STRIDES[4]
     # note (0xtoward): Dummy IDs are out of range; mask the access itself.
-    valid = (offset < T * D) & (slot >= 0) & (slot < N)
+    valid = (offset < T * D) & (slot >= 0) & (slot < N) & (token < valid_length)
     key = tl.load(K + source, mask=valid, other=0)
     value = tl.load(V + source, mask=valid, other=0)
     tl.store(OutK + target, key, mask=offset < T * D)
@@ -84,10 +86,11 @@ def gather_kv(
     pool_k: torch.Tensor,
     pool_v: torch.Tensor,
     slots: torch.Tensor,
+    valid_lengths: torch.Tensor,
     out_k: torch.Tensor,
     out_v: torch.Tensor,
 ) -> None:
-    """Gather [L,N,H,T,D] to [L,B,H,T,D], zeroing invalid slot IDs.
+    """Gather per-row prefixes and zero every remaining output token.
 
     Capacity views may be strided. K and V in each pair share shape/strides.
     """
@@ -95,29 +98,30 @@ def gather_kv(
     assert pool_k.shape == pool_v.shape and pool_k.stride() == pool_v.stride()
     assert out_k.shape == out_v.shape and out_k.stride() == out_v.stride()
     assert slots.shape == (rows,) and slots.is_contiguous()
+    assert valid_lengths.shape == (rows,) and valid_lengths.is_contiguous()
     assert (layers, heads, dim) == (pool_k.size(0), pool_k.size(2), pool_k.size(4))
     assert tokens <= pool_k.size(3)
     if tokens == 0:
         return
     else:
-        pass
-    block = 1024
-    with torch.cuda.device_of(pool_k):
-        gather_kv_kernel[(triton.cdiv(tokens * dim, block), layers * rows * heads)](
-            pool_k,
-            pool_v,
-            slots,
-            out_k,
-            out_v,
-            pool_k.size(1),
-            rows,
-            heads,
-            tokens,
-            dim,
-            pool_k.stride(),
-            out_k.stride(),
-            block,
-        )
+        block = 1024
+        with torch.cuda.device_of(pool_k):
+            gather_kv_kernel[(triton.cdiv(tokens * dim, block), layers * rows * heads)](
+                pool_k,
+                pool_v,
+                slots,
+                valid_lengths,
+                out_k,
+                out_v,
+                pool_k.size(1),
+                rows,
+                heads,
+                tokens,
+                dim,
+                pool_k.stride(),
+                out_k.stride(),
+                block,
+            )
 
 
 def scatter_kv(
@@ -141,23 +145,24 @@ def scatter_kv(
     if tokens == 0:
         return
     else:
-        pass
-    block = min(1024, triton.next_power_of_2(tokens * dim))
-    with torch.cuda.device_of(pool_k):
-        scatter_kv_kernel[(triton.cdiv(tokens * dim, block), layers * rows * heads)](
-            keys,
-            values,
-            slots,
-            starts,
-            pool_k,
-            pool_v,
-            pool_k.size(1),
-            rows,
-            heads,
-            tokens,
-            dim,
-            pool_k.size(3),
-            keys.stride(),
-            pool_k.stride(),
-            block,
-        )
+        block = min(1024, triton.next_power_of_2(tokens * dim))
+        with torch.cuda.device_of(pool_k):
+            scatter_kv_kernel[
+                (triton.cdiv(tokens * dim, block), layers * rows * heads)
+            ](
+                keys,
+                values,
+                slots,
+                starts,
+                pool_k,
+                pool_v,
+                pool_k.size(1),
+                rows,
+                heads,
+                tokens,
+                dim,
+                pool_k.size(3),
+                keys.stride(),
+                pool_k.stride(),
+                block,
+            )

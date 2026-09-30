@@ -1092,6 +1092,7 @@ class DotsTtsAcousticTail:
                             self.dit_k[ode_index],
                             self.dit_v[ode_index],
                             slot_index,
+                            persistent_index,
                             keys[:, :, :, :capacity],
                             values[:, :, :, :capacity],
                         )
@@ -1271,6 +1272,7 @@ class DotsTtsAcousticTail:
                 self.encoder_k,
                 self.encoder_v,
                 slot_index,
+                start_index,
                 keys[:, :, :, :capacity],
                 values[:, :, :, :capacity],
             )
@@ -1352,15 +1354,14 @@ class DotsTtsAcousticTail:
         if not self.pad_to_bucket:
             return None, 0
         else:
-            pass
-        return select_padded_graph(
-            graphs,
-            rows,
-            capacity,
-            skip_batch=skip_batch,
-            extra=extra,
-            max_batch_ratio=2,
-        )
+            return select_padded_graph(
+                graphs,
+                rows,
+                capacity,
+                skip_batch=skip_batch,
+                extra=extra,
+                max_batch_ratio=2,
+            )
 
     @torch.no_grad()
     def capture_cuda_graphs(self) -> None:

@@ -39,9 +39,10 @@ def select_padded_graph(
     if not pool:
         return None, 0
     else:
-        pass
-    batch_size, bucket_capacity, source = min(pool, key=lambda item: (item[0], item[1]))
-    if max_batch_ratio is not None and batch_size > rows * max_batch_ratio:
-        return None, 0
-    else:
-        return source[(batch_size, bucket_capacity)], batch_size - rows
+        batch_size, bucket_capacity, source = min(
+            pool, key=lambda item: (item[0], item[1])
+        )
+        if max_batch_ratio is not None and batch_size > rows * max_batch_ratio:
+            return None, 0
+        else:
+            return source[(batch_size, bucket_capacity)], batch_size - rows
