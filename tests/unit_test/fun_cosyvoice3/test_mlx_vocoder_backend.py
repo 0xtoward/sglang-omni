@@ -21,6 +21,8 @@ from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.config import (  # noqa: E402
 )
 from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.dit import (  # noqa: E402
     Attention,
+    affine_modulation,
+    gated_residual,
     layer_norm,
 )
 from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.flow import (  # noqa: E402
@@ -145,6 +147,56 @@ def test_plus_artifact_weight_key_mapping():
         map_hift_weight("hift.resblocks.0.convs1.0.weight")
         == "resblocks.0.convs1.0.weight"
     )
+
+
+@pytest.mark.parametrize("batch_size,mel_frames", [(1, 5), (2, 9)])
+@pytest.mark.parametrize(
+    "activation_dtype,modulation_dtype",
+    [(mx.float16, mx.float32), (mx.float32, mx.float32), (mx.float16, mx.float16)],
+)
+@pytest.mark.parametrize("is_final", [False, True])
+def test_dit_pointwise_fusion_preserves_views_and_fresh_inputs(
+    batch_size: int,
+    mel_frames: int,
+    activation_dtype: mx.Dtype,
+    modulation_dtype: mx.Dtype,
+    is_final: bool,
+) -> None:
+    channel_count = 8
+    for random_seed in (7, 19):
+        mx.random.seed(random_seed)
+        residual = (
+            mx.random.normal((batch_size, channel_count, mel_frames))
+            .astype(activation_dtype)
+            .transpose(0, 2, 1)
+        )
+        branch = mx.random.normal(residual.shape).astype(modulation_dtype)
+        modulation = mx.random.normal((batch_size, channel_count * 3)).astype(
+            modulation_dtype
+        )
+        scale, shift, gate = mx.split(modulation, 3, axis=-1)
+        mx.eval(residual, branch, scale, shift, gate)
+        if is_final:
+            expected_affine = residual * (1 + scale)[:, None, :] + shift[:, None, :]
+        else:
+            expected_affine = residual * (1 + scale[:, None]) + shift[:, None]
+        expected_residual = residual + gate[:, None] * branch
+        actual_affine = affine_modulation(residual, scale, shift, is_final)
+        actual_residual = gated_residual(residual, gate, branch)
+        mx.eval(expected_affine, expected_residual, actual_affine, actual_residual)
+        assert actual_affine.shape == residual.shape
+        assert actual_residual.shape == residual.shape
+        assert actual_affine.dtype == expected_affine.dtype
+        assert actual_residual.dtype == expected_residual.dtype
+        np.testing.assert_allclose(
+            np.asarray(actual_affine), np.asarray(expected_affine), rtol=1e-3, atol=1e-3
+        )
+        np.testing.assert_allclose(
+            np.asarray(actual_residual),
+            np.asarray(expected_residual),
+            rtol=1e-3,
+            atol=1e-3,
+        )
 
 
 def test_fused_attention_matches_explicit_reference():

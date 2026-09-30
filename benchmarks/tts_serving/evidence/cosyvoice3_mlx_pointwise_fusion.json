@@ -1,0 +1,4385 @@
+{
+  "date": "2026-09-30",
+  "hardware": "Apple M5, 32 GiB",
+  "python": "3.12.4",
+  "mlx": "0.32.3",
+  "model": "Fun-CosyVoice3-0.5B-2512 converted MLX artifact",
+  "model_config_sha256": "5061edb7e0881d89e8b7cacadc8295440694df0dbb33f9b1de2b129634073474",
+  "baseline_commit": "d290c10068061163c616c8eb92222de5a07937c9",
+  "patched_dit_sha256": "5464b912052056555b78d7b053df15828f10ab0737320561519937e5302a8440",
+  "metric": "synchronized Flow+HiFT host wall time, excluding frontend/AR/HTTP and initial JIT/warmup",
+  "method": "Same loaded model and weights; only DiTBlock, AdaLayerNormZero, AdaLayerNormZeroFinal forward methods switch between exact fork baseline source and patched source",
+  "fixed_parameters": {
+    "random_seed": 42,
+    "euler_steps": 10,
+    "cfg_rate": 0.7,
+    "weight_dtype": "float16",
+    "activation_dtype": "native promotion retained",
+    "prompt_tokens": 115,
+    "prompt_mel_frames": 230,
+    "sample_rate_hz": 24000,
+    "repeats_per_block": 3,
+    "active_memory_limit_bytes": 8589934592
+  },
+  "limitations": [
+    "Two non-streaming exact-length inputs, single request",
+    "MLX active peak includes resident model; decimal GB is not total-process RAM",
+    "Other desktop applications were not stopped; observed drift limits performance claims",
+    "No CUDA or HTTP latency measurement",
+    "Fresh process per input and order; JIT excluded"
+  ],
+  "cases": [
+    {
+      "tokens": 137,
+      "order": "ABA",
+      "native_ms": 1107.0631875045365,
+      "candidate_ms": 1050.9193329780828,
+      "time_reduction_percent": 5.071422766121336,
+      "native_peak_GB": 1.756639424,
+      "candidate_peak_GB": 1.853538488,
+      "mel_max_abs": 0.0,
+      "waveform_max_abs": 1.7881393432617188e-07,
+      "status": "completed",
+      "input_shapes": {
+        "token": [
+          1,
+          137
+        ],
+        "prompt_token": [
+          1,
+          115
+        ],
+        "prompt_feat": [
+          1,
+          230,
+          80
+        ],
+        "embedding": [
+          1,
+          192
+        ]
+      },
+      "input_sha256": "d06d5d1a567f34e71d4beac5db468c6ffb456e4eda35a11e2273f624deda588f",
+      "baseline_dit_sha256": "6cad58bc1ae1ee193014ca8a3ab201de38c5cf13b1cc59814eaf516a1152bdbc",
+      "measurement_harness_sha256": "bf9fbb02ac0bd91e0fa319c6c4c6051afa54217dc1df32468a5195c140d588b2",
+      "raw_report_sha256": "d87add1fd70401bc5200469a9269654712940d767ed53e84e7f0694942bd7e0a",
+      "block_medians_ms": {
+        "0_A": {
+          "flow_ms": 975.3343750198837,
+          "hift_ms": 123.35570898721926,
+          "stage_total_ms": 1096.544208994601
+        },
+        "1_B": {
+          "flow_ms": 924.8847919807304,
+          "hift_ms": 120.82233297405764,
+          "stage_total_ms": 1050.9193329780828
+        },
+        "2_A": {
+          "flow_ms": 995.7944999914616,
+          "hift_ms": 125.6525420176331,
+          "stage_total_ms": 1120.0469589966815
+        }
+      },
+      "measurements": [
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 0,
+          "flow_ms": 975.3343750198837,
+          "hift_ms": 123.35570898721926,
+          "stage_total_ms": 1098.690084007103,
+          "audio_seconds": 5.48,
+          "rtf": 0.20049089124217206,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385232,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.218145800986132e-09,
+            "relative_l2": 6.401257563882744e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 1,
+          "flow_ms": 965.0316670013126,
+          "hift_ms": 129.1209580085706,
+          "stage_total_ms": 1094.1526250098832,
+          "audio_seconds": 5.48,
+          "rtf": 0.19966288777552613,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385232,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.607737801984097e-09,
+            "relative_l2": 6.671797735090455e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 2,
+          "flow_ms": 977.2150840144604,
+          "hift_ms": 119.32912498014048,
+          "stage_total_ms": 1096.544208994601,
+          "audio_seconds": 5.48,
+          "rtf": 0.20009930821069358,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385232,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.60133868958434e-09,
+            "relative_l2": 6.667354068485975e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 0,
+          "flow_ms": 933.1792920129374,
+          "hift_ms": 120.77679199865088,
+          "stage_total_ms": 1053.9560840115882,
+          "audio_seconds": 5.48,
+          "rtf": 0.19232775255685916,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385232,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.541116195276612e-09,
+            "relative_l2": 6.62553441130915e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 1,
+          "flow_ms": 916.3565420021769,
+          "hift_ms": 120.82233297405764,
+          "stage_total_ms": 1037.1788749762345,
+          "audio_seconds": 5.48,
+          "rtf": 0.18926621806135666,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385232,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.621919040152347e-09,
+            "relative_l2": 6.68164545935622e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 2,
+          "flow_ms": 924.8847919807304,
+          "hift_ms": 126.03454099735245,
+          "stage_total_ms": 1050.9193329780828,
+          "audio_seconds": 5.48,
+          "rtf": 0.19177360090840925,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385232,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.81149984166405e-09,
+            "relative_l2": 6.813294010577218e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 0,
+          "flow_ms": 995.7944999914616,
+          "hift_ms": 124.25245900521986,
+          "stage_total_ms": 1120.0469589966815,
+          "audio_seconds": 5.48,
+          "rtf": 0.20438813120377397,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385232,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.81541290727622e-09,
+            "relative_l2": 6.816011318524895e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 1,
+          "flow_ms": 987.6058750087395,
+          "hift_ms": 127.83041599323042,
+          "stage_total_ms": 1115.43629100197,
+          "audio_seconds": 5.48,
+          "rtf": 0.2035467684310164,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385232,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.444500310899042e-09,
+            "relative_l2": 6.558442484796446e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 2,
+          "flow_ms": 1003.7062079936732,
+          "hift_ms": 125.6525420176331,
+          "stage_total_ms": 1129.3587500113063,
+          "audio_seconds": 5.48,
+          "rtf": 0.2060873631407493,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385232,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.339277809820144e-09,
+            "relative_l2": 6.485373958276731e-08
+          }
+        }
+      ],
+      "warmups": [
+        {
+          "arm": "A",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 1007.530458009569,
+          "hift_ms": 138.60033397213556,
+          "stage_total_ms": 1146.1307919817045,
+          "audio_seconds": 5.48,
+          "rtf": 0.20914795474118694,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711150338,
+          "active_after_bytes": 712657710,
+          "peak_bytes": 1756639652,
+          "cache_bytes": 2531702940,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          }
+        },
+        {
+          "arm": "B",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 962.9925409972202,
+          "hift_ms": 126.54916700557806,
+          "stage_total_ms": 1089.5417080027983,
+          "audio_seconds": 5.48,
+          "rtf": 0.19882147956255442,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412526,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385232,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.831653358220884e-09,
+            "relative_l2": 6.827288999708816e-08
+          }
+        }
+      ],
+      "host_snapshots": [
+        {
+          "block": "0",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 4.29 4.65 3.92 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "1",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 4.19 4.62 3.91 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "2",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 4.19 4.62 3.91 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        }
+      ]
+    },
+    {
+      "tokens": 435,
+      "order": "ABA",
+      "native_ms": 2415.6363329966553,
+      "candidate_ms": 2397.142208996229,
+      "time_reduction_percent": 0.7656005064919702,
+      "native_peak_GB": 2.130463068,
+      "candidate_peak_GB": 2.143549292,
+      "mel_max_abs": 0.0,
+      "waveform_max_abs": 2.384185791015625e-07,
+      "status": "completed",
+      "input_shapes": {
+        "token": [
+          1,
+          435
+        ],
+        "prompt_token": [
+          1,
+          115
+        ],
+        "prompt_feat": [
+          1,
+          230,
+          80
+        ],
+        "embedding": [
+          1,
+          192
+        ]
+      },
+      "input_sha256": "9d7fc3163b0fc77da3fc6b913292979f9ce2d639f23fdd7684a83ff5581bbee6",
+      "baseline_dit_sha256": "6cad58bc1ae1ee193014ca8a3ab201de38c5cf13b1cc59814eaf516a1152bdbc",
+      "measurement_harness_sha256": "bf9fbb02ac0bd91e0fa319c6c4c6051afa54217dc1df32468a5195c140d588b2",
+      "raw_report_sha256": "6f0515adf5adecae8e87d6c3e215789ed193baf43d12f395132c013aebc181c2",
+      "block_medians_ms": {
+        "0_A": {
+          "flow_ms": 2009.58604097832,
+          "hift_ms": 406.61100001307204,
+          "stage_total_ms": 2416.197040991392
+        },
+        "1_B": {
+          "flow_ms": 1990.2699580125045,
+          "hift_ms": 418.814000004204,
+          "stage_total_ms": 2397.142208996229
+        },
+        "2_A": {
+          "flow_ms": 2007.963167008711,
+          "hift_ms": 408.1281669787131,
+          "stage_total_ms": 2415.0756250019185
+        }
+      },
+      "measurements": [
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 0,
+          "flow_ms": 2009.58604097832,
+          "hift_ms": 406.61100001307204,
+          "stage_total_ms": 2416.197040991392,
+          "audio_seconds": 17.4,
+          "rtf": 0.13886189890755127,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700589752,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.462089429471783e-09,
+            "relative_l2": 6.890396310393391e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 1,
+          "flow_ms": 1999.09279201529,
+          "hift_ms": 402.9939169995487,
+          "stage_total_ms": 2402.0867090148386,
+          "audio_seconds": 17.4,
+          "rtf": 0.13805096028820912,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700589752,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.518602902087754e-09,
+            "relative_l2": 6.931550035065209e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 2,
+          "flow_ms": 2031.8447080207989,
+          "hift_ms": 416.3074589741882,
+          "stage_total_ms": 2448.152166994987,
+          "audio_seconds": 17.4,
+          "rtf": 0.14069840040201076,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700589752,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.611744944369116e-09,
+            "relative_l2": 6.999377082068064e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 0,
+          "flow_ms": 1991.9029579905327,
+          "hift_ms": 418.814000004204,
+          "stage_total_ms": 2410.7169579947367,
+          "audio_seconds": 17.4,
+          "rtf": 0.13854695160889294,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700589752,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.234965515614814e-09,
+            "relative_l2": 6.725002209047476e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 1,
+          "flow_ms": 1972.9975420050323,
+          "hift_ms": 424.1446669911966,
+          "stage_total_ms": 2397.142208996229,
+          "audio_seconds": 17.4,
+          "rtf": 0.13776679362047292,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700589752,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.247295462814881e-09,
+            "relative_l2": 6.733981010540312e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 2,
+          "flow_ms": 1990.2699580125045,
+          "hift_ms": 405.71116699720733,
+          "stage_total_ms": 2395.981125009712,
+          "audio_seconds": 17.4,
+          "rtf": 0.13770006465573056,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700589752,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.696223670924752e-09,
+            "relative_l2": 7.060895408448771e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 0,
+          "flow_ms": 2007.963167008711,
+          "hift_ms": 399.0052079898305,
+          "stage_total_ms": 2406.9683749985415,
+          "audio_seconds": 17.4,
+          "rtf": 0.1383315158045139,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700589752,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.086162567138672e-07,
+            "rmse": 9.610881131388686e-09,
+            "relative_l2": 6.998748044072007e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 1,
+          "flow_ms": 1996.3656249747146,
+          "hift_ms": 418.71000002720393,
+          "stage_total_ms": 2415.0756250019185,
+          "audio_seconds": 17.4,
+          "rtf": 0.13879744971275396,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700589752,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.232681242789135e-09,
+            "relative_l2": 6.723338776761477e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 2,
+          "flow_ms": 2052.982042019721,
+          "hift_ms": 408.1281669787131,
+          "stage_total_ms": 2461.1102089984342,
+          "audio_seconds": 17.4,
+          "rtf": 0.14144311545968014,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700589752,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.697502355768497e-09,
+            "relative_l2": 7.061826560642498e-08
+          }
+        }
+      ],
+      "warmups": [
+        {
+          "arm": "A",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 2084.1621669824235,
+          "hift_ms": 435.62091601779684,
+          "stage_total_ms": 2519.7830830002204,
+          "audio_seconds": 17.4,
+          "rtf": 0.14481511971265634,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711151530,
+          "active_after_bytes": 715444182,
+          "peak_bytes": 2130463040,
+          "cache_bytes": 4664839876,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          }
+        },
+        {
+          "arm": "B",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 1981.103209021967,
+          "hift_ms": 403.45704098581336,
+          "stage_total_ms": 2384.5602500077803,
+          "audio_seconds": 17.4,
+          "rtf": 0.13704369252918278,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741398,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700589752,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.441145237129982e-09,
+            "relative_l2": 6.87514452201073e-08
+          }
+        }
+      ],
+      "host_snapshots": [
+        {
+          "block": "0",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 4.15 4.59 3.91 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "1",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 4.14 4.58 3.91 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "2",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 4.17 4.58 3.92 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        }
+      ]
+    },
+    {
+      "tokens": 137,
+      "order": "BAB",
+      "native_ms": 1105.1502500195056,
+      "candidate_ms": 1036.0453335160855,
+      "time_reduction_percent": 6.252988360831512,
+      "native_peak_GB": 1.756639424,
+      "candidate_peak_GB": 1.853538488,
+      "mel_max_abs": 0.0,
+      "waveform_max_abs": 1.7881393432617188e-07,
+      "status": "completed",
+      "input_shapes": {
+        "token": [
+          1,
+          137
+        ],
+        "prompt_token": [
+          1,
+          115
+        ],
+        "prompt_feat": [
+          1,
+          230,
+          80
+        ],
+        "embedding": [
+          1,
+          192
+        ]
+      },
+      "input_sha256": "d06d5d1a567f34e71d4beac5db468c6ffb456e4eda35a11e2273f624deda588f",
+      "baseline_dit_sha256": "6cad58bc1ae1ee193014ca8a3ab201de38c5cf13b1cc59814eaf516a1152bdbc",
+      "measurement_harness_sha256": "bf9fbb02ac0bd91e0fa319c6c4c6051afa54217dc1df32468a5195c140d588b2",
+      "raw_report_sha256": "6ee994a235a01ef331bb2e7237416091b18e411e3262d90a18456440f9b3fac5",
+      "block_medians_ms": {
+        "0_B": {
+          "flow_ms": 972.3325840022881,
+          "hift_ms": 124.26799998502247,
+          "stage_total_ms": 1106.5609170182142
+        },
+        "1_A": {
+          "flow_ms": 984.3752089946065,
+          "hift_ms": 123.24375001480803,
+          "stage_total_ms": 1105.1502500195056
+        },
+        "2_B": {
+          "flow_ms": 887.7093330083881,
+          "hift_ms": 129.1154579957947,
+          "stage_total_ms": 1023.8583330065012
+        }
+      },
+      "measurements": [
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 0,
+          "flow_ms": 911.6773749992717,
+          "hift_ms": 120.45466701965779,
+          "stage_total_ms": 1032.1320420189295,
+          "audio_seconds": 5.48,
+          "rtf": 0.1883452631421404,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631384992,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.522971180122954e-09,
+            "relative_l2": 6.612934164907907e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 1,
+          "flow_ms": 972.3325840022881,
+          "hift_ms": 134.22833301592618,
+          "stage_total_ms": 1106.5609170182142,
+          "audio_seconds": 5.48,
+          "rtf": 0.20192717463836024,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631384992,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 8.761162421299492e-09,
+            "relative_l2": 6.083919525142433e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 2,
+          "flow_ms": 984.0356670028996,
+          "hift_ms": 124.26799998502247,
+          "stage_total_ms": 1108.303666987922,
+          "audio_seconds": 5.48,
+          "rtf": 0.20224519470582517,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631384992,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.029771491865184e-09,
+            "relative_l2": 6.270446824884305e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 0,
+          "flow_ms": 986.1242079932708,
+          "hift_ms": 123.24375001480803,
+          "stage_total_ms": 1109.3679580080789,
+          "audio_seconds": 5.48,
+          "rtf": 0.20243940839563482,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631384992,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.189947287109657e-09,
+            "relative_l2": 6.381675974771305e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 1,
+          "flow_ms": 976.1472500103991,
+          "hift_ms": 129.00300000910647,
+          "stage_total_ms": 1105.1502500195056,
+          "audio_seconds": 5.48,
+          "rtf": 0.20166975365319445,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631384992,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.258960399121246e-09,
+            "relative_l2": 6.429600005792278e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 2,
+          "flow_ms": 984.3752089946065,
+          "hift_ms": 119.61512500420213,
+          "stage_total_ms": 1103.9903339988086,
+          "audio_seconds": 5.48,
+          "rtf": 0.201458090145768,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631384992,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.535570929266276e-09,
+            "relative_l2": 6.621683672808663e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 0,
+          "flow_ms": 886.6198750038166,
+          "hift_ms": 121.35699999635108,
+          "stage_total_ms": 1007.9768750001676,
+          "audio_seconds": 5.48,
+          "rtf": 0.1839373859489357,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631384992,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.118029989791521e-09,
+            "relative_l2": 6.331735221671514e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 1,
+          "flow_ms": 910.8431670174468,
+          "hift_ms": 129.1154579957947,
+          "stage_total_ms": 1039.9586250132415,
+          "audio_seconds": 5.48,
+          "rtf": 0.18977347171774478,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631384992,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.76979492913766e-09,
+            "relative_l2": 6.784333318774605e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 2,
+          "flow_ms": 887.7093330083881,
+          "hift_ms": 136.14899999811314,
+          "stage_total_ms": 1023.8583330065012,
+          "audio_seconds": 5.48,
+          "rtf": 0.1868354622274637,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631384992,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.381662684533375e-09,
+            "relative_l2": 6.514806830423629e-08
+          }
+        }
+      ],
+      "warmups": [
+        {
+          "arm": "A",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 1011.9152910192497,
+          "hift_ms": 130.77016698662192,
+          "stage_total_ms": 1142.6854580058716,
+          "audio_seconds": 5.48,
+          "rtf": 0.20851924416165538,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711150338,
+          "active_after_bytes": 712657710,
+          "peak_bytes": 1756639652,
+          "cache_bytes": 2531145644,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          }
+        },
+        {
+          "arm": "B",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 955.4680000001099,
+          "hift_ms": 125.29825000092387,
+          "stage_total_ms": 1080.7662500010338,
+          "audio_seconds": 5.48,
+          "rtf": 0.1972201186133273,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412526,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631384992,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.257937067341848e-09,
+            "relative_l2": 6.428889384542039e-08
+          }
+        }
+      ],
+      "host_snapshots": [
+        {
+          "block": "0",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 4.15 4.56 3.92 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "1",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 4.06 4.53 3.91 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "2",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 4.14 4.54 3.92 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        }
+      ]
+    },
+    {
+      "tokens": 435,
+      "order": "BAB",
+      "native_ms": 2189.3587079830468,
+      "candidate_ms": 2152.0785209868336,
+      "time_reduction_percent": 1.702790267317944,
+      "native_peak_GB": 2.130463068,
+      "candidate_peak_GB": 2.143549292,
+      "mel_max_abs": 0.0,
+      "waveform_max_abs": 2.384185791015625e-07,
+      "status": "completed",
+      "input_shapes": {
+        "token": [
+          1,
+          435
+        ],
+        "prompt_token": [
+          1,
+          115
+        ],
+        "prompt_feat": [
+          1,
+          230,
+          80
+        ],
+        "embedding": [
+          1,
+          192
+        ]
+      },
+      "input_sha256": "9d7fc3163b0fc77da3fc6b913292979f9ce2d639f23fdd7684a83ff5581bbee6",
+      "baseline_dit_sha256": "6cad58bc1ae1ee193014ca8a3ab201de38c5cf13b1cc59814eaf516a1152bdbc",
+      "measurement_harness_sha256": "bf9fbb02ac0bd91e0fa319c6c4c6051afa54217dc1df32468a5195c140d588b2",
+      "raw_report_sha256": "4b480174c98047558c8ec385ac077a6ef4019054ba393bab43d5b11f84b0d24e",
+      "block_medians_ms": {
+        "0_B": {
+          "flow_ms": 1869.330917019397,
+          "hift_ms": 371.28029199084267,
+          "stage_total_ms": 2247.6230839965865
+        },
+        "1_A": {
+          "flow_ms": 1820.9497079951689,
+          "hift_ms": 368.4089999878779,
+          "stage_total_ms": 2189.3587079830468
+        },
+        "2_B": {
+          "flow_ms": 1774.993833998451,
+          "hift_ms": 373.698167008115,
+          "stage_total_ms": 2151.4104999951087
+        }
+      },
+      "measurements": [
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 0,
+          "flow_ms": 1869.330917019397,
+          "hift_ms": 429.84262498794124,
+          "stage_total_ms": 2299.1735420073383,
+          "audio_seconds": 17.4,
+          "rtf": 0.13213641046019187,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590360,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.797459730325865e-09,
+            "relative_l2": 7.134616609795462e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 1,
+          "flow_ms": 1876.3427920057438,
+          "hift_ms": 371.28029199084267,
+          "stage_total_ms": 2247.6230839965865,
+          "audio_seconds": 17.4,
+          "rtf": 0.12917374045957394,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590360,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.25377074807561e-09,
+            "relative_l2": 6.738696386585069e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 2,
+          "flow_ms": 1752.2179999796208,
+          "hift_ms": 367.18954201205634,
+          "stage_total_ms": 2119.407541991677,
+          "audio_seconds": 17.4,
+          "rtf": 0.12180503114894697,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590360,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.227699986328908e-09,
+            "relative_l2": 6.719711374662817e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 0,
+          "flow_ms": 1819.3147919955663,
+          "hift_ms": 367.533332988387,
+          "stage_total_ms": 2186.8481249839533,
+          "audio_seconds": 17.4,
+          "rtf": 0.1256809267232157,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590360,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.336749161437962e-09,
+            "relative_l2": 6.799122168627027e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 1,
+          "flow_ms": 1820.9497079951689,
+          "hift_ms": 368.4089999878779,
+          "stage_total_ms": 2189.3587079830468,
+          "audio_seconds": 17.4,
+          "rtf": 0.12582521310247397,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590360,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.561173070184193e-09,
+            "relative_l2": 6.962550096992986e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 2,
+          "flow_ms": 1825.9803340188228,
+          "hift_ms": 368.86487499577925,
+          "stage_total_ms": 2194.845209014602,
+          "audio_seconds": 17.4,
+          "rtf": 0.12614052925371277,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590360,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.181145470214892e-09,
+            "relative_l2": 6.68580987028613e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 0,
+          "flow_ms": 1773.2502500002738,
+          "hift_ms": 373.698167008115,
+          "stage_total_ms": 2146.948417008389,
+          "audio_seconds": 17.4,
+          "rtf": 0.12338784005795339,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590360,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.519277796429281e-09,
+            "relative_l2": 6.932041503517626e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 1,
+          "flow_ms": 1774.993833998451,
+          "hift_ms": 376.4166659966577,
+          "stage_total_ms": 2151.4104999951087,
+          "audio_seconds": 17.4,
+          "rtf": 0.1236442816089143,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590360,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.086162567138672e-07,
+            "rmse": 9.264500411974037e-09,
+            "relative_l2": 6.746509844397026e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 2,
+          "flow_ms": 1782.1187090012245,
+          "hift_ms": 370.62783297733404,
+          "stage_total_ms": 2152.7465419785585,
+          "audio_seconds": 17.4,
+          "rtf": 0.12372106563095164,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590360,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.313552852676937e-09,
+            "relative_l2": 6.782230364595406e-08
+          }
+        }
+      ],
+      "warmups": [
+        {
+          "arm": "A",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 1949.955875024898,
+          "hift_ms": 382.03312500263564,
+          "stage_total_ms": 2331.9890000275336,
+          "audio_seconds": 17.4,
+          "rtf": 0.1340223563234215,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711151530,
+          "active_after_bytes": 715444182,
+          "peak_bytes": 2130463040,
+          "cache_bytes": 4664840484,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          }
+        },
+        {
+          "arm": "B",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 1794.137375021819,
+          "hift_ms": 366.88083299668506,
+          "stage_total_ms": 2161.018208018504,
+          "audio_seconds": 17.4,
+          "rtf": 0.12419644873669565,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741398,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590360,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.529112185341686e-09,
+            "relative_l2": 6.93920301235899e-08
+          }
+        }
+      ],
+      "host_snapshots": [
+        {
+          "block": "0",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 4.25 4.55 3.93 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "1",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 4.15 4.53 3.92 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "2",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 3.98 4.48 3.91 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        }
+      ]
+    },
+    {
+      "tokens": 137,
+      "order": "ABBA",
+      "native_ms": 1053.4155835048296,
+      "candidate_ms": 1009.6904994861688,
+      "time_reduction_percent": 4.150791454326363,
+      "native_peak_GB": 1.756606656,
+      "candidate_peak_GB": 1.85350572,
+      "mel_max_abs": 0.0,
+      "waveform_max_abs": 1.7881393432617188e-07,
+      "status": "completed",
+      "input_shapes": {
+        "token": [
+          1,
+          137
+        ],
+        "prompt_token": [
+          1,
+          115
+        ],
+        "prompt_feat": [
+          1,
+          230,
+          80
+        ],
+        "embedding": [
+          1,
+          192
+        ]
+      },
+      "input_sha256": "d06d5d1a567f34e71d4beac5db468c6ffb456e4eda35a11e2273f624deda588f",
+      "baseline_dit_sha256": "6cad58bc1ae1ee193014ca8a3ab201de38c5cf13b1cc59814eaf516a1152bdbc",
+      "measurement_harness_sha256": "0c55b67b765afff7b0810ebc01fcb78b2ec4919e85f315936f34cf4141a38d28",
+      "raw_report_sha256": "672dfb5670212ce1acca00e9b5e4c1a548d2b249cf4366dc271799f23859eac0",
+      "block_medians_ms": {
+        "0_A": {
+          "flow_ms": 922.1942499862053,
+          "hift_ms": 119.32991701178253,
+          "stage_total_ms": 1038.6290419846773
+        },
+        "1_B": {
+          "flow_ms": 890.7027079840191,
+          "hift_ms": 114.9403750023339,
+          "stage_total_ms": 1008.0234159831889
+        },
+        "2_B": {
+          "flow_ms": 891.0992910095956,
+          "hift_ms": 115.2943339839112,
+          "stage_total_ms": 1011.3575829891488
+        },
+        "3_A": {
+          "flow_ms": 965.2266670018435,
+          "hift_ms": 117.22829099744558,
+          "stage_total_ms": 1083.0037909909151
+        }
+      },
+      "measurements": [
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 0,
+          "flow_ms": 938.4658329945523,
+          "hift_ms": 119.32991701178253,
+          "stage_total_ms": 1057.7957500063349,
+          "audio_seconds": 5.48,
+          "rtf": 0.1930284215340027,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756606656,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.428021851346986e-09,
+            "relative_l2": 6.5469995274172e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 1,
+          "flow_ms": 922.1942499862053,
+          "hift_ms": 116.43479199847206,
+          "stage_total_ms": 1038.6290419846773,
+          "audio_seconds": 5.48,
+          "rtf": 0.18953084707749585,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756606656,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.528563610231538e-09,
+            "relative_l2": 6.616817656636832e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 2,
+          "flow_ms": 913.3852910017595,
+          "hift_ms": 123.30270899110474,
+          "stage_total_ms": 1036.6879999928642,
+          "audio_seconds": 5.48,
+          "rtf": 0.18917664233446427,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756606656,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.464065443054111e-09,
+            "relative_l2": 6.572028890054842e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 0,
+          "flow_ms": 907.0214999956079,
+          "hift_ms": 114.9403750023339,
+          "stage_total_ms": 1021.9618749979418,
+          "audio_seconds": 5.48,
+          "rtf": 0.1864893932477996,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853505720,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.509186378115882e-09,
+            "relative_l2": 6.603361734333711e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 1,
+          "flow_ms": 890.7027079840191,
+          "hift_ms": 117.32070799916983,
+          "stage_total_ms": 1008.0234159831889,
+          "audio_seconds": 5.48,
+          "rtf": 0.18394587882904906,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853505720,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.867225448595942e-09,
+            "relative_l2": 6.851990944383213e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 2,
+          "flow_ms": 880.817625002237,
+          "hift_ms": 114.91387500427663,
+          "stage_total_ms": 995.7315000065137,
+          "audio_seconds": 5.48,
+          "rtf": 0.1817028284683419,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853505720,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.620481121829888e-09,
+            "relative_l2": 6.680646942831135e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 0,
+          "flow_ms": 891.0992910095956,
+          "hift_ms": 120.25829197955318,
+          "stage_total_ms": 1011.3575829891488,
+          "audio_seconds": 5.48,
+          "rtf": 0.18455430346517313,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853505720,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.639340521706884e-09,
+            "relative_l2": 6.69374327247789e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 1,
+          "flow_ms": 908.2008750119712,
+          "hift_ms": 115.2943339839112,
+          "stage_total_ms": 1023.4952089958824,
+          "audio_seconds": 5.48,
+          "rtf": 0.18676919872187633,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853505720,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.504317009721442e-09,
+            "relative_l2": 6.599980351358589e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 2,
+          "flow_ms": 876.0856669978239,
+          "hift_ms": 114.88041700795293,
+          "stage_total_ms": 990.9660840057768,
+          "audio_seconds": 5.48,
+          "rtf": 0.18083322700835341,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853505720,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.458300560139196e-09,
+            "relative_l2": 6.568025644589922e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 3,
+          "repeat": 0,
+          "flow_ms": 934.4729170261417,
+          "hift_ms": 114.5624999771826,
+          "stage_total_ms": 1049.0354170033243,
+          "audio_seconds": 5.48,
+          "rtf": 0.19142982062104455,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756606656,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.527571064517155e-09,
+            "relative_l2": 6.616128413821588e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 3,
+          "repeat": 1,
+          "flow_ms": 965.2266670018435,
+          "hift_ms": 119.96429102146067,
+          "stage_total_ms": 1085.1909580233041,
+          "audio_seconds": 5.48,
+          "rtf": 0.19802754708454454,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756606656,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.591843455253856e-09,
+            "relative_l2": 6.660760396904978e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 3,
+          "repeat": 2,
+          "flow_ms": 965.7754999934696,
+          "hift_ms": 117.22829099744558,
+          "stage_total_ms": 1083.0037909909151,
+          "audio_seconds": 5.48,
+          "rtf": 0.1976284290129407,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756606656,
+          "cache_bytes": 2631352816,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.386910216146026e-09,
+            "relative_l2": 6.518450817997993e-08
+          }
+        }
+      ],
+      "warmups": [
+        {
+          "arm": "A",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 973.6838749959134,
+          "hift_ms": 120.71412499062717,
+          "stage_total_ms": 1094.3979999865405,
+          "audio_seconds": 5.48,
+          "rtf": 0.19970766423112052,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711150338,
+          "active_after_bytes": 712657710,
+          "peak_bytes": 1756623268,
+          "cache_bytes": 2531686908,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          }
+        },
+        {
+          "arm": "B",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 921.3828750071116,
+          "hift_ms": 119.4782920065336,
+          "stage_total_ms": 1040.8611670136452,
+          "audio_seconds": 5.48,
+          "rtf": 0.18993816916307393,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412526,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853505720,
+          "cache_bytes": 2626617840,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.745675399903853e-09,
+            "relative_l2": 6.767584255059414e-08
+          }
+        }
+      ],
+      "host_snapshots": [
+        {
+          "block": "0",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 4.44 4.18 3.87 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "1",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 4.44 4.18 3.87 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "2",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 4.73 4.25 3.89 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "3",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 4.73 4.25 3.89 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        }
+      ]
+    },
+    {
+      "tokens": 435,
+      "order": "ABBA",
+      "native_ms": 2314.5367085089674,
+      "candidate_ms": 2260.4466045013396,
+      "time_reduction_percent": 2.3369732615938,
+      "native_peak_GB": 2.130463068,
+      "candidate_peak_GB": 2.143549292,
+      "mel_max_abs": 0.0,
+      "waveform_max_abs": 2.384185791015625e-07,
+      "status": "completed",
+      "input_shapes": {
+        "token": [
+          1,
+          435
+        ],
+        "prompt_token": [
+          1,
+          115
+        ],
+        "prompt_feat": [
+          1,
+          230,
+          80
+        ],
+        "embedding": [
+          1,
+          192
+        ]
+      },
+      "input_sha256": "9d7fc3163b0fc77da3fc6b913292979f9ce2d639f23fdd7684a83ff5581bbee6",
+      "baseline_dit_sha256": "6cad58bc1ae1ee193014ca8a3ab201de38c5cf13b1cc59814eaf516a1152bdbc",
+      "measurement_harness_sha256": "0c55b67b765afff7b0810ebc01fcb78b2ec4919e85f315936f34cf4141a38d28",
+      "raw_report_sha256": "976fb929e9bbe00cfe277a7a356ca19ca11f99b3f67d92c28005e70db775980d",
+      "block_medians_ms": {
+        "0_A": {
+          "flow_ms": 1927.9591250233352,
+          "hift_ms": 394.0247919817921,
+          "stage_total_ms": 2321.9839170051273
+        },
+        "1_B": {
+          "flow_ms": 1876.755959005095,
+          "hift_ms": 406.5826250007376,
+          "stage_total_ms": 2283.3385840058327
+        },
+        "2_B": {
+          "flow_ms": 1840.2946249989327,
+          "hift_ms": 397.25999999791384,
+          "stage_total_ms": 2237.5546249968465
+        },
+        "3_A": {
+          "flow_ms": 1919.6862920070998,
+          "hift_ms": 392.89004198508337,
+          "stage_total_ms": 2307.0895000128075
+        }
+      },
+      "measurements": [
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 0,
+          "flow_ms": 1927.9591250233352,
+          "hift_ms": 394.0247919817921,
+          "stage_total_ms": 2321.9839170051273,
+          "audio_seconds": 17.4,
+          "rtf": 0.1334473515520188,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.610030668432048e-09,
+            "relative_l2": 6.99812872888063e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 1,
+          "flow_ms": 2169.297540996922,
+          "hift_ms": 390.2507089951541,
+          "stage_total_ms": 2559.5482499920763,
+          "audio_seconds": 17.4,
+          "rtf": 0.14710047413747565,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.566814409681505e-09,
+            "relative_l2": 6.966658179789629e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 0,
+          "repeat": 2,
+          "flow_ms": 1893.3756660262588,
+          "hift_ms": 403.8334589859005,
+          "stage_total_ms": 2297.2091250121593,
+          "audio_seconds": 17.4,
+          "rtf": 0.1320235129317333,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.719015817220434e-09,
+            "relative_l2": 7.077492898160828e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 0,
+          "flow_ms": 2011.7330420180224,
+          "hift_ms": 410.21583299152553,
+          "stage_total_ms": 2421.948875009548,
+          "audio_seconds": 17.4,
+          "rtf": 0.13919246408100852,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.347393512742432e-09,
+            "relative_l2": 6.806873499015388e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 1,
+          "flow_ms": 1876.755959005095,
+          "hift_ms": 406.5826250007376,
+          "stage_total_ms": 2283.3385840058327,
+          "audio_seconds": 17.4,
+          "rtf": 0.13122635540263408,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.030530899052044e-09,
+            "relative_l2": 6.576130701569489e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 1,
+          "repeat": 2,
+          "flow_ms": 1839.582624990726,
+          "hift_ms": 396.08787500765175,
+          "stage_total_ms": 2235.6704999983776,
+          "audio_seconds": 17.4,
+          "rtf": 0.12848681034473436,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.551469025775093e-09,
+            "relative_l2": 6.955483504528298e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 0,
+          "flow_ms": 1924.0917080023792,
+          "hift_ms": 405.7985419931356,
+          "stage_total_ms": 2329.8902499955148,
+          "audio_seconds": 17.4,
+          "rtf": 0.13390173850548936,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.703148142578548e-09,
+            "relative_l2": 7.065937885112153e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 1,
+          "flow_ms": 1840.2946249989327,
+          "hift_ms": 397.25999999791384,
+          "stage_total_ms": 2237.5546249968465,
+          "audio_seconds": 17.4,
+          "rtf": 0.1285950933906234,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.345749847434974e-09,
+            "relative_l2": 6.805676564082957e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 2,
+          "repeat": 2,
+          "flow_ms": 1838.3006249787286,
+          "hift_ms": 393.0785830016248,
+          "stage_total_ms": 2231.3792079803534,
+          "audio_seconds": 17.4,
+          "rtf": 0.128240184366687,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.571873564583204e-09,
+            "relative_l2": 6.970342311347892e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 3,
+          "repeat": 0,
+          "flow_ms": 1971.1507920001168,
+          "hift_ms": 398.4377500019036,
+          "stage_total_ms": 2369.5885420020204,
+          "audio_seconds": 17.4,
+          "rtf": 0.13618324954034602,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.519482126864483e-09,
+            "relative_l2": 6.932190297260036e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 3,
+          "repeat": 1,
+          "flow_ms": 1919.6862920070998,
+          "hift_ms": 387.4032080057077,
+          "stage_total_ms": 2307.0895000128075,
+          "audio_seconds": 17.4,
+          "rtf": 0.1325913505754487,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.086162567138672e-07,
+            "rmse": 9.631025774762968e-09,
+            "relative_l2": 7.013417593385815e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 3,
+          "repeat": 2,
+          "flow_ms": 1846.7767919937614,
+          "hift_ms": 392.89004198508337,
+          "stage_total_ms": 2239.666833978845,
+          "audio_seconds": 17.4,
+          "rtf": 0.12871648471142788,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.368386615132997e-09,
+            "relative_l2": 6.822160904229436e-08
+          }
+        }
+      ],
+      "warmups": [
+        {
+          "arm": "A",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 2001.0874170111492,
+          "hift_ms": 392.3486249987036,
+          "stage_total_ms": 2393.436042009853,
+          "audio_seconds": 17.4,
+          "rtf": 0.13755379551780764,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711151530,
+          "active_after_bytes": 715444182,
+          "peak_bytes": 2130463040,
+          "cache_bytes": 4664840148,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          }
+        },
+        {
+          "arm": "B",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 1833.3407499885652,
+          "hift_ms": 372.7214160026051,
+          "stage_total_ms": 2206.0621659911703,
+          "audio_seconds": 17.4,
+          "rtf": 0.12678518195351554,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741398,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.63479442288681e-09,
+            "relative_l2": 7.016161963889347e-08
+          }
+        }
+      ],
+      "host_snapshots": [
+        {
+          "block": "0",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 4.06 4.12 3.85 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "1",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 4.21 4.15 3.87 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "2",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 4.11 4.13 3.86 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "3",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 3.87 4.08 3.85 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        }
+      ]
+    },
+    {
+      "tokens": 137,
+      "order": "BAAB",
+      "native_ms": 1031.2545409979066,
+      "candidate_ms": 1008.130499991239,
+      "time_reduction_percent": 2.2423213753115956,
+      "native_peak_GB": 1.756639424,
+      "candidate_peak_GB": 1.853538488,
+      "mel_max_abs": 0.0,
+      "waveform_max_abs": 1.7881393432617188e-07,
+      "status": "completed",
+      "input_shapes": {
+        "token": [
+          1,
+          137
+        ],
+        "prompt_token": [
+          1,
+          115
+        ],
+        "prompt_feat": [
+          1,
+          230,
+          80
+        ],
+        "embedding": [
+          1,
+          192
+        ]
+      },
+      "input_sha256": "d06d5d1a567f34e71d4beac5db468c6ffb456e4eda35a11e2273f624deda588f",
+      "baseline_dit_sha256": "6cad58bc1ae1ee193014ca8a3ab201de38c5cf13b1cc59814eaf516a1152bdbc",
+      "measurement_harness_sha256": "0c55b67b765afff7b0810ebc01fcb78b2ec4919e85f315936f34cf4141a38d28",
+      "raw_report_sha256": "34a7dc7fb56eed37befe80776670c31ab1b17131e421df4e16400f1b21224637",
+      "block_medians_ms": {
+        "0_B": {
+          "flow_ms": 882.8834589803591,
+          "hift_ms": 123.41608299175277,
+          "stage_total_ms": 1004.8623750044499
+        },
+        "1_A": {
+          "flow_ms": 923.9789579878561,
+          "hift_ms": 112.89987500640564,
+          "stage_total_ms": 1036.8788329942618
+        },
+        "2_A": {
+          "flow_ms": 904.4500419986434,
+          "hift_ms": 116.858958004741,
+          "stage_total_ms": 1023.0699589883443
+        },
+        "3_B": {
+          "flow_ms": 891.3307499897201,
+          "hift_ms": 120.06787498830818,
+          "stage_total_ms": 1011.3986249780282
+        }
+      },
+      "measurements": [
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 0,
+          "flow_ms": 889.9905410071369,
+          "hift_ms": 125.1382089976687,
+          "stage_total_ms": 1015.1287500048056,
+          "audio_seconds": 5.48,
+          "rtf": 0.18524247262861415,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.864016780701523e-09,
+            "relative_l2": 6.84976278799008e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 1,
+          "flow_ms": 876.773541996954,
+          "hift_ms": 123.41608299175277,
+          "stage_total_ms": 1000.1896249887068,
+          "audio_seconds": 5.48,
+          "rtf": 0.18251635492494647,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 8.953338815754204e-09,
+            "relative_l2": 6.217370510602344e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 2,
+          "flow_ms": 882.8834589803591,
+          "hift_ms": 121.97891602409072,
+          "stage_total_ms": 1004.8623750044499,
+          "audio_seconds": 5.48,
+          "rtf": 0.1833690465336587,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.395329315840203e-09,
+            "relative_l2": 6.524297206637312e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 0,
+          "flow_ms": 923.9789579878561,
+          "hift_ms": 112.89987500640564,
+          "stage_total_ms": 1036.8788329942618,
+          "audio_seconds": 5.48,
+          "rtf": 0.18921146587486526,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.577524810036749e-09,
+            "relative_l2": 6.650817258664049e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 1,
+          "flow_ms": 922.7067080209963,
+          "hift_ms": 112.09783298545517,
+          "stage_total_ms": 1034.8045410064515,
+          "audio_seconds": 5.48,
+          "rtf": 0.18883294543913345,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.38082774887894e-09,
+            "relative_l2": 6.514227039894172e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 2,
+          "flow_ms": 925.4892079916317,
+          "hift_ms": 118.06454200996086,
+          "stage_total_ms": 1043.5537500015926,
+          "audio_seconds": 5.48,
+          "rtf": 0.19042951642364828,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.368364513103175e-09,
+            "relative_l2": 6.50557232949244e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 0,
+          "flow_ms": 904.401042003883,
+          "hift_ms": 118.66891698446125,
+          "stage_total_ms": 1023.0699589883443,
+          "audio_seconds": 5.48,
+          "rtf": 0.18669159835553725,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.62454760362556e-09,
+            "relative_l2": 6.683470790067418e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 1,
+          "flow_ms": 914.2668330168817,
+          "hift_ms": 113.43770797247998,
+          "stage_total_ms": 1027.7045409893617,
+          "audio_seconds": 5.48,
+          "rtf": 0.1875373249980587,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.428506632202594e-09,
+            "relative_l2": 6.54733617261607e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 2,
+          "flow_ms": 904.4500419986434,
+          "hift_ms": 116.858958004741,
+          "stage_total_ms": 1021.3090000033844,
+          "audio_seconds": 5.48,
+          "rtf": 0.18637025547507013,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1756639424,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.175067608420521e-09,
+            "relative_l2": 6.371343244712361e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 3,
+          "repeat": 0,
+          "flow_ms": 855.4122500063386,
+          "hift_ms": 112.78416699497029,
+          "stage_total_ms": 968.1964170013089,
+          "audio_seconds": 5.48,
+          "rtf": 0.17667817828491036,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.608622109979311e-09,
+            "relative_l2": 6.672411821273702e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 3,
+          "repeat": 1,
+          "flow_ms": 913.1803750060499,
+          "hift_ms": 124.78179100435227,
+          "stage_total_ms": 1037.9621660104021,
+          "audio_seconds": 5.48,
+          "rtf": 0.18940915438146022,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.71186655088351e-09,
+            "relative_l2": 6.744106744862644e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 3,
+          "repeat": 2,
+          "flow_ms": 891.3307499897201,
+          "hift_ms": 120.06787498830818,
+          "stage_total_ms": 1011.3986249780282,
+          "audio_seconds": 5.48,
+          "rtf": 0.1845617928792022,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412538,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.45981985442145e-09,
+            "relative_l2": 6.569080675803295e-08
+          }
+        }
+      ],
+      "warmups": [
+        {
+          "arm": "A",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 923.2240830024239,
+          "hift_ms": 133.84945900179446,
+          "stage_total_ms": 1057.0735420042183,
+          "audio_seconds": 5.48,
+          "rtf": 0.19289663175259458,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711150338,
+          "active_after_bytes": 712657710,
+          "peak_bytes": 1756639652,
+          "cache_bytes": 2531145740,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          }
+        },
+        {
+          "arm": "B",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 914.084041985916,
+          "hift_ms": 127.57795801735483,
+          "stage_total_ms": 1041.6620000032708,
+          "audio_seconds": 5.48,
+          "rtf": 0.1900843065699399,
+          "mel_shape": [
+            1,
+            80,
+            274
+          ],
+          "waveform_samples": 131520,
+          "estimator_calls": 10,
+          "active_before_bytes": 711412526,
+          "active_after_bytes": 712657722,
+          "peak_bytes": 1853538488,
+          "cache_bytes": 2631385088,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 1.7881393432617188e-07,
+            "rmse": 9.435279784612793e-09,
+            "relative_l2": 6.552039579794729e-08
+          }
+        }
+      ],
+      "host_snapshots": [
+        {
+          "block": "0",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 3.65 4.02 3.83 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "1",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 3.60 4.01 3.82 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "2",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 3.60 4.01 3.82 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "3",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 3.71 4.02 3.83 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        }
+      ]
+    },
+    {
+      "tokens": 435,
+      "order": "BAAB",
+      "native_ms": 2308.9443539938657,
+      "candidate_ms": 2307.5441044929903,
+      "time_reduction_percent": 0.060644575450818916,
+      "native_peak_GB": 2.130463068,
+      "candidate_peak_GB": 2.143549292,
+      "mel_max_abs": 0.0,
+      "waveform_max_abs": 2.384185791015625e-07,
+      "status": "completed",
+      "input_shapes": {
+        "token": [
+          1,
+          435
+        ],
+        "prompt_token": [
+          1,
+          115
+        ],
+        "prompt_feat": [
+          1,
+          230,
+          80
+        ],
+        "embedding": [
+          1,
+          192
+        ]
+      },
+      "input_sha256": "9d7fc3163b0fc77da3fc6b913292979f9ce2d639f23fdd7684a83ff5581bbee6",
+      "baseline_dit_sha256": "6cad58bc1ae1ee193014ca8a3ab201de38c5cf13b1cc59814eaf516a1152bdbc",
+      "measurement_harness_sha256": "0c55b67b765afff7b0810ebc01fcb78b2ec4919e85f315936f34cf4141a38d28",
+      "raw_report_sha256": "7e3d03663f42e980613a05ce839f65021b7d3c1d916e49229be700dc3c7e7244",
+      "block_medians_ms": {
+        "0_B": {
+          "flow_ms": 1839.368166984059,
+          "hift_ms": 391.03887500823475,
+          "stage_total_ms": 2230.4070419922937
+        },
+        "1_A": {
+          "flow_ms": 1910.559625015594,
+          "hift_ms": 398.31375001813285,
+          "stage_total_ms": 2313.9839160139672
+        },
+        "2_A": {
+          "flow_ms": 1911.463708995143,
+          "hift_ms": 387.9505000077188,
+          "stage_total_ms": 2303.904791973764
+        },
+        "3_B": {
+          "flow_ms": 2123.517832980724,
+          "hift_ms": 454.15545799187385,
+          "stage_total_ms": 2579.577208001865
+        }
+      },
+      "measurements": [
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 0,
+          "flow_ms": 1832.0473750063684,
+          "hift_ms": 380.2076249849051,
+          "stage_total_ms": 2212.2549999912735,
+          "audio_seconds": 17.4,
+          "rtf": 0.12714109195352147,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.492489335383182e-09,
+            "relative_l2": 6.912533853529584e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 1,
+          "flow_ms": 1889.7129590041004,
+          "hift_ms": 391.3721249846276,
+          "stage_total_ms": 2281.085083988728,
+          "audio_seconds": 17.4,
+          "rtf": 0.13109684390739818,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.545217672910643e-09,
+            "relative_l2": 6.950931201719409e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 0,
+          "repeat": 2,
+          "flow_ms": 1839.368166984059,
+          "hift_ms": 391.03887500823475,
+          "stage_total_ms": 2230.4070419922937,
+          "audio_seconds": 17.4,
+          "rtf": 0.12818431275817782,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.502783027377107e-09,
+            "relative_l2": 6.920029831862748e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 0,
+          "flow_ms": 2034.9979589809664,
+          "hift_ms": 398.31375001813285,
+          "stage_total_ms": 2433.311708999099,
+          "audio_seconds": 17.4,
+          "rtf": 0.1398455005171896,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.573779196664787e-09,
+            "relative_l2": 6.971730013588808e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 1,
+          "flow_ms": 1910.559625015594,
+          "hift_ms": 403.4242909983732,
+          "stage_total_ms": 2313.9839160139672,
+          "audio_seconds": 17.4,
+          "rtf": 0.13298758138011307,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.367010138716239e-09,
+            "relative_l2": 6.82115853940194e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 1,
+          "repeat": 2,
+          "flow_ms": 1900.832666986389,
+          "hift_ms": 380.3420409967657,
+          "stage_total_ms": 2281.174707983155,
+          "audio_seconds": 17.4,
+          "rtf": 0.13110199471167558,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.507849605310627e-09,
+            "relative_l2": 6.923719368953556e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 0,
+          "flow_ms": 1952.7817079797387,
+          "hift_ms": 387.9505000077188,
+          "stage_total_ms": 2340.7322079874575,
+          "audio_seconds": 17.4,
+          "rtf": 0.13452483953950906,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.711267052434368e-09,
+            "relative_l2": 7.071850163728335e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 1,
+          "flow_ms": 1911.463708995143,
+          "hift_ms": 392.4410829786211,
+          "stage_total_ms": 2303.904791973764,
+          "audio_seconds": 17.4,
+          "rtf": 0.13240832137780253,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.33116597549027e-09,
+            "relative_l2": 6.79505643035586e-08
+          }
+        },
+        {
+          "arm": "A",
+          "block": 2,
+          "repeat": 2,
+          "flow_ms": 1865.688791993307,
+          "hift_ms": 380.1217500003986,
+          "stage_total_ms": 2245.8105419937056,
+          "audio_seconds": 17.4,
+          "rtf": 0.12906957137894862,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2130463068,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.412389268082603e-09,
+            "relative_l2": 6.8542041143724e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 3,
+          "repeat": 0,
+          "flow_ms": 1903.2746669836342,
+          "hift_ms": 430.72845801361836,
+          "stage_total_ms": 2334.0031249972526,
+          "audio_seconds": 17.4,
+          "rtf": 0.13413811063202602,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.335987852995216e-09,
+            "relative_l2": 6.798567773936332e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 3,
+          "repeat": 1,
+          "flow_ms": 2174.0848750050645,
+          "hift_ms": 454.15545799187385,
+          "stage_total_ms": 2628.2403329969384,
+          "audio_seconds": 17.4,
+          "rtf": 0.15104829499982406,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.461831882459418e-09,
+            "relative_l2": 6.890208763270218e-08
+          }
+        },
+        {
+          "arm": "B",
+          "block": 3,
+          "repeat": 2,
+          "flow_ms": 2123.517832980724,
+          "hift_ms": 456.059375021141,
+          "stage_total_ms": 2579.577208001865,
+          "audio_seconds": 17.4,
+          "rtf": 0.1482515636782681,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741410,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.40212943083687e-09,
+            "relative_l2": 6.846732789434644e-08
+          }
+        }
+      ],
+      "warmups": [
+        {
+          "arm": "A",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 1951.0602089867461,
+          "hift_ms": 404.35654099565,
+          "stage_total_ms": 2355.416749982396,
+          "audio_seconds": 17.4,
+          "rtf": 0.13536877873462047,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711151530,
+          "active_after_bytes": 715444182,
+          "peak_bytes": 2130463040,
+          "cache_bytes": 4664840148,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          }
+        },
+        {
+          "arm": "B",
+          "block": -1,
+          "repeat": 0,
+          "flow_ms": 1894.5277919992805,
+          "hift_ms": 401.98379100183956,
+          "stage_total_ms": 2296.51158300112,
+          "audio_seconds": 17.4,
+          "rtf": 0.13198342431040921,
+          "mel_shape": [
+            1,
+            80,
+            870
+          ],
+          "waveform_samples": 417600,
+          "estimator_calls": 10,
+          "active_before_bytes": 711741398,
+          "active_after_bytes": 715444194,
+          "peak_bytes": 2143549292,
+          "cache_bytes": 4700590024,
+          "mel_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 0.0,
+            "rmse": 0.0,
+            "relative_l2": 0.0
+          },
+          "waveform_error": {
+            "same_shape": true,
+            "finite": true,
+            "allclose": true,
+            "max_abs": 2.384185791015625e-07,
+            "rmse": 9.45389448633146e-09,
+            "relative_l2": 6.884428665183736e-08
+          }
+        }
+      ],
+      "host_snapshots": [
+        {
+          "block": "0",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 3.52 3.97 3.81 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "1",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 3.60 3.97 3.82 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "2",
+          "arm": "A",
+          "load_and_swap": "vm.loadavg: { 3.47 3.94 3.81 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        },
+        {
+          "block": "3",
+          "arm": "B",
+          "load_and_swap": "vm.loadavg: { 3.51 3.94 3.81 }\nvm.swapusage: total = 3072.00M  used = 1715.44M  free = 1356.56M  (encrypted)\n",
+          "thermal": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+        }
+      ]
+    }
+  ]
+}

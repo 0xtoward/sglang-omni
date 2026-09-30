@@ -162,6 +162,26 @@ def layer_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
     return mx.fast.layer_norm(x, weight=None, bias=None, eps=eps)
 
 
+@mx.compile
+def affine_modulation(
+    normalized_states: mx.array,
+    scale: mx.array,
+    shift: mx.array,
+    is_final: bool = False,
+) -> mx.array:
+    """Fuse AdaLN pointwise operations while preserving dtype promotion."""
+    if is_final:
+        return normalized_states * (1 + scale)[:, None, :] + shift[:, None, :]
+    else:
+        return normalized_states * (1 + scale[:, None]) + shift[:, None]
+
+
+@mx.compile
+def gated_residual(residual: mx.array, gate: mx.array, branch: mx.array) -> mx.array:
+    """Fuse residual gating with the gate broadcast across mel frames."""
+    return residual + gate[:, None] * branch
+
+
 class AdaLayerNormZero(nn.Module):
     """SiLU->Linear(dim*6); returns modulated x + msa gate + mlp params."""
 
@@ -174,7 +194,7 @@ class AdaLayerNormZero(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mx.split(
             emb, 6, axis=-1
         )
-        x = layer_norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+        x = affine_modulation(layer_norm(x), scale_msa, shift_msa)
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
@@ -186,7 +206,7 @@ class AdaLayerNormZeroFinal(nn.Module):
     def __call__(self, x: mx.array, emb: mx.array) -> mx.array:
         emb = self.linear(nn.silu(emb))
         scale, shift = mx.split(emb, 2, axis=-1)
-        return layer_norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+        return affine_modulation(layer_norm(x), scale, shift, is_final=True)
 
 
 class Attention(nn.Module):
@@ -267,11 +287,11 @@ class DiTBlock(nn.Module):
     def __call__(self, x: mx.array, t: mx.array, mask=None, rope=None) -> mx.array:
         norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
         attn_out = self.attn(norm, mask=mask, rope=rope)
-        x = x + gate_msa[:, None] * attn_out
+        x = gated_residual(x, gate_msa, attn_out)
 
-        ff_norm = layer_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+        ff_norm = affine_modulation(layer_norm(x), scale_mlp, shift_mlp)
         ff_out = self.ff(ff_norm)
-        x = x + gate_mlp[:, None] * ff_out
+        x = gated_residual(x, gate_mlp, ff_out)
         return x
 
 
