@@ -55,6 +55,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         self.max_running_requests = int(max_running_requests)
         if not isinstance(enable_acoustic_tail_batch_padding, bool):
             raise TypeError("enable_acoustic_tail_batch_padding must be a boolean")
+        else:
+            pass
         self.enable_acoustic_tail_batch_padding = enable_acoustic_tail_batch_padding
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")

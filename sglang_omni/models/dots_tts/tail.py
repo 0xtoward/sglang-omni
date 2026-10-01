@@ -39,6 +39,8 @@ def graph_batch_buckets(
     buckets = {batch for batch in _GRAPH_BATCH_BUCKETS if batch <= num_slots}
     if include_maximum:
         buckets.add(num_slots)
+    else:
+        pass
     return tuple(sorted(buckets))
 
 
@@ -498,6 +500,8 @@ class DotsTtsAcousticTail:
 
             self.gather_kv = gather_kv
             self.scatter_kv = scatter_kv
+        else:
+            pass
         # note (0xtoward): Filler writes must never reach an allocatable slot.
         self.pad_bin_slot = spec.num_slots
         self.mods_width = int(dit.fused_adaln[-1].out_features)
@@ -951,6 +955,8 @@ class DotsTtsAcousticTail:
                 skip_batch=spec.num_slots,
                 extra=self.meanflow_pad_graphs,
             )
+        else:
+            pass
         if graph is None:
             self.graph_misses["meanflow"] += 1
             latent = self.sample_patches_core(
@@ -1070,6 +1076,8 @@ class DotsTtsAcousticTail:
             ).reshape(1, 1, unit)
             layer_index = self.dit_layer_index.reshape(self.dit_layers, 1, 1)
             batch_index = slot_index.reshape(1, rows, 1)
+        else:
+            pass
         promote = slice(capacity, capacity + unit)
         with sdpa_kernel(_TAIL_SDPA_BACKENDS):
             for ode_index in range(spec.nfe):
@@ -1204,6 +1212,8 @@ class DotsTtsAcousticTail:
         pad = 0
         if graph is None:
             graph, pad = self.select_graph_padded(self.encoder_graphs, rows, capacity)
+        else:
+            pass
         if graph is None:
             self.graph_misses["semantic_encoder"] += 1
             embeddings = self.encode_feedback_core(
@@ -1341,6 +1351,8 @@ class DotsTtsAcousticTail:
         # use their gather twins. Cap row expansion, not context capacity.
         if not self.pad_to_bucket:
             return None, 0
+        else:
+            pass
         return select_padded_graph(
             graphs,
             rows,
@@ -1399,6 +1411,8 @@ class DotsTtsAcousticTail:
                         kind="meanflow",
                         force_gather=True,
                     )
+            else:
+                pass
         current_stream.wait_stream(self.capture_stream)
         torch.cuda.synchronize(self.device)
         logger.info(

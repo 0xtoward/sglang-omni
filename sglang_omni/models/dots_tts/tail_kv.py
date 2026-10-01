@@ -99,6 +99,8 @@ def gather_kv(
     assert tokens <= pool_k.size(3)
     if tokens == 0:
         return
+    else:
+        pass
     block = 1024
     with torch.cuda.device_of(pool_k):
         gather_kv_kernel[(triton.cdiv(tokens * dim, block), layers * rows * heads)](
@@ -138,6 +140,8 @@ def scatter_kv(
     assert (layers, heads, dim) == (pool_k.size(0), pool_k.size(2), pool_k.size(4))
     if tokens == 0:
         return
+    else:
+        pass
     block = min(1024, triton.next_power_of_2(tokens * dim))
     with torch.cuda.device_of(pool_k):
         scatter_kv_kernel[(triton.cdiv(tokens * dim, block), layers * rows * heads)](

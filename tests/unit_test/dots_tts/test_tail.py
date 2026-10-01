@@ -137,7 +137,7 @@ def build_tail(
     )
 
 
-def _copy_live_state(source, destination) -> None:
+def copy_live_state(source, destination) -> None:
     slots = source.spec.num_slots
     for name, slot_dim in SLOT_DIMS.items():
         source_value = getattr(source, name)
@@ -148,7 +148,7 @@ def _copy_live_state(source, destination) -> None:
         destination_value[tuple(live)].copy_(source_value)
 
 
-def _assert_live_state_close(actual, expected) -> None:
+def assert_live_state_close(actual, expected) -> None:
     slots = expected.spec.num_slots
     for name, slot_dim in SLOT_DIMS.items():
         actual_value = getattr(actual, name)
@@ -166,11 +166,13 @@ def _assert_live_state_close(actual, expected) -> None:
             actual.generators[slot].get_state(),
             expected.generators[slot].get_state(),
         )
-    assert actual._fm_seq_len == expected._fm_seq_len
+    assert (
+        actual._fm_seq_len == expected._fm_seq_len
+    )  # noqa: leading-underscore  # production name
     assert actual.encoder_seq_len == expected.encoder_seq_len
 
 
-def _fill_reserved_state(acoustic_tail, value: float) -> None:
+def fill_reserved_state(acoustic_tail, value: float) -> None:
     slot = acoustic_tail.spec.num_slots
     for name, slot_dim in SLOT_DIMS.items():
         tensor = getattr(acoustic_tail, name)
@@ -507,9 +509,11 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order(
         optimize=True,
     )
 
-    _copy_live_state(eager, graph)
+    copy_live_state(eager, graph)
     for slot in range(slots):
-        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = 15
+        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = (
+            15  # noqa: leading-underscore  # production name
+        )
         eager.encoder_seq_len[slot] = graph.encoder_seq_len[slot] = 4
         eager.initialize_slot_rng(slot, 100 + slot)
         graph.initialize_slot_rng(slot, 100 + slot)
@@ -557,7 +561,7 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
         pad_to_bucket=True,
     )
 
-    _copy_live_state(eager, graph)
+    copy_live_state(eager, graph)
     assert [eager.acquire_slot() for _ in range(slots)] == list(range(slots))
     assert [graph.acquire_slot() for _ in range(slots)] == list(range(slots))
     for slot in range(slots):
@@ -590,11 +594,11 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
                 for slot in slot_order:
                     acoustic_tail._fm_seq_len[slot] = (
                         32 * acoustic_tail.spec.unit_len + acoustic_tail.spec.window_len
-                    )
+                    )  # noqa: leading-underscore  # production name
                     acoustic_tail.encoder_seq_len[slot] = (
                         32 * acoustic_tail.encoder_block + 1
                     )
-        _fill_reserved_state(graph, 0.25 + replay_index)
+        fill_reserved_state(graph, 0.25 + replay_index)
         hidden = torch.randn(len(slot_order), FM_HIDDEN, device=device, dtype=dtype)
         eager_latent = eager.sample_patches(slot_order, fm_hidden_rows=hidden)
         graph_latent = graph.sample_patches(slot_order, fm_hidden_rows=hidden)
@@ -606,7 +610,7 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
         eager_feedback = eager.encode_feedback(slot_order, latent)
         graph_feedback = graph.encode_feedback(slot_order, latent)
         torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
-        _assert_live_state_close(graph, eager)
+        assert_live_state_close(graph, eager)
         if replay_index == 3:
             for captured in shared_graphs:
                 assert captured.inputs["slots"].tolist() == full
@@ -662,7 +666,7 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
         rtol=2e-2,
         atol=2e-2,
     )
-    _assert_live_state_close(graph, eager)
+    assert_live_state_close(graph, eager)
 
 
 @pytest.mark.accelerator
