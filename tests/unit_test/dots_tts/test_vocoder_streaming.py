@@ -176,8 +176,8 @@ def test_slot_pool_rejects_mixed_step_lengths() -> None:
 def test_slot_pool_final_audio_matches_single_row_redecode(
     reuse_final_audio: bool,
 ) -> None:
-    baseline_inference = _FakeInference()
-    candidate_inference = _FakeInference()
+    baseline_inference = FakeInference()
+    candidate_inference = FakeInference()
     baseline = DotsVocoderSlotPool(baseline_inference, num_slots=1, chunk_size=6)
     candidate = DotsVocoderSlotPool(
         candidate_inference,
@@ -188,7 +188,7 @@ def test_slot_pool_final_audio_matches_single_row_redecode(
     baseline_slot = baseline.acquire()
     candidate_slot = candidate.acquire()
     for frames in (1, 3, 6, 2):
-        latents = _patch(float(frames), frames=frames)
+        latents = patch(float(frames), frames=frames)
         expected = baseline.step({baseline_slot: latents})[baseline_slot]
         actual = candidate.step({candidate_slot: latents})[candidate_slot]
         assert torch.equal(actual, expected)
@@ -197,20 +197,20 @@ def test_slot_pool_final_audio_matches_single_row_redecode(
 
 
 def test_slot_pool_final_audio_survives_other_rows_and_clears_on_release() -> None:
-    inference = _FakeInference()
+    inference = FakeInference()
     pool = DotsVocoderSlotPool(
         inference, num_slots=2, chunk_size=6, reuse_final_audio=True
     )
     first_slot = pool.acquire()
     second_slot = pool.acquire()
-    pool.step({first_slot: _patch(2.0)})
-    pool.step({second_slot: _patch(5.0)})
+    pool.step({first_slot: patch(2.0)})
+    pool.step({second_slot: patch(5.0)})
     assert torch.equal(pool.flush(first_slot), torch.full((1, 1, 2), 3.0))
     pool.release(second_slot)
     reused_slot = pool.acquire()
     assert reused_slot == second_slot
     assert pool.flush(reused_slot).shape == (1, 1, 0)
-    pool.step({reused_slot: _patch(8.0)})
+    pool.step({reused_slot: patch(8.0)})
     assert torch.equal(pool.flush(reused_slot), torch.full((1, 1, 2), 9.0))
     assert pool.flush(reused_slot).shape == (1, 1, 0)
     assert inference.decoder_batches == [1, 1, 1]
@@ -220,16 +220,16 @@ def test_slot_pool_final_audio_survives_other_rows_and_clears_on_release() -> No
 
 
 def test_slot_pool_batched_rows_redecode_final_audio() -> None:
-    inference = _FakeInference()
+    inference = FakeInference()
     pool = DotsVocoderSlotPool(
         inference, num_slots=3, chunk_size=6, reuse_final_audio=True
     )
     first_slot = pool.acquire()
     second_slot = pool.acquire()
     third_slot = pool.acquire()
-    pool.step({first_slot: _patch(2.0)})
-    pool.step({first_slot: _patch(5.0), second_slot: _patch(8.0)})
-    pool.step({second_slot: _patch(11.0), third_slot: _patch(14.0)})
+    pool.step({first_slot: patch(2.0)})
+    pool.step({first_slot: patch(5.0), second_slot: patch(8.0)})
+    pool.step({second_slot: patch(11.0), third_slot: patch(14.0)})
     for slot, value in ((first_slot, 6.0), (second_slot, 12.0), (third_slot, 15.0)):
         assert torch.equal(pool.flush(slot), torch.full((1, 1, 2), value))
         assert pool.flush(slot).shape == (1, 1, 0)
@@ -237,10 +237,12 @@ def test_slot_pool_batched_rows_redecode_final_audio() -> None:
 
 
 def test_streaming_vocoder_forwards_final_audio_reuse() -> None:
-    vocoder = DotsTTSStreamingVocoder(_codec(), optimize=True, reuse_final_audio=True)
+    vocoder = DotsTTSStreamingVocoder(
+        make_codec(), optimize=True, reuse_final_audio=True
+    )
     pool = vocoder.ensure_slot_pool()
     slot = pool.acquire()
-    pool.step({slot: _patch(2.0)})
+    pool.step({slot: patch(2.0)})
     assert torch.equal(pool.flush(slot), torch.full((1, 1, 2), 3.0))
     assert vocoder.codec.inference.decoder_batches == [1]
 
