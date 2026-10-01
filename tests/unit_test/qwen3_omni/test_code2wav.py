@@ -885,7 +885,7 @@ def feed(
     *,
     stream: bool,
 ) -> None:
-    meta = {"stream": stream}
+    meta: dict[str, object] = {"stream": stream}
     for i, code in enumerate(codes):
         scheduler.handle_stream_chunk(
             request_id,

@@ -11,13 +11,20 @@ import pytest
 from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
+from typing_extensions import TypedDict, Unpack
 
 from sglang_omni.scheduling.generation_batch_policy import (
+    GenerationStageDefaults,
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
 from sglang_omni.vendor.sglang.server_args import override_server_args
+
+
+class AttentionBackendOverrides(TypedDict, total=False):
+    attention_backend: str
+    prefill_attention_backend: str
 
 
 def make_server_args(
@@ -107,7 +114,7 @@ def test_full_prefill_backend_needs_the_model_to_declare_it() -> None:
 
 
 def test_full_prefill_backend_needs_an_attention_backend_that_captures_it() -> None:
-    def full_policy(**attention: Any) -> None:
+    def full_policy(**attention: Unpack[AttentionBackendOverrides]) -> None:
         validate_generation_batch_policy(
             model_name="Test TTS",
             server_args=make_server_args(
@@ -546,7 +553,7 @@ def test_overrides_derive_prefill_max_bs_from_buckets() -> None:
 
 
 def test_disable_overrides_win_over_default_prefill_backend() -> None:
-    stage_defaults = {
+    stage_defaults: GenerationStageDefaults = {
         "cuda_graph_backend_prefill": "breakable",
         "cuda_graph_bs_prefill": [128, 256],
     }
@@ -581,7 +588,10 @@ def test_disable_overrides_win_over_default_prefill_backend() -> None:
 
 def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
     from sglang_omni.utils import cuda_graph_batch_validator
 
     infra_kwargs_seen: list[dict[str, Any]] = []
@@ -650,7 +660,7 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             del dtype
             return {"max_running_requests": 4}
 
@@ -688,7 +698,7 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     class FullBuilder(PolicyBuilder):
         supports_full_prefill_cuda_graph = True
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             del dtype
             return {
                 "max_running_requests": 4,
@@ -726,7 +736,10 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
 
 def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
     from sglang_omni.scheduling import sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
 
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
         del checkpoint_dir, context_length
@@ -747,7 +760,7 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             del dtype
             return {"max_running_requests": 4}
 

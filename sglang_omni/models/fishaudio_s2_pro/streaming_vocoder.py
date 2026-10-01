@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
+from typing_extensions import NotRequired, TypedDict
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -17,7 +18,24 @@ from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
+if TYPE_CHECKING:
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
+        DAC,
+    )
+else:
+    pass
+
 logger = logging.getLogger(__name__)
+
+S2ProFinalAudioData = TypedDict(
+    "S2ProFinalAudioData",
+    {
+        "modality": str,
+        "sample_rate": int,
+        "usage": NotRequired[object],
+        "finish_reason": NotRequired[object],
+    },
+)
 
 
 @dataclass
@@ -31,7 +49,7 @@ class StreamVocoderState:
 
 
 def resolve_stream_overlap_tokens(
-    codec: Any, requested_overlap_tokens: int | None
+    codec: "DAC", requested_overlap_tokens: int | None
 ) -> int:
     if requested_overlap_tokens is not None:
         if requested_overlap_tokens < 0:
@@ -55,13 +73,13 @@ def build_stream_vocoder_chunk(
     state: StreamVocoderState,
     codes: torch.Tensor,
     *,
-    codec: Any,
+    codec: "DAC",
     device: torch.device,
     stream_stride: int,
     stream_followup_stride: int,
     stream_overlap_tokens: int,
     stream_crossfade_samples: int,
-) -> dict[str, Any] | None:
+) -> dict[str, bytes | list[int] | str | int] | None:
     assert codes.ndim == 2
 
     state.codes.append(
@@ -93,11 +111,11 @@ def build_stream_vocoder_chunk(
 def flush_stream_vocoder_chunk(
     state: StreamVocoderState,
     *,
-    codec: Any,
+    codec: "DAC",
     device: torch.device,
     stream_overlap_tokens: int,
     stream_crossfade_samples: int,
-) -> dict[str, Any] | None:
+) -> dict[str, bytes | list[int] | str | int] | None:
     pending_tail = state.pending_tail
     has_codes = bool(state.codes)
     has_pending_tail = pending_tail is not None and pending_tail.numel() > 0
@@ -133,12 +151,12 @@ def flush_stream_vocoder_chunk(
 def _build_stream_vocoder_chunk(
     state: StreamVocoderState,
     *,
-    codec: Any,
+    codec: "DAC",
     device: torch.device,
     stream_overlap_tokens: int,
     stream_crossfade_samples: int,
     is_final: bool,
-) -> dict[str, Any] | None:
+) -> dict[str, bytes | list[int] | str | int] | None:
     if not state.codes:
         return None
     else:
@@ -313,7 +331,7 @@ def trim_retained_stream_codes(
 
 def build_audio_chunk_payload(
     audio_data: torch.Tensor, *, sample_rate: int
-) -> dict[str, Any]:
+) -> dict[str, bytes | list[int] | str | int]:
     return audio_waveform_payload(
         audio_data,
         sample_rate=sample_rate,
@@ -327,7 +345,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
 
     def __init__(
         self,
-        codec: Any,
+        codec: "DAC",
         *,
         device: str,
         stream_stride: int = 40,
@@ -336,7 +354,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         stream_crossfade_samples: int = 512,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
-    ):
+    ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0 or max_batch_size <= 0:
             raise ValueError(
                 "stream_stride, stream_followup_stride, and max_batch_size must be > 0"
@@ -460,7 +478,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
             pass
 
         final_state = S2ProState.from_dict(payload.data)
-        final_data: dict[str, Any] = {
+        final_data: S2ProFinalAudioData = {
             "modality": "audio",
             "sample_rate": self.codec.sample_rate,
         }
