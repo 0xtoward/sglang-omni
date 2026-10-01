@@ -61,6 +61,7 @@ class FakeInference:
             h=SimpleNamespace(latent_dim=latent_dim, causal=True),
         )
         self.batch_steps: list[tuple[int, int]] = []
+        self.decoder_batches: list[int] = []
         self.latent_dim = latent_dim
         self.hop_size = hop_size
 
@@ -94,9 +95,11 @@ class FakeInference:
     def _decode_stream_window(
         self, window: torch.Tensor
     ) -> torch.Tensor:  # noqa: leading-underscore  # upstream name
-        return torch.zeros(
-            window.size(0), 1, window.size(-1) * self.hop_size, dtype=window.dtype
+        self.decoder_batches.append(window.size(0))
+        waveform = window.mean(dim=1, keepdim=True).repeat_interleave(
+            self.hop_size, dim=-1
         )
+        return waveform + window.size(0)
 
 
 def make_codec(*, latent_dim: int = 5, patch_size: int = 3) -> SimpleNamespace:
@@ -167,6 +170,79 @@ def test_slot_pool_rejects_mixed_step_lengths() -> None:
     b = pool.acquire()
     with pytest.raises(ValueError, match="uniform latent length"):
         pool.step({a: torch.zeros(1, 2, 5), b: torch.zeros(1, 3, 5)})
+
+
+@pytest.mark.parametrize("reuse_final_audio", [False, True])
+def test_slot_pool_final_audio_matches_single_row_redecode(
+    reuse_final_audio: bool,
+) -> None:
+    baseline_inference = _FakeInference()
+    candidate_inference = _FakeInference()
+    baseline = DotsVocoderSlotPool(baseline_inference, num_slots=1, chunk_size=6)
+    candidate = DotsVocoderSlotPool(
+        candidate_inference,
+        num_slots=1,
+        chunk_size=6,
+        reuse_final_audio=reuse_final_audio,
+    )
+    baseline_slot = baseline.acquire()
+    candidate_slot = candidate.acquire()
+    for frames in (1, 3, 6, 2):
+        latents = _patch(float(frames), frames=frames)
+        expected = baseline.step({baseline_slot: latents})[baseline_slot]
+        actual = candidate.step({candidate_slot: latents})[candidate_slot]
+        assert torch.equal(actual, expected)
+    assert torch.equal(candidate.flush(candidate_slot), baseline.flush(baseline_slot))
+    assert candidate_inference.decoder_batches == [1] * (4 if reuse_final_audio else 5)
+
+
+def test_slot_pool_final_audio_survives_other_rows_and_clears_on_release() -> None:
+    inference = _FakeInference()
+    pool = DotsVocoderSlotPool(
+        inference, num_slots=2, chunk_size=6, reuse_final_audio=True
+    )
+    first_slot = pool.acquire()
+    second_slot = pool.acquire()
+    pool.step({first_slot: _patch(2.0)})
+    pool.step({second_slot: _patch(5.0)})
+    assert torch.equal(pool.flush(first_slot), torch.full((1, 1, 2), 3.0))
+    pool.release(second_slot)
+    reused_slot = pool.acquire()
+    assert reused_slot == second_slot
+    assert pool.flush(reused_slot).shape == (1, 1, 0)
+    pool.step({reused_slot: _patch(8.0)})
+    assert torch.equal(pool.flush(reused_slot), torch.full((1, 1, 2), 9.0))
+    assert pool.flush(reused_slot).shape == (1, 1, 0)
+    assert inference.decoder_batches == [1, 1, 1]
+    pool.release(first_slot)
+    with pytest.raises(RuntimeError, match="free slot"):
+        pool.flush(first_slot)
+
+
+def test_slot_pool_batched_rows_redecode_final_audio() -> None:
+    inference = _FakeInference()
+    pool = DotsVocoderSlotPool(
+        inference, num_slots=3, chunk_size=6, reuse_final_audio=True
+    )
+    first_slot = pool.acquire()
+    second_slot = pool.acquire()
+    third_slot = pool.acquire()
+    pool.step({first_slot: _patch(2.0)})
+    pool.step({first_slot: _patch(5.0), second_slot: _patch(8.0)})
+    pool.step({second_slot: _patch(11.0), third_slot: _patch(14.0)})
+    for slot, value in ((first_slot, 6.0), (second_slot, 12.0), (third_slot, 15.0)):
+        assert torch.equal(pool.flush(slot), torch.full((1, 1, 2), value))
+        assert pool.flush(slot).shape == (1, 1, 0)
+    assert inference.decoder_batches == [1, 2, 2, 1, 1, 1]
+
+
+def test_streaming_vocoder_forwards_final_audio_reuse() -> None:
+    vocoder = DotsTTSStreamingVocoder(_codec(), optimize=True, reuse_final_audio=True)
+    pool = vocoder.ensure_slot_pool()
+    slot = pool.acquire()
+    pool.step({slot: _patch(2.0)})
+    assert torch.equal(pool.flush(slot), torch.full((1, 1, 2), 3.0))
+    assert vocoder.codec.inference.decoder_batches == [1]
 
 
 def test_streaming_coalesces_equal_t_requests_into_one_pool_step() -> None:

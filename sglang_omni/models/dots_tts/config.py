@@ -22,6 +22,7 @@ class DotsVocoderFactoryArgs(FactoryArgs):
 
     stream_slots: int | None = Field(default=None, ge=1)
     enable_alias_free_fusion: bool = False
+    reuse_final_audio: bool = False
 
 
 class DotsVocoderStageConfig(StageConfig):

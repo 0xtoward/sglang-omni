@@ -515,6 +515,7 @@ def create_sglang_latent_engine_executor(
 def create_vocoder_executor(
     model_path: str,
     *,
+    reuse_final_audio: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
     optimize: bool = True,
@@ -541,6 +542,7 @@ def create_vocoder_executor(
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         stream_slots=stream_slots,
+        reuse_final_audio=reuse_final_audio,
     )
     # note (guozhihao-224): allocate the slot pool at setup so OOM / shape
     # mismatch surface before readiness, not on the first live chunk.

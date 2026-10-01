@@ -175,6 +175,7 @@ class DotsTTSStreamingVocoder(
         codec: DotsAudioCodec,
         *,
         optimize: bool,
+        reuse_final_audio: bool = False,
         merge_steps: int = 4,
         max_batch_size: int = 4,
         max_batch_wait_ms: int = 2,
@@ -199,6 +200,7 @@ class DotsTTSStreamingVocoder(
             pass
         self.codec = codec
         self.optimize = bool(optimize)
+        self.reuse_final_audio = reuse_final_audio
         self.merge_steps = int(merge_steps) if optimize else 1
         self.stream_slots = int(stream_slots)
         self.batch_vocoder = DotsTTSBatchVocoder(codec)
@@ -433,13 +435,13 @@ class DotsTTSStreamingVocoder(
                 self.codec.inference,
                 num_slots=self.stream_slots,
                 chunk_size=self.codec.patch_size * self.merge_steps,
+                reuse_final_audio=self.reuse_final_audio,
             )
             logger.info(
-                "dots.tts streaming vocoder slot pool ready: "
-                "slots=%d merge_steps=%d chunk_size=%d",
-                self.stream_slots,
-                self.merge_steps,
-                self.codec.patch_size * self.merge_steps,
+                f"dots.tts streaming vocoder slot pool ready: "
+                f"slots={self.stream_slots} merge_steps={self.merge_steps} "
+                f"chunk_size={self.codec.patch_size * self.merge_steps} "
+                f"reuse_final_audio={self.reuse_final_audio}"
             )
         else:
             pass

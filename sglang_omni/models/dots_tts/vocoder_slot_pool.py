@@ -89,6 +89,7 @@ class DotsVocoderSlotPool:
         *,
         num_slots: int,
         chunk_size: int,
+        reuse_final_audio: bool = False,
     ) -> None:
         if num_slots < 1:
             raise ValueError(f"num_slots must be >= 1, got {num_slots}")
@@ -120,6 +121,8 @@ class DotsVocoderSlotPool:
         self.emitted_frames = [0] * self.num_slots
         self.free_slots = list(reversed(range(self.num_slots)))
         self.in_use: set[int] = set()
+        self.reuse_final_audio = reuse_final_audio
+        self.pending_audio_tails: dict[int, torch.Tensor] = {}
 
     def acquire(self) -> int:
         if not self.free_slots:
@@ -230,6 +233,22 @@ class DotsVocoderSlotPool:
         for row, slot in enumerate(slots):
             self.total_frames[slot] += step_t
             out[slot] = self.slice_audio(slot, audio_window[row : row + 1], final=False)
+            # note (0xtoward): batched convolutions can round differently from a B1 flush.
+            if self.reuse_final_audio and len(slots) == 1:
+                window_start_frames = self.total_frames[slot] - min(
+                    self.total_frames[slot], self.window_size
+                )
+                start_samples = (
+                    self.emitted_frames[slot] - window_start_frames
+                ) * self.hop_size
+                end_samples = (
+                    self.total_frames[slot] - window_start_frames
+                ) * self.hop_size
+                self.pending_audio_tails[slot] = audio_window[
+                    row : row + 1, ..., start_samples:end_samples
+                ].clone()
+            else:
+                self.pending_audio_tails.pop(slot, None)
         return out
 
     @torch.no_grad()
@@ -237,12 +256,22 @@ class DotsVocoderSlotPool:
         slot = int(slot)
         if slot not in self.in_use:
             raise RuntimeError(f"dots.tts streaming flush referenced free slot {slot}")
+        elif (
+            self.reuse_final_audio
+            and self.emitted_frames[slot] == self.total_frames[slot]
+        ):
+            self.pending_audio_tails.pop(slot, None)
+            return self.window.new_zeros((1, 1, 0))
         else:
-            pass
-        audio_window = self.inference._decode_stream_window(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            self.window[slot : slot + 1]
-        )
-        return self.slice_audio(slot, audio_window, final=True)
+            audio_tail = self.pending_audio_tails.pop(slot, None)
+            if audio_tail is None:
+                audio_window = self.inference._decode_stream_window(  # noqa: leading-underscore  # AudioVAE API spelling
+                    self.window[slot : slot + 1]
+                )
+                return self.slice_audio(slot, audio_window, final=True)
+            else:
+                self.emitted_frames[slot] = self.total_frames[slot]
+                return audio_tail
 
     def reset_slot(self, slot: int) -> None:
         self.lstm_h[:, slot].zero_()
@@ -250,6 +279,7 @@ class DotsVocoderSlotPool:
         self.window[slot].zero_()
         self.total_frames[slot] = 0
         self.emitted_frames[slot] = 0
+        self.pending_audio_tails.pop(slot, None)
 
     def slice_audio(
         self, slot: int, audio_window: torch.Tensor, *, final: bool
