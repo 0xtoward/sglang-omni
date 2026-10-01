@@ -202,8 +202,8 @@ def test_graph_batch_buckets_include_deployment_maximum(
 
 @pytest.mark.parametrize("optimize", [False, True])
 def test_padding_request_does_not_allocate_on_cpu(optimize: bool) -> None:
-    acoustic_tail = _build_tail(
-        _TailModel().eval(),
+    acoustic_tail = build_tail(
+        TailModel().eval(),
         slots=12,
         patch_capacity=33,
         optimize=optimize,
@@ -544,14 +544,14 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
     torch.manual_seed(1234)
     device = torch.device("cuda")
     dtype = torch.bfloat16
-    eager_model = _TailModel().eval().to(device=device, dtype=dtype)
+    eager_model = TailModel().eval().to(device=device, dtype=dtype)
     graph_model = copy.deepcopy(eager_model)
     torch.manual_seed(9)
-    eager = _build_tail(
+    eager = build_tail(
         eager_model, slots=slots, device=device, dtype=dtype, patch_capacity=40
     )
     torch.manual_seed(9)
-    graph = _build_tail(
+    graph = build_tail(
         graph_model,
         slots=slots,
         device=device,
@@ -687,12 +687,12 @@ def test_inactive_padding_preserves_cuda_pool_storage(
         pytest.skip("CUDA is required")
     device = torch.device("cuda")
     dtype = torch.bfloat16
-    model = _TailModel().eval().to(device=device, dtype=dtype)
+    model = TailModel().eval().to(device=device, dtype=dtype)
     graph_model = copy.deepcopy(model)
-    baseline = _build_tail(
+    baseline = build_tail(
         model, slots=slots, device=device, dtype=dtype, patch_capacity=33
     )
-    actual = _build_tail(
+    actual = build_tail(
         graph_model,
         slots=slots,
         device=device,
