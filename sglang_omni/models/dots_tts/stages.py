@@ -518,6 +518,7 @@ def create_vocoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     optimize: bool = True,
+    enable_alias_free_fusion: bool = False,
     vocoder_merge_steps: int = 4,
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 2,
@@ -532,6 +533,7 @@ def create_vocoder_executor(
     codec = load_dots_audio_codec(
         model_path, device=str(resolve_concrete_device(device, gpu_id))
     )
+    codec.configure_alias_free_fusion(optimize and enable_alias_free_fusion)
     vocoder = DotsTTSStreamingVocoder(
         codec,
         optimize=optimize,
@@ -544,15 +546,11 @@ def create_vocoder_executor(
     # mismatch surface before readiness, not on the first live chunk.
     vocoder.ensure_slot_pool()
     logging.getLogger(__name__).info(
-        "dots.tts vocoder backend: slot-pooled eager streaming "
-        "(optimize=%s, merge_steps=%d, stream_slots=%d, batch_size=%d, "
-        "stream_batch_cap=%d, wait_ms=%d)",
-        optimize,
-        vocoder.merge_steps,
-        vocoder.stream_slots,
-        max_batch_size,
-        vocoder.stream_chunk_batch_max,
-        max_batch_wait_ms,
+        f"dots.tts vocoder backend: slot-pooled eager streaming "
+        f"(optimize={optimize}, merge_steps={vocoder.merge_steps}, "
+        f"stream_slots={vocoder.stream_slots}, batch_size={max_batch_size}, "
+        f"stream_batch_cap={vocoder.stream_chunk_batch_max}, "
+        f"wait_ms={max_batch_wait_ms})"
     )
     return vocoder
 
