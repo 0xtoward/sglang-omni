@@ -17,11 +17,13 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
+from sglang_omni.models.qwen3_omni.components.code2wav import Qwen3OmniCode2Wav
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavCudaGraphRunner,
     Code2WavRunResult,
     GraphKey,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
@@ -109,7 +111,7 @@ def batched_graph_keys(
 
 def load_code2wav_model(
     model_path: str, *, device: str = "cuda", dtype: str | None = None
-):
+) -> Qwen3OmniCode2Wav:
     """Load Code2Wav model from HF checkpoint."""
     from transformers import AutoConfig
 
@@ -118,13 +120,7 @@ def load_code2wav_model(
     torch_dtype = resolve_dtype(dtype)
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     code2wav_config = config.code2wav_config
-    from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
-        Qwen3OmniMoeCode2Wav,
-    )
-
-    model = Qwen3OmniMoeCode2Wav._from_config(
-        code2wav_config
-    )  # noqa: leading-underscore
+    model = Qwen3OmniCode2Wav._from_config(code2wav_config)  # noqa: leading-underscore
     model = load_module(
         model,
         model_path,
@@ -133,6 +129,10 @@ def load_code2wav_model(
         device=device,
         strict=False,
     )
+    if current_platform.is_cuda() and torch.device(device).type == "cuda":
+        model.use_channels_last()
+    else:
+        pass
     return model.eval()
 
 
