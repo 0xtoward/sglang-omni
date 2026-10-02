@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Literal
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.utils.cuda_staging import indices_to_device
+
 if TYPE_CHECKING:
     from dots_tts.modules.vocoder.vocoder_inference import VocoderInference
 else:
@@ -336,7 +338,7 @@ class StreamingDecoder:
 
     @torch.no_grad()
     def decode_stream(self, frames: torch.Tensor, slots: list[int]) -> torch.Tensor:
-        slot_index = host_indices(slots, self.device)
+        slot_index = indices_to_device(slots, self.device)
         key = ("stream", int(frames.shape[0]), int(frames.shape[-1]))
         return self.replay(key, (frames.to(self.dtype), slot_index))
 
@@ -355,9 +357,9 @@ class StreamingDecoder:
             pass
         inputs = (
             window[..., :frames].to(self.dtype),
-            host_indices(slots, self.device),
-            host_indices(stable, self.device),
-            host_indices(valid, self.device),
+            indices_to_device(slots, self.device),
+            indices_to_device(stable, self.device),
+            indices_to_device(valid, self.device),
         )
         return self.replay(("window", int(window.shape[0]), frames), inputs)
 
@@ -390,16 +392,6 @@ def run_block(block: torch.nn.Module, value: torch.Tensor) -> torch.Tensor:
         hidden = causal_conv(first, first_activation(value))
         value = causal_conv(second, second_activation(hidden)) + value
     return value
-
-
-def host_indices(values: list[int], device: torch.device) -> torch.Tensor:
-    """Copy host indices through pinned memory so the current stream keeps running."""
-    if device.type == "cuda":
-        return torch.tensor(values, dtype=torch.long, pin_memory=True).to(
-            device, non_blocking=True
-        )
-    else:
-        return torch.tensor(values, dtype=torch.long, device=device)
 
 
 __all__ = ["StreamingDecoder"]
