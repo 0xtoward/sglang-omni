@@ -54,5 +54,6 @@ stages:
       optimize: true
       enable_stateful_codec_decoder: true
       enable_alias_free_fusion: true
+      enable_stream_latent_graph: true
       max_batch_size: 4
       max_batch_wait_ms: 2

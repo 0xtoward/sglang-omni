@@ -36,6 +36,8 @@ class DotsVocoderFactoryArgs(FactoryArgs):
     stream_slots: int | None = Field(default=None, ge=1)
     enable_stateful_codec_decoder: bool = False
     enable_alias_free_fusion: bool = False
+    enable_stream_latent_graph: bool = False
+    stream_latent_cudnn_lstm: bool = False
 
 
 class DotsVocoderStageConfig(StageConfig):
