@@ -26,6 +26,7 @@ from sglang_omni.models.dots_tts.incremental_codec_cuda_graph import (
 )
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.request_builders import DotsTTSSGLangRequestData
+from sglang_omni.models.dots_tts.stream_latent_graphs import StreamLatentGraphs
 from sglang_omni.models.dots_tts.vocoder import DotsTTSStreamingVocoder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -555,6 +556,8 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
     enable_stateful_codec_decoder: bool = False,
+    enable_stream_latent_graph: bool = False,
+    stream_latent_cudnn_lstm: bool = False,
 ) -> DotsTTSStreamingVocoder:
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -588,6 +591,20 @@ def create_vocoder_executor(
                 for patches in range(1, vocoder.merge_steps + 1)
             ],
             cold_window_frames=sorted({*COLD_WINDOW_BUCKET_FRAMES, pool.window_size}),
+        )
+    else:
+        pass
+    if enable_stream_latent_graph:
+        codec.inference._decode_stream_latents = (
+            StreamLatentGraphs(  # noqa: leading-underscore  # upstream spelling
+                codec.inference,
+                max_batch_size=max_batch_size,
+                frame_counts=[
+                    codec.patch_size * patches
+                    for patches in range(1, vocoder.merge_steps + 1)
+                ],
+                cudnn_lstm=stream_latent_cudnn_lstm,
+            )
         )
     else:
         pass
