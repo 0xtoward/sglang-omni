@@ -21,6 +21,7 @@ from sglang_omni.models.dots_tts.codec import (
 from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.request_builders import DotsTTSSGLangRequestData
+from sglang_omni.models.dots_tts.streaming_decoder import StreamingDecoder
 from sglang_omni.models.dots_tts.vocoder import DotsTTSStreamingVocoder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -520,6 +521,7 @@ def create_vocoder_executor(
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
+    enable_streaming_decoder: bool = False,
 ) -> DotsTTSStreamingVocoder:
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -540,7 +542,20 @@ def create_vocoder_executor(
     )
     # note (guozhihao-224): allocate the slot pool at setup so OOM / shape
     # mismatch surface before readiness, not on the first live chunk.
-    vocoder.ensure_slot_pool()
+    pool = vocoder.ensure_slot_pool()
+    if enable_streaming_decoder:
+        pool.streaming = StreamingDecoder(
+            codec.inference,
+            num_slots=pool.num_slots,
+            max_batch_size=max_batch_size,
+            stream_frames=[
+                codec.patch_size * patches
+                for patches in range(1, vocoder.merge_steps + 1)
+            ],
+            window_frames=sorted({8, 16, 24, 32, pool.window_size}),
+        )
+    else:
+        pass
     logging.getLogger(__name__).info(
         "dots.tts vocoder backend: slot-pooled eager streaming "
         "(optimize=%s, merge_steps=%d, stream_slots=%d, batch_size=%d, "
