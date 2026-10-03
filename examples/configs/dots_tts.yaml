@@ -60,5 +60,10 @@ stages:
       enable_stateful_codec_decoder: true
       enable_alias_free_fusion: true
       enable_stream_latent_graph: true
+      # note (0xtoward): 4-patch warm steps until a stream received 10 patches,
+      # then up to 8, so a request needs fewer vocoder steps.
+      vocoder_merge_steps: 8
+      vocoder_initial_merge_steps: 4
+      vocoder_initial_merge_patches: 10
       max_batch_size: 4
       max_batch_wait_ms: 2

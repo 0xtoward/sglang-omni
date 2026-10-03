@@ -176,6 +176,8 @@ class DotsTTSStreamingVocoder(
         *,
         optimize: bool,
         merge_steps: int = 4,
+        initial_merge_steps: int | None = None,
+        initial_merge_patches: int = 0,
         max_batch_size: int = 4,
         max_batch_wait_ms: int = 2,
         stream_slots: int = 16,
@@ -183,6 +185,15 @@ class DotsTTSStreamingVocoder(
     ) -> None:
         if merge_steps < 1:
             raise ValueError("dots.tts vocoder merge_steps must be positive")
+        else:
+            pass
+        if (
+            initial_merge_steps is not None
+            and not 1 <= initial_merge_steps <= merge_steps
+        ):
+            raise ValueError(
+                "dots.tts vocoder initial_merge_steps must be in [1, merge_steps]"
+            )
         else:
             pass
         if max_batch_size < 1:
@@ -200,6 +211,13 @@ class DotsTTSStreamingVocoder(
         self.codec = codec
         self.optimize = bool(optimize)
         self.merge_steps = int(merge_steps) if optimize else 1
+        # note (0xtoward): early warm steps stay small to keep ahead of playback.
+        self.initial_merge_steps = (
+            int(initial_merge_steps)
+            if optimize and initial_merge_steps is not None
+            else self.merge_steps
+        )
+        self.initial_merge_patches = int(initial_merge_patches)
         self.stream_slots = int(stream_slots)
         self.batch_vocoder = DotsTTSBatchVocoder(codec)
         self.slot_pool = slot_pool
@@ -475,14 +493,20 @@ class DotsTTSStreamingVocoder(
             return True
         else:
             pass
-        return len(state.pending) >= self.merge_steps
+        return len(state.pending) >= self.warm_merge_steps(state)
 
     def take_patches(self, state: DotsStreamState) -> int:
         if state.received_patches <= 2:
             return 1
         else:
             pass
-        return min(self.merge_steps, len(state.pending))
+        return min(self.warm_merge_steps(state), len(state.pending))
+
+    def warm_merge_steps(self, state: DotsStreamState) -> int:
+        if state.received_patches <= self.initial_merge_patches:
+            return self.initial_merge_steps
+        else:
+            return self.merge_steps
 
     def step_frames(self, state: DotsStreamState) -> int:
         return self.take_patches(state) * self.codec.patch_size
