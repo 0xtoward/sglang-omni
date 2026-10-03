@@ -347,6 +347,41 @@ def dit_block_step(
     return value + gate_ffn.unsqueeze(1) * tanh_gelu_mlp(block.ffn, ffn_in)
 
 
+def dit_history_block_step(
+    block: nn.Module,
+    value: torch.Tensor,
+    block_mod: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    rotary_cos: torch.Tensor,
+    rotary_sin: torch.Tensor,
+    num_heads: int,
+    head_dim: int,
+) -> torch.Tensor:
+    """One modulated DiT block over the prompt history, storing its keys and values."""
+    shift_attn, scale_attn, gate_attn, shift_ffn, scale_ffn, gate_ffn = block_mod.chunk(
+        6, dim=1
+    )
+    attn_in = block.norm1(value) * (1 + scale_attn.unsqueeze(1)) + shift_attn.unsqueeze(
+        1
+    )
+    output, key, item = project_attention(
+        block.attn,
+        attn_in,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        rotary_cos=rotary_cos,
+        rotary_sin=rotary_sin,
+        is_causal=True,
+    )
+    tokens = value.shape[1]
+    keys[:, :, :tokens].copy_(key)
+    values[:, :, :tokens].copy_(item)
+    value = value + gate_attn.unsqueeze(1) * output
+    ffn_in = block.norm2(value) * (1 + scale_ffn.unsqueeze(1)) + shift_ffn.unsqueeze(1)
+    return value + gate_ffn.unsqueeze(1) * block.ffn(ffn_in)
+
+
 def dit_block_step_cached(
     block: nn.Module,
     value: torch.Tensor,
@@ -730,9 +765,13 @@ class DotsTtsAcousticTail:
             self.encoder_step.layer_step_cached = torch.compile(
                 encoder_layer_step_cached, dynamic=True
             )
+            self.compiled_dit_history_block_step = torch.compile(
+                dit_history_block_step, dynamic=True
+            )
         else:
             self.compiled_dit_block_step = dit_block_step
             self.compiled_dit_block_step_cached = dit_block_step_cached
+            self.compiled_dit_history_block_step = dit_history_block_step
         # note (0xtoward): Captured prefills avoid repeated host dispatch per request.
         self.prefill_graphs_enabled = self.cuda_graph_enabled and bool(prefill_graphs)
         # note (0xtoward): attend to the slot pools in place with one Triton kernel
@@ -903,7 +942,7 @@ class DotsTtsAcousticTail:
         # fills all of them with one multi-tensor copy instead of a copy per block.
         block_mod_width = 6 * int(self.dit.input_layer.out_features)
         self.block_mod_buffers = [
-            zeros(pool_rows, block_mod_width) for _ in self.dit.blocks
+            zeros(max(pool_rows, spec.nfe), block_mod_width) for _ in self.dit.blocks
         ]
 
         dit_query = 2 * spec.unit_len
@@ -1213,11 +1252,35 @@ class DotsTtsAcousticTail:
             return output
 
         with sdpa_kernel(_TAIL_SDPA_BACKENDS):
-            self.dit.run_modulated_blocks(
-                x=prefix,
-                all_mods=all_mods,
-                attention=collect,
-            )
+            if self.tail_block_compile:
+                block_mods, _ = self.dit.split_mods(all_mods)
+                contiguous_mods = [
+                    buffer[: all_mods.shape[0]] for buffer in self.block_mod_buffers
+                ]
+                torch._foreach_copy_(  # noqa: leading-underscore  # upstream name
+                    contiguous_mods, list(block_mods)
+                )
+                value = self.dit.input_layer(prefix)
+                for layer, (block, block_mod) in enumerate(
+                    zip(self.dit.blocks, contiguous_mods, strict=True)
+                ):
+                    value = self.compiled_dit_history_block_step(
+                        block,
+                        value,
+                        block_mod,
+                        keys[:, layer],
+                        values[:, layer],
+                        rotary_cos,
+                        rotary_sin,
+                        self.dit_heads,
+                        self.dit_head_dim,
+                    )
+            else:
+                self.dit.run_modulated_blocks(
+                    x=prefix,
+                    all_mods=all_mods,
+                    attention=collect,
+                )
 
     @torch.no_grad()
     def sample_patches(
