@@ -290,6 +290,36 @@ def test_streaming_groups_by_exact_frame_count() -> None:
     assert len({int(t.shape[1]) for t in plan.slot_latents.values()}) == 1
 
 
+def test_initial_merge_steps_hold_until_the_stream_received_enough_patches() -> None:
+    vocoder = DotsTTSStreamingVocoder(
+        make_codec(),
+        optimize=True,
+        merge_steps=4,
+        initial_merge_steps=2,
+        initial_merge_patches=6,
+        stream_slots=4,
+        slot_pool=RecordingSlotPool(),
+    )
+    state = vocoder.create_stream_state("request")
+    state.received_patches = 5
+    state.pending = [patch(), patch()]
+    assert vocoder.pending_ready(state)
+    assert vocoder.take_patches(state) == 2
+    state.received_patches = 7
+    assert not vocoder.pending_ready(state)
+    state.pending = [patch() for _ in range(5)]
+    assert vocoder.pending_ready(state)
+    assert vocoder.take_patches(state) == 4
+    with pytest.raises(ValueError, match="initial_merge_steps"):
+        DotsTTSStreamingVocoder(
+            make_codec(),
+            optimize=True,
+            merge_steps=4,
+            initial_merge_steps=5,
+            slot_pool=RecordingSlotPool(),
+        )
+
+
 def test_stream_done_flushes_and_releases_slot() -> None:
     pool = RecordingSlotPool()
     vocoder = DotsTTSStreamingVocoder(
