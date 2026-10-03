@@ -13,6 +13,7 @@ from einops import rearrange
 from torch import nn
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+from sglang_omni.utils.cuda_staging import tensor_to_device
 
 if TYPE_CHECKING:
     from dots_tts.modules.backbone.dit_inference import DiTSolver, DiTSolverState
@@ -285,7 +286,9 @@ class DotsTTSFlowHead(nn.Module):
                 self.tail.initialize_slot_rng(slot, rng)
                 g_cond = None
                 if speaker_embedding is not None:
-                    speaker_embedding = speaker_embedding.to(device=device, dtype=dtype)
+                    speaker_embedding = tensor_to_device(speaker_embedding, device).to(
+                        dtype=dtype
+                    )
                     g_cond = self.xvec_proj(speaker_embedding * float(speaker_scale))
                 else:
                     pass
@@ -295,7 +298,9 @@ class DotsTTSFlowHead(nn.Module):
                 all_mods = self.tail.dit.build_mods(
                     grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
                 )
-                prompt_latents = prompt_latents.to(device=device, dtype=dtype)
+                prompt_latents = tensor_to_device(prompt_latents, device).to(
+                    dtype=dtype
+                )
                 prompt_embeddings = self.tail.encode_prompt_patches(
                     slot, self.patch_encoder_input(prompt_latents)
                 )
@@ -335,7 +340,9 @@ class DotsTTSFlowHead(nn.Module):
         )
         g_cond = None
         if speaker_embedding is not None:
-            speaker_embedding = speaker_embedding.to(device=device, dtype=dtype)
+            speaker_embedding = tensor_to_device(speaker_embedding, device).to(
+                dtype=dtype
+            )
             g_cond = self.xvec_proj(speaker_embedding * float(speaker_scale))
         else:
             pass
@@ -364,7 +371,7 @@ class DotsTTSFlowHead(nn.Module):
             return (state, None)
         else:
             pass
-        prompt_latents = prompt_latents.to(device=device, dtype=dtype)
+        prompt_latents = tensor_to_device(prompt_latents, device).to(dtype=dtype)
         patch_input = self.patch_encoder_input(prompt_latents)
         (
             prompt_embeddings,
@@ -434,15 +441,15 @@ class DotsTTSFlowHead(nn.Module):
                 raise RuntimeError("dots.tts batched prompt state is incomplete")
             else:
                 pass
-            positions = prompt_span_positions.to(
-                device=hidden_states.device, dtype=torch.long
-            )
-            if positions.numel() != prompt_patches.size(1) or bool(
-                torch.any(positions <= 0)
+            if prompt_span_positions.numel() != prompt_patches.size(1) or bool(
+                torch.any(prompt_span_positions <= 0)
             ):
                 raise RuntimeError("dots.tts prompt spans do not match prompt latents")
             else:
                 pass
+            positions = tensor_to_device(
+                prompt_span_positions.to(dtype=torch.long), hidden_states.device
+            )
             hidden_rows = self.hidden_proj(hidden_states[0, positions - 1])
             latent_rows = self.latent_proj(prompt_patches[0])
             prompt_fm_rows = torch.cat(
@@ -686,15 +693,21 @@ class DotsTTSFlowHead(nn.Module):
             self.validate_request(num_steps=steps, ode_method=method)
         hidden = hidden_states[:, -1] if hidden_states.ndim == 3 else hidden_states
         probabilities = self.eos_proj(hidden).softmax(dim=-1)[:, 1]
+        # note (0xtoward): an infinite threshold suppresses a row's first EOS check
+        # without writing into eos_hits, which would wait for the device.
         thresholds = torch.tensor(
-            eos_thresholds, dtype=probabilities.dtype, pin_memory=probabilities.is_cuda
+            [
+                (
+                    float("inf")
+                    if state.suppress_first_eos_check and state.decoded_patches == 0
+                    else threshold
+                )
+                for state, threshold in zip(states, eos_thresholds, strict=True)
+            ],
+            dtype=probabilities.dtype,
+            pin_memory=probabilities.is_cuda,
         ).to(probabilities.device, non_blocking=True)
         eos_hits = probabilities.gt(thresholds)
-        for row, state in enumerate(states):
-            if state.suppress_first_eos_check and state.decoded_patches == 0:
-                eos_hits[row] = False
-            else:
-                pass
         slots = [state.slot for state in states]
         if any((slot is None for slot in slots)):
             raise RuntimeError("dots.tts batched request is missing its tail slot")
