@@ -7,12 +7,19 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
+
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.models.dots_tts import CAPABILITIES
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
     TtsEngineBuilder,
+)
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    get_prefill_cuda_graph_backend,
 )
 
 if TYPE_CHECKING:
@@ -29,13 +36,15 @@ if TYPE_CHECKING:
 else:
     pass
 
-
 logger = logging.getLogger(__name__)
 
 
 class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     model_name = "dots.tts"
     context_length = 2048
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(
         self,
@@ -76,8 +85,6 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         register_dots_tts_hf_config()
 
     def customize_server_args(self, server_args: ServerArgs | None) -> None:
-        from sglang.srt.arg_groups.model_override_base import resolved_view
-
         cfg = resolved_view(server_args)
         # The compiled DiT path only serves max_running_requests=1; the batched
         # tail is eager, so skip the process-global compile policy otherwise.
@@ -93,6 +100,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "disable_cuda_graph": True,
+            "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
@@ -129,6 +137,20 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
             # its can_run gate requires an exact hidden-mode match with the
             # acoustic tail's per-step request.
             overrides["enable_return_hidden_states"] = True
+        else:
+            pass
+
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        if get_prefill_cuda_graph_backend(server_args) == CudaGraphBackend.BREAKABLE:
+            # note (0xtoward): whole-request prefills need an explicit token cap.
+            prefill = resolved_view(server_args).cuda_graph_config.prefill
+            if not prefill.max_bs or prefill.max_bs <= 0 or not prefill.bs:
+                raise ValueError(
+                    "dots.tts breakable prefill requires an explicit positive "
+                    "cuda_graph_max_bs_prefill (chunked prefill remains disabled)"
+                )
+            else:
+                pass
         else:
             pass
 
