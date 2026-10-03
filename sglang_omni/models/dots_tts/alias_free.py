@@ -28,16 +28,18 @@ if triton is not None:
     @triton.jit
     def upsample_snake_kernel(
         input_pointer,
+        bias_pointer,
         filter_pointer,
         alpha_pointer,
         inverse_beta_pointer,
         output_pointer,
         channels: tl.constexpr,
-        frames: tl.constexpr,
-        batch_stride: tl.constexpr,
-        channel_stride: tl.constexpr,
-        frame_stride: tl.constexpr,
+        frames,
+        batch_stride,
+        channel_stride,
+        frame_stride,
         shared_filter: tl.constexpr,
+        has_bias: tl.constexpr,
         block_size: tl.constexpr,
     ) -> None:
         row = tl.program_id(1)
@@ -52,16 +54,27 @@ if triton is not None:
         else:
             pass
         accumulator = tl.full((block_size,), 0, tl.float32)
+        bias = tl.full((), 0, tl.float32)
+        if has_bias:
+            bias = tl.load(bias_pointer + channel)
+        else:
+            pass
         for tap in tl.static_range(6):
             input_frame = first_frame - tap
+            valid = (samples < 2 * frames) & (input_frame >= 0) & (input_frame < frames)
             value = tl.load(
                 input_pointer
                 + batch * batch_stride
                 + channel * channel_stride
                 + input_frame * frame_stride,
-                (samples < 2 * frames) & (input_frame >= 0) & (input_frame < frames),
+                valid,
                 other=0,
             )
+            if has_bias:
+                # note (0xtoward): the producing conv's bias, added only to real samples.
+                value = tl.where(valid, value + bias, 0.0)
+            else:
+                pass
             coefficient = tl.load(filter_pointer + filter_offset + phase + 2 * tap)
             accumulator = tl.fma(value, coefficient, accumulator)
         upsampled = 2.0 * accumulator
@@ -81,7 +94,7 @@ if triton is not None:
         filter_pointer,
         output_pointer,
         channels: tl.constexpr,
-        frames: tl.constexpr,
+        frames,
         shared_filter: tl.constexpr,
         block_size: tl.constexpr,
     ) -> None:
@@ -109,8 +122,72 @@ if triton is not None:
             output_frame < frames,
         )
 
+    @triton.jit
+    def residual_bias_kernel(
+        conv_pointer,
+        bias_pointer,
+        residual_pointer,
+        output_pointer,
+        channels: tl.constexpr,
+        frames,
+        conv_batch_stride,
+        conv_channel_stride,
+        residual_batch_stride,
+        residual_channel_stride,
+        block_size: tl.constexpr,
+    ) -> None:
+        row = tl.program_id(1)
+        batch = row // channels
+        channel = row % channels
+        frame = tl.program_id(0) * block_size + tl.arange(0, block_size)
+        mask = frame < frames
+        convolved = tl.load(
+            conv_pointer + batch * conv_batch_stride + channel * conv_channel_stride + frame, mask, other=0
+        )
+        residual = tl.load(
+            residual_pointer + batch * residual_batch_stride + channel * residual_channel_stride + frame,
+            mask,
+            other=0,
+        )
+        bias = tl.load(bias_pointer + channel)
+        tl.store(output_pointer + row * frames + frame, (convolved + bias) + residual, mask)
+
 else:
     pass
+
+
+def residual_bias_add(convolved: torch.Tensor, bias: torch.Tensor | None, residual: torch.Tensor) -> torch.Tensor:
+    """(convolved + bias) + residual in one pass; the order matches conv-with-bias then add."""
+    if (
+        bias is None
+        or triton is None
+        or not convolved.is_cuda
+        or convolved.dtype != torch.float32
+        or residual.dtype != torch.float32
+        or convolved.shape != residual.shape
+        or convolved.stride(-1) != 1
+        or residual.stride(-1) != 1
+        or torch.is_grad_enabled()
+    ):
+        return (convolved if bias is None else convolved + bias.view(1, -1, 1)) + residual
+    else:
+        batch_size, channels, frames = convolved.shape
+        output = torch.empty(convolved.shape, device=convolved.device, dtype=convolved.dtype)
+        residual_bias_kernel[(triton.cdiv(frames, BLOCK_SAMPLES), batch_size * channels)](
+            convolved,
+            bias,
+            residual,
+            output,
+            channels,
+            frames,
+            convolved.stride(0),
+            convolved.stride(1),
+            residual.stride(0),
+            residual.stride(1),
+            BLOCK_SAMPLES,
+            num_warps=4,
+        )
+        return output
 
 
 class FusedAliasFree(torch.nn.Module):
@@ -163,7 +240,8 @@ class FusedAliasFree(torch.nn.Module):
             pass
         return self
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: torch.Tensor, bias: torch.Tensor | None = None) -> torch.Tensor:
+        """With bias, activate inputs + bias (the producing conv's bias) without a separate add."""
         if (
             triton is None
             or not inputs.is_cuda
@@ -179,6 +257,10 @@ class FusedAliasFree(torch.nn.Module):
             or self.frozen_alpha.device != inputs.device
             or self.frozen_alpha.dtype != torch.float32
         ):
+            if bias is not None:
+                inputs = inputs + bias.view(1, -1, 1)
+            else:
+                pass
             return self.downsample(self.act(self.upsample(inputs)))
         else:
             batch_size, channels, frames = inputs.shape
@@ -195,6 +277,7 @@ class FusedAliasFree(torch.nn.Module):
                 )
             ](
                 inputs,
+                inputs if bias is None else bias,
                 self.upsample.filter,
                 self.frozen_alpha,
                 self.frozen_inverse_beta,
@@ -203,6 +286,7 @@ class FusedAliasFree(torch.nn.Module):
                 frames,
                 *inputs.stride(),
                 self.upsample.filter.numel() == FILTER_TAPS,
+                bias is not None,
                 BLOCK_SAMPLES,
                 num_warps=4,
                 enable_fp_fusion=False,

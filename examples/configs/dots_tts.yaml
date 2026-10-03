@@ -53,5 +53,6 @@ stages:
     factory:
       optimize: true
       enable_streaming_decoder: true
+      enable_alias_free_fusion: true
       max_batch_size: 4
       max_batch_wait_ms: 2

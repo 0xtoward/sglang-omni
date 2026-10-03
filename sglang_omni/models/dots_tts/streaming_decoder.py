@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.models.dots_tts.alias_free import FusedAliasFree, residual_bias_add
 from sglang_omni.utils.cuda_staging import indices_to_device
 
 if TYPE_CHECKING:
@@ -375,22 +376,43 @@ class StreamingDecoder:
         return self.decode_stream(frames, [slot])
 
 
-def causal_conv(conv: torch.nn.Module, value: torch.Tensor) -> torch.Tensor:
+def causal_conv(
+    conv: torch.nn.Module, value: torch.Tensor, *, with_bias: bool = True
+) -> torch.Tensor:
     """Causal Conv1d through cuDNN padding plus a view, instead of a padded copy of the input."""
     output = F.conv1d(
-        value, conv.weight, conv.bias, padding=conv.left_padding, dilation=conv.dilation
+        value,
+        conv.weight,
+        conv.bias if with_bias else None,
+        padding=conv.left_padding,
+        dilation=conv.dilation,
     )
     return output[..., : value.shape[-1]]
 
 
+def activate(
+    activation: torch.nn.Module, value: torch.Tensor, bias: torch.Tensor | None
+) -> torch.Tensor:
+    """Activate value + bias, adding the bias inside the fused kernel when there is one."""
+    if isinstance(activation, FusedAliasFree):
+        return activation(value, bias=bias)
+    elif bias is not None:
+        return activation(value + bias.view(1, -1, 1))
+    else:
+        return activation(value)
+
+
 def run_block(block: torch.nn.Module, value: torch.Tensor) -> torch.Tensor:
-    """AMPBlock1.forward with causal_conv in place of the padded-copy convolutions."""
+    """AMPBlock1.forward with copy-free causal convs and conv biases folded into the next kernel."""
     activations = block.activations
     for first, second, first_activation, second_activation in zip(
         block.convs1, block.convs2, activations[::2], activations[1::2]
     ):
-        hidden = causal_conv(first, first_activation(value))
-        value = causal_conv(second, second_activation(hidden)) + value
+        hidden = causal_conv(first, first_activation(value), with_bias=False)
+        activated = activate(second_activation, hidden, first.bias)
+        value = residual_bias_add(
+            causal_conv(second, activated, with_bias=False), second.bias, value
+        )
     return value
 
 
