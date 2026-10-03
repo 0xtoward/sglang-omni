@@ -382,19 +382,25 @@ def serialize_inline_stream_chunk(
         return None
     else:
         pass
-    data = data.detach()
-    if data.untyped_storage().nbytes() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
-        data = data.clone(memory_format=torch.contiguous_format)
-    else:
-        pass
-    payload = pickle.dumps((data, metadata))
+    # note (0xtoward): pickling a tensor runs torch.save on its storage, about ten
+    # times the cost of sending dtype, shape and the raw bytes of a small chunk.
+    data = data.detach().contiguous()
+    payload = pickle.dumps(
+        (
+            str(data.dtype).removeprefix("torch."),
+            tuple(data.shape),
+            data.reshape(-1).view(torch.uint8).numpy().tobytes(),
+            metadata,
+        ),
+        protocol=pickle.HIGHEST_PROTOCOL,
+    )
     if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         return None
     else:
         pass
     return {
         "_type": _INLINE_STREAM_CHUNK_TYPE,
-        "version": 1,
+        "version": 2,
         "payload": payload,
     }
 
@@ -410,10 +416,9 @@ def deserialize_inline_stream_chunk(
         raise ValueError("data_ref is not an inline stream chunk")
     else:
         pass
-    if data_ref.get("version") != 1:
-        raise ValueError(
-            f"unsupported inline stream chunk version {data_ref.get('version')!r}"
-        )
+    version = data_ref.get("version")
+    if version not in (1, 2):
+        raise ValueError(f"unsupported inline stream chunk version {version!r}")
     else:
         pass
     payload = data_ref.get("payload")
@@ -430,7 +435,19 @@ def deserialize_inline_stream_chunk(
         )
     else:
         pass
-    data, metadata = pickle.loads(payload)
+    if version == 1:
+        data, metadata = pickle.loads(payload)
+    else:
+        dtype_name, shape, raw, metadata = pickle.loads(payload)
+        dtype = getattr(torch, dtype_name)
+        if raw:
+            data = (
+                torch.frombuffer(bytearray(raw), dtype=torch.uint8)
+                .view(dtype)
+                .reshape(shape)
+            )
+        else:
+            data = torch.empty(shape, dtype=dtype)
     if not isinstance(data, torch.Tensor):
         raise TypeError(
             f"inline stream chunk data must be torch.Tensor, got {type(data).__name__}"
