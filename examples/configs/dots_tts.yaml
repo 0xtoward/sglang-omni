@@ -36,6 +36,7 @@ stages:
       compile_tail_blocks: true
       enable_prefill_graphs: true
       stream_latents_on_cpu: true
+      enable_cached_block_attention: true
     engine:
       mem_fraction_static: 0.20
       max_running_requests: 16

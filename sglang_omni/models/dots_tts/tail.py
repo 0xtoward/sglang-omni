@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+from sglang_omni.models.dots_tts.tail_attention import cached_block_attention
 from sglang_omni.utils.cuda_staging import indices_to_device
 
 import_dots_tts()
@@ -51,22 +52,14 @@ def project_attention(
     that writes K/V into a preallocated scratch buffer and attends over the
     truncated view instead of the full-width cache."""
     batch, seq_len, _ = value.shape
-    qkv = attn.qkv_proj(value).view(batch, seq_len, 3, num_heads, head_dim)
-    query, key, item = qkv.permute(2, 0, 3, 1, 4)
-    query = attn.q_norm(query)
-    key = attn.k_norm(key)
-    if rotary_cos is not None:
-        cos, sin = rotary_cos, rotary_sin
-        if cos.ndim == 2:
-            cos, sin = cos[None, None], sin[None, None]
-        elif cos.ndim == 3:
-            cos, sin = cos[:, None], sin[:, None]
-        else:
-            pass
-        query = (query * cos + rotate_half(query) * sin).to(query.dtype)
-        key = (key * cos + rotate_half(key) * sin).to(key.dtype)
-    else:
-        pass
+    query, key, item = project_qkv(
+        attn,
+        value,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        rotary_cos=rotary_cos,
+        rotary_sin=rotary_sin,
+    )
 
     if kv_buffer is None:
         keys, values = key, item
@@ -87,6 +80,70 @@ def project_attention(
     )
     output = output.permute(0, 2, 1, 3).reshape(batch, seq_len, -1)
     return attn.o_dropout(attn.o_proj(output)), key, item
+
+
+def project_qkv(
+    attn: nn.Module,
+    value: torch.Tensor,
+    *,
+    num_heads: int,
+    head_dim: int,
+    rotary_cos: torch.Tensor | None,
+    rotary_sin: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Query, key and value [B, H, T, D] after the q/k norms and rotary embedding."""
+    batch, seq_len, _ = value.shape
+    qkv = attn.qkv_proj(value).view(batch, seq_len, 3, num_heads, head_dim)
+    query, key, item = qkv.permute(2, 0, 3, 1, 4)
+    query = attn.q_norm(query)
+    key = attn.k_norm(key)
+    if rotary_cos is not None:
+        cos, sin = rotary_cos, rotary_sin
+        if cos.ndim == 2:
+            cos, sin = cos[None, None], sin[None, None]
+        elif cos.ndim == 3:
+            cos, sin = cos[:, None], sin[:, None]
+        else:
+            pass
+        query = (query * cos + rotate_half(query) * sin).to(query.dtype)
+        key = (key * cos + rotate_half(key) * sin).to(key.dtype)
+    else:
+        pass
+    return query, key, item
+
+
+def project_cached_attention(
+    attn: nn.Module,
+    value: torch.Tensor,
+    *,
+    num_heads: int,
+    head_dim: int,
+    rotary_cos: torch.Tensor | None,
+    rotary_sin: torch.Tensor | None,
+    key_pool: torch.Tensor,
+    value_pool: torch.Tensor,
+    slots: torch.Tensor,
+    valid: torch.Tensor,
+    previous_rows: int,
+) -> torch.Tensor:
+    """Attention of a query block over each slot's cached history read in place.
+
+    The first previous_rows of the block's keys and values are stored into the pools
+    at the slot's valid position, as the masked path's promote step did.
+    """
+    batch, seq_len, _ = value.shape
+    query, key, item = project_qkv(
+        attn,
+        value,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        rotary_cos=rotary_cos,
+        rotary_sin=rotary_sin,
+    )
+    output = cached_block_attention(
+        query, key, item, key_pool, value_pool, slots, valid, previous_rows
+    )
+    return attn.o_dropout(attn.o_proj(output.reshape(batch, seq_len, -1)))
 
 
 class AutocastFusedDiT(FusedAdaLNDiT):
@@ -140,10 +197,13 @@ class SemanticEncoderDecodeStep(nn.Module):
         conv_tail: torch.Tensor,
         kv_buffer: tuple[torch.Tensor, torch.Tensor],
         kv_prefix_len: int,
-        attn_mask: torch.Tensor,
+        attn_mask: torch.Tensor | None,
         rotary_cos: torch.Tensor,
         rotary_sin: torch.Tensor,
+        cached_slots: torch.Tensor | None = None,
+        cached_valid: torch.Tensor | None = None,
     ):
+        """With cached_slots, kv_buffer holds the slot pools and attention reads them in place."""
         encoder = self.encoder
         raw = latent_patch.transpose(1, 2)
         projection = encoder.ds_proj
@@ -158,17 +218,32 @@ class SemanticEncoderDecodeStep(nn.Module):
         value = encoder.in_proj(value)
         keys, values = kv_buffer
         for layer_index, layer in enumerate(encoder.encoder.layers):
-            output, _, _ = project_attention(
-                layer.attn,
-                layer.attn_norm(value),
-                num_heads=self.num_heads,
-                head_dim=self.head_dim,
-                rotary_cos=rotary_cos if layer.attn.rotary_bias else None,
-                rotary_sin=rotary_sin if layer.attn.rotary_bias else None,
-                kv_buffer=(keys[layer_index], values[layer_index]),
-                kv_prefix_len=kv_prefix_len,
-                attn_mask=attn_mask,
-            )
+            if cached_slots is None:
+                output, _, _ = project_attention(
+                    layer.attn,
+                    layer.attn_norm(value),
+                    num_heads=self.num_heads,
+                    head_dim=self.head_dim,
+                    rotary_cos=rotary_cos if layer.attn.rotary_bias else None,
+                    rotary_sin=rotary_sin if layer.attn.rotary_bias else None,
+                    kv_buffer=(keys[layer_index], values[layer_index]),
+                    kv_prefix_len=kv_prefix_len,
+                    attn_mask=attn_mask,
+                )
+            else:
+                output = project_cached_attention(
+                    layer.attn,
+                    layer.attn_norm(value),
+                    num_heads=self.num_heads,
+                    head_dim=self.head_dim,
+                    rotary_cos=rotary_cos if layer.attn.rotary_bias else None,
+                    rotary_sin=rotary_sin if layer.attn.rotary_bias else None,
+                    key_pool=keys[layer_index],
+                    value_pool=values[layer_index],
+                    slots=cached_slots,
+                    valid=cached_valid,
+                    previous_rows=int(value.shape[1]),
+                )
             value = value + output
             value = value + layer.ffn(layer.ffn_norm(value))
         return (
@@ -207,6 +282,45 @@ def dit_block_step(
         kv_buffer=(key_buffer, value_buffer),
         kv_prefix_len=kv_prefix_len,
         attn_mask=attn_mask,
+    )
+    value = value + gate_attn.unsqueeze(1) * output
+    ffn_in = block.norm2(value) * (1 + scale_ffn.unsqueeze(1)) + shift_ffn.unsqueeze(1)
+    return value + gate_ffn.unsqueeze(1) * block.ffn(ffn_in)
+
+
+def dit_block_step_cached(
+    block: nn.Module,
+    value: torch.Tensor,
+    block_mod: torch.Tensor,
+    key_pool: torch.Tensor,
+    value_pool: torch.Tensor,
+    slots: torch.Tensor,
+    valid: torch.Tensor,
+    rotary_cos: torch.Tensor,
+    rotary_sin: torch.Tensor,
+    num_heads: int,
+    head_dim: int,
+    previous_rows: int,
+) -> torch.Tensor:
+    """dit_block_step with the block attending to the slot pools in place."""
+    shift_attn, scale_attn, gate_attn, shift_ffn, scale_ffn, gate_ffn = block_mod.chunk(
+        6, dim=1
+    )
+    attn_in = block.norm1(value) * (1 + scale_attn.unsqueeze(1)) + shift_attn.unsqueeze(
+        1
+    )
+    output = project_cached_attention(
+        block.attn,
+        attn_in,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        rotary_cos=rotary_cos,
+        rotary_sin=rotary_sin,
+        key_pool=key_pool,
+        value_pool=value_pool,
+        slots=slots,
+        valid=valid,
+        previous_rows=previous_rows,
     )
     value = value + gate_attn.unsqueeze(1) * output
     ffn_in = block.norm2(value) * (1 + scale_ffn.unsqueeze(1)) + shift_ffn.unsqueeze(1)
@@ -509,6 +623,7 @@ class DotsTtsAcousticTail:
         pad_to_bucket: bool = True,
         compile_blocks: bool = False,
         prefill_graphs: bool = False,
+        cached_block_attention: bool = False,
     ) -> None:
         self.spec = spec
         self.device = device
@@ -545,10 +660,19 @@ class DotsTtsAcousticTail:
         self.tail_block_compile = self.cuda_graph_enabled and bool(compile_blocks)
         if self.tail_block_compile:
             self.compiled_dit_block_step = torch.compile(dit_block_step, dynamic=True)
+            self.compiled_dit_block_step_cached = torch.compile(
+                dit_block_step_cached, dynamic=True
+            )
         else:
             self.compiled_dit_block_step = dit_block_step
+            self.compiled_dit_block_step_cached = dit_block_step_cached
         # note (0xtoward): Captured prefills avoid repeated host dispatch per request.
         self.prefill_graphs_enabled = self.cuda_graph_enabled and bool(prefill_graphs)
+        # note (0xtoward): attend to the slot pools in place with one Triton kernel
+        # instead of gathering capacity-sized K/V and running masked SDPA.
+        self.cached_block_attention = (
+            bool(cached_block_attention) and device.type == "cuda"
+        )
         self.prompt_graphs: dict[tuple[int, int], CapturedTailGraph] = {}
         self.history_graphs: dict[tuple[int, int], CapturedTailGraph] = {}
         padding_graphs_requested = bool(
@@ -1173,6 +1297,12 @@ class DotsTtsAcousticTail:
         *,
         direct_kv: bool = False,
     ) -> torch.Tensor:
+        if self.cached_block_attention:
+            return self.run_meanflow_cached(
+                slot_index, persistent_index, latent, direct_kv=direct_kv
+            )
+        else:
+            pass
         spec = self.spec
         rows = int(slot_index.numel())
         unit = spec.unit_len
@@ -1300,6 +1430,84 @@ class DotsTtsAcousticTail:
                     )
         return latent
 
+    def run_meanflow_cached(
+        self,
+        slot_index: torch.Tensor,
+        persistent_index: torch.Tensor,
+        latent: torch.Tensor,
+        *,
+        direct_kv: bool,
+    ) -> torch.Tensor:
+        """MeanFlow ODE steps whose attention reads each slot's cached history in place."""
+        spec = self.spec
+        rows = int(slot_index.numel())
+        unit = spec.unit_len
+        if direct_kv:
+            previous = self.window[:rows, :unit]
+            hidden = self.window[:rows, unit:]
+            mods = self.all_mods[:, :rows]
+        else:
+            previous = self.window[slot_index, :unit]
+            hidden = self.window[slot_index, unit:]
+            mods = self.all_mods.index_select(1, slot_index)
+        latent_slice = slice(
+            unit + spec.hidden_patch_size,
+            unit + spec.hidden_patch_size + spec.latent_patch_size,
+        )
+        cos, sin = rotary_cos_sin(self.dit_rotary, persistent_index, 2 * unit)
+        for ode_index in range(spec.nfe):
+            key_pools = self.dit_k[ode_index]
+            value_pools = self.dit_v[ode_index]
+
+            def cached_attention(
+                layer: int, block: nn.Module, value: torch.Tensor
+            ) -> torch.Tensor:
+                return project_cached_attention(
+                    block.attn,
+                    value,
+                    num_heads=self.dit_heads,
+                    head_dim=self.dit_head_dim,
+                    rotary_cos=cos,
+                    rotary_sin=sin,
+                    key_pool=key_pools[layer],
+                    value_pool=value_pools[layer],
+                    slots=slot_index,
+                    valid=persistent_index,
+                    previous_rows=unit,
+                )
+
+            value = torch.cat([previous, hidden, self.coordinate_proj(latent)], dim=1)
+            if self.tail_block_compile:
+                block_mods, final_mods = self.dit.split_mods(mods[ode_index])
+                value = self.dit.input_layer(value)
+                for layer, (block, block_mod) in enumerate(
+                    zip(self.dit.blocks, block_mods, strict=True)
+                ):
+                    value = self.compiled_dit_block_step_cached(
+                        block,
+                        value,
+                        block_mod.contiguous(),
+                        key_pools[layer],
+                        value_pools[layer],
+                        slot_index,
+                        persistent_index,
+                        cos,
+                        sin,
+                        self.dit_heads,
+                        self.dit_head_dim,
+                        unit,
+                    )
+            else:
+                value, final_mods = self.dit.run_modulated_blocks(
+                    x=value,
+                    all_mods=mods[ode_index],
+                    attention=cached_attention,
+                )
+            velocity = self.dit.apply_final_layer(value[:, latent_slice], final_mods)
+            duration = self.times[ode_index + 1] - self.times[ode_index]
+            latent = (latent + duration * velocity).clone()
+        return latent
+
     @staticmethod
     def fill_mask(
         output: torch.Tensor,
@@ -1402,12 +1610,28 @@ class DotsTtsAcousticTail:
     ) -> torch.Tensor:
         rows = int(slot_index.numel())
         block = self.encoder_block
-        mask = self.encoder_mask[:rows, :, :, : capacity + block]
-        self.fill_mask(mask, capacity, start_index, block, 0)
         if self.encoder_rotary is None:
             cos = sin = torch.empty(0, device=self.device)
         else:
             cos, sin = rotary_cos_sin(self.encoder_rotary, start_index, block)
+        if self.cached_block_attention:
+            embeddings, conv_tail = self.encoder_step(
+                latent_patches.to(self.dtype),
+                self.encoder_conv_tail.index_select(0, slot_index),
+                (self.encoder_k, self.encoder_v),
+                capacity,
+                None,
+                cos,
+                sin,
+                cached_slots=slot_index,
+                cached_valid=start_index,
+            )
+            self.encoder_conv_tail[slot_index] = conv_tail
+            return embeddings.reshape(rows, -1)
+        else:
+            pass
+        mask = self.encoder_mask[:rows, :, :, : capacity + block]
+        self.fill_mask(mask, capacity, start_index, block, 0)
         keys = self.encoder_scratch_k[:, :rows, :, : capacity + block]
         values = self.encoder_scratch_v[:, :rows, :, : capacity + block]
         if self.pad_to_bucket:
@@ -1511,24 +1735,35 @@ class DotsTtsAcousticTail:
         self.capture_stream.wait_stream(current_stream)
         self.graph_pool = torch.cuda.graph_pool_handle()
         with torch.cuda.stream(self.capture_stream):
+            # note (0xtoward): cached attention reads each slot's valid history, so one
+            # meanflow and one encoder graph per batch cover every context length.
+            meanflow_buckets = (
+                context_buckets[-1:] if self.cached_block_attention else context_buckets
+            )
             for batch_size in reversed(batch_buckets):
                 for patches in reversed(context_buckets):
-                    self.capture_graph(
-                        self.meanflow_graphs,
-                        batch_size,
-                        patches * self.spec.unit_len,
-                        kind="meanflow",
-                    )
-                    self.capture_graph(
-                        self.encoder_graphs,
-                        batch_size,
-                        patches * self.encoder_block,
-                        kind="semantic_encoder",
-                    )
+                    if patches in meanflow_buckets:
+                        self.capture_graph(
+                            self.meanflow_graphs,
+                            batch_size,
+                            patches * self.spec.unit_len,
+                            kind="meanflow",
+                        )
+                    else:
+                        pass
+                    if patches in meanflow_buckets:
+                        self.capture_graph(
+                            self.encoder_graphs,
+                            batch_size,
+                            patches * self.encoder_block,
+                            kind="semantic_encoder",
+                        )
+                    else:
+                        pass
             if self.pad_to_bucket:
                 # note (0xtoward): Keep the exact full-batch positional path;
                 # padding to this bucket needs a slot-indexed gather capture.
-                for patches in reversed(context_buckets):
+                for patches in reversed(meanflow_buckets):
                     self.capture_graph(
                         self.meanflow_pad_graphs,
                         self.spec.num_slots,

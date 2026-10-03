@@ -113,6 +113,7 @@ def build_tail(
     pad_to_bucket: bool = False,
     compile_blocks: bool = False,
     prefill_graphs: bool = False,
+    cached_block_attention: bool = False,
 ):
     encoder = patch_encoder().to(device=device, dtype=dtype)
     with torch.no_grad():
@@ -138,6 +139,7 @@ def build_tail(
         pad_to_bucket=pad_to_bucket,
         compile_blocks=compile_blocks,
         prefill_graphs=prefill_graphs,
+        cached_block_attention=cached_block_attention,
     )
 
 
@@ -949,3 +951,161 @@ def test_prefill_graphs_match_eager_prompt_encode_and_history_seed(
     assert graph.graph_replays["meanflow"] == 3
     assert graph.graph_replays["semantic_encoder"] == 3
     assert not graph.graph_misses
+
+
+@torch.no_grad()
+def test_cached_block_attention_tail_matches_masked_tail() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    masked_model = TailModel().eval().to(device=device, dtype=dtype)
+    cached_model = copy.deepcopy(masked_model)
+    torch.manual_seed(9)
+    masked = build_tail(
+        masked_model, slots=3, device=device, dtype=dtype, patch_capacity=33
+    )
+    torch.manual_seed(9)
+    cached = build_tail(
+        cached_model,
+        slots=3,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        cached_block_attention=True,
+    )
+    unit = masked.spec.unit_len
+    grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
+    g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    mods = masked.dit.build_mods(
+        grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
+    )
+    histories = [
+        torch.randn(units * unit, FM_HIDDEN, device=device, dtype=dtype)
+        for units in (2, 5, 3)
+    ]
+    for acoustic_tail in (masked, cached):
+        for history in histories:
+            slot = acoustic_tail.acquire_slot()
+            acoustic_tail.seed_fm_history(slot, fm_rows=history, all_mods=mods)
+            acoustic_tail.initialize_slot_rng(slot, 100 + slot)
+    order = [2, 0, 1]
+    for _ in range(3):
+        hidden = torch.randn(3, FM_HIDDEN, device=device, dtype=dtype)
+        expected = masked.sample_patches(order, fm_hidden_rows=hidden)
+        observed = cached.sample_patches(order, fm_hidden_rows=hidden)
+        torch.testing.assert_close(observed, expected, rtol=3e-2, atol=3e-2)
+        feedback = torch.randn(3, PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype)
+        torch.testing.assert_close(
+            cached.encode_feedback(order, feedback),
+            masked.encode_feedback(order, feedback),
+            rtol=3e-2,
+            atol=3e-2,
+        )
+    for slot, history in enumerate(histories):
+        seeded = history.size(0) - unit
+        stored = masked.fm_seq_len(slot) - masked.spec.window_len
+        for name in ("dit_k", "dit_v"):
+            cached_pool = getattr(cached, name)[:, :, slot]
+            masked_pool = getattr(masked, name)[:, :, slot]
+            assert torch.equal(
+                cached_pool[..., :seeded, :], masked_pool[..., :seeded, :]
+            )
+            promoted = cached_pool[..., seeded:stored, :].float()
+            reference = masked_pool[..., seeded:stored, :].float()
+            assert (promoted - reference).norm() / reference.norm() < 2e-2
+
+
+@torch.no_grad()
+def test_cached_block_attention_graphs_follow_member_changes_and_slot_reuse() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    masked_model = TailModel().eval().to(device=device, dtype=dtype)
+    cached_model = copy.deepcopy(masked_model)
+    torch.manual_seed(9)
+    masked = build_tail(
+        masked_model, slots=4, device=device, dtype=dtype, patch_capacity=33
+    )
+    torch.manual_seed(9)
+    cached = build_tail(
+        cached_model,
+        slots=4,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=True,
+        pad_to_bucket=True,
+        cached_block_attention=True,
+    )
+    unit = masked.spec.unit_len
+    grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
+    g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    mods = masked.dit.build_mods(
+        grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
+    )
+
+    def admit(units: int, seed: int) -> int:
+        history = torch.randn(units * unit, FM_HIDDEN, device=device, dtype=dtype)
+        slots = []
+        for acoustic_tail in (masked, cached):
+            slot = acoustic_tail.acquire_slot()
+            acoustic_tail.seed_fm_history(slot, fm_rows=history, all_mods=mods)
+            acoustic_tail.initialize_slot_rng(slot, seed)
+            slots.append(slot)
+        assert slots[0] == slots[1]
+        return slots[0]
+
+    first, second, third = (admit(units, 100 + units) for units in (2, 5, 3))
+    schedule = [
+        [third, first, second],
+        [third, first],
+        [second],
+        [first, second, third],
+    ]
+    for step, members in enumerate(schedule):
+        if step == 2:
+            for acoustic_tail in (masked, cached):
+                acoustic_tail.release_slot(first)
+            assert admit(4, 200) == first
+        else:
+            pass
+        bystanders = {
+            slot: [
+                getattr(cached, name)[:, :, slot].clone() for name in ("dit_k", "dit_v")
+            ]
+            + [
+                getattr(cached, name)[:, slot].clone()
+                for name in ("encoder_k", "encoder_v")
+            ]
+            for slot in range(4)
+            if slot not in members
+        }
+        hidden = torch.randn(len(members), FM_HIDDEN, device=device, dtype=dtype)
+        torch.testing.assert_close(
+            cached.sample_patches(members, fm_hidden_rows=hidden),
+            masked.sample_patches(members, fm_hidden_rows=hidden),
+            rtol=3e-2,
+            atol=3e-2,
+        )
+        feedback = torch.randn(
+            len(members), PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype
+        )
+        torch.testing.assert_close(
+            cached.encode_feedback(members, feedback),
+            masked.encode_feedback(members, feedback),
+            rtol=3e-2,
+            atol=3e-2,
+        )
+        for slot, saved in bystanders.items():
+            current = [
+                getattr(cached, name)[:, :, slot] for name in ("dit_k", "dit_v")
+            ] + [getattr(cached, name)[:, slot] for name in ("encoder_k", "encoder_v")]
+            assert all(torch.equal(now, before) for now, before in zip(current, saved))
+    assert cached.graph_replays["meanflow"] == len(schedule)
+    assert cached.graph_replays["semantic_encoder"] == len(schedule)
+    assert cached.graph_misses["meanflow"] == 0
+    assert cached.graph_misses["semantic_encoder"] == 0
