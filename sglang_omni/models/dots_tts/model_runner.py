@@ -47,10 +47,15 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
     model: DotsTTSSGLangModel
 
     def __init__(
-        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+        self,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+        *,
+        stream_latents_on_cpu: bool = False,
     ) -> None:
         super().__init__(tp_worker, output_processor)
         self.request_data: dict[str, DotsTTSSGLangRequestData] = {}
+        self.stream_latents_on_cpu = stream_latents_on_cpu
 
     def before_prefill(
         self,
@@ -373,6 +378,23 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
                 data.req.finished_reason = FINISH_MATCHED_TOKEN(data.control_token_id)
             else:
                 pass
+        streaming = [
+            data
+            for data in launch_buf.data_rows
+            if self.stream_latents_on_cpu
+            and data.state.stream
+            and data.latest_latent_patch is not None
+        ]
+        if streaming:
+            # note (0xtoward): one device-to-host copy per step instead of one
+            # synchronizing copy per request; the step's GPU work is already done.
+            host_patches = torch.cat(
+                [data.latest_latent_patch for data in streaming]
+            ).cpu()
+            for row, data in enumerate(streaming):
+                data.latest_latent_patch = host_patches[row : row + 1].clone()
+        else:
+            pass
 
     @staticmethod
     def hidden_states(result: GenerationBatchResult | None) -> torch.Tensor:

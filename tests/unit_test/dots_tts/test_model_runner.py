@@ -281,6 +281,7 @@ def test_dots_post_decode_resolve_applies_batched_eos_finish() -> None:
 
     runner = object.__new__(DotsTTSModelRunner)
     runner.model = SimpleNamespace(flow=Flow())
+    runner.stream_latents_on_cpu = False
 
     def request(request_id: str, control_token_id: int):
         return SimpleNamespace(
@@ -322,6 +323,67 @@ def test_dots_post_decode_resolve_applies_batched_eos_finish() -> None:
     assert len(requests[1].data.latent_patches) == 1
 
 
+def test_dots_post_decode_resolve_moves_streaming_latents_to_host() -> None:
+    class Flow:
+        is_batched = True
+
+        def decode_batch(self, *args, **_kwargs):
+            return [
+                SimpleNamespace(
+                    feedback_embedding=torch.zeros(4),
+                    latent_patch=torch.full((1, 2, 2), float(row)),
+                    finished=False,
+                    emit=True,
+                )
+                for row in range(3)
+            ]
+
+        def resolve_batched_eos(self):
+            return [False, False, False]
+
+    runner = object.__new__(DotsTTSModelRunner)
+    runner.model = SimpleNamespace(flow=Flow())
+    runner.stream_latents_on_cpu = True
+
+    def request(request_id: str, stream: bool):
+        return SimpleNamespace(
+            request_id=request_id,
+            data=SimpleNamespace(
+                flow_state=object(),
+                pending_feedback_queue=deque(),
+                decoded_latent_patches=[],
+                latent_patches=[],
+                latest_latent_patch=None,
+                control_token_id=1,
+                state=SimpleNamespace(
+                    num_steps=2,
+                    ode_method="euler",
+                    guidance_scale=1.0,
+                    eos_threshold=0.5,
+                    stream=stream,
+                ),
+                req=SimpleNamespace(finished_reason=None),
+            ),
+        )
+
+    requests = [request("a", True), request("b", False), request("c", True)]
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(3, 4)),
+        next_token_ids=None,
+    )
+
+    runner.post_decode(result, object(), object(), requests)
+
+    for row in (0, 2):
+        patch = requests[row].data.latest_latent_patch
+        torch.testing.assert_close(patch, torch.full((1, 2, 2), float(row)))
+        assert patch.untyped_storage().nbytes() == patch.nbytes
+    assert (
+        requests[1].data.latest_latent_patch
+        is requests[1].data.decoded_latent_patches[-1]
+    )
+
+
 def test_dots_post_decode_resolve_uses_step_finished_for_single_request() -> None:
     finished_token = object()
 
@@ -343,6 +405,7 @@ def test_dots_post_decode_resolve_uses_step_finished_for_single_request() -> Non
 
     runner = object.__new__(DotsTTSModelRunner)
     runner.model = SimpleNamespace(flow=Flow())
+    runner.stream_latents_on_cpu = False
     request = SimpleNamespace(
         request_id="a",
         data=SimpleNamespace(

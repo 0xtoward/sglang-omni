@@ -227,7 +227,11 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     ) -> DotsTTSModelRunner:
         from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
 
-        self.model_runner = DotsTTSModelRunner(model_worker, output_proc)
+        self.model_runner = DotsTTSModelRunner(
+            model_worker,
+            output_proc,
+            stream_latents_on_cpu=self.stream_latents_on_cpu,
+        )
         return self.model_runner
 
     def make_adapters(self, model: DotsTTSSGLangModel | None) -> tuple[
