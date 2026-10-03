@@ -23,6 +23,7 @@ from sglang_omni.models.dots_tts.request_builders import (
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
+from sglang_omni.utils.cuda_staging import indices_to_device, tensor_to_device
 
 if TYPE_CHECKING:
     from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -104,7 +105,7 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
                 self.request_data[request.request_id] = data
                 materialized.append((request.request_id, data))
                 device = forward_batch.input_ids.device
-                prefill_ids = schedule[:, : data.prefill_end].to(device=device)
+                prefill_ids = tensor_to_device(schedule[:, : data.prefill_end], device)
                 embeddings = self.model.get_input_embeddings()(prefill_ids).clone()
                 prompt_positions = data.prompt_span_positions
                 if prompt_positions is not None and prompt_positions.numel():
@@ -114,7 +115,7 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
                         )
                     else:
                         pass
-                    embeddings[:, prompt_positions.to(device=device), :] = (
+                    embeddings[:, tensor_to_device(prompt_positions, device), :] = (
                         prompt_embeddings.to(device=device, dtype=embeddings.dtype)
                     )
                 else:
@@ -252,7 +253,7 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
                 hidden_states=request_hidden,
                 prompt_span_positions=data.prompt_span_positions,
                 audio_span_token_ids=set(data.state.audio_span_token_ids),
-                generation_schedule=data.generation_schedule.to(hidden.device),
+                generation_schedule=data.generation_schedule,
                 prefill_end=data.prefill_end,
                 decoded_latent_patches=data.decoded_latent_patches,
             )
@@ -346,11 +347,7 @@ class DotsTTSModelRunner(ModelRunner[DotsTTSSGLangRequestData]):
             else:
                 pass
             next_token_ids.append(data.control_token_id)
-        result.next_token_ids = torch.tensor(
-            next_token_ids,
-            dtype=torch.long,
-            device=hidden.device,
-        )
+        result.next_token_ids = indices_to_device(next_token_ids, hidden.device)
         return DotsFlowLaunchBuf(
             data_rows=data_rows,
             steps=steps,
