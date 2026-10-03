@@ -172,6 +172,7 @@ class DotsAudioCodec:
         self.lock = threading.RLock()
         self.alias_free_fusion_enabled: bool | None = None
         self.encoder_graphs: ReferenceEncoderGraphs | None = None
+        self.speaker_streams = threading.local()
 
     def configure_alias_free_fusion(self, enabled: bool) -> None:
         """Fix the shared codec's decoder mode before creating a vocoder."""
@@ -238,11 +239,26 @@ class DotsAudioCodec:
         speaker_batch, speaker_lengths = self.speaker_input(batch, audio_lengths)
 
         # note (0xtoward): Folded weights let encodes bypass the vocoder state lock.
-        speaker = self.speaker(speaker_batch, audio_lengths=speaker_lengths)
+        if self.device.type == "cuda":
+            # note (0xtoward): the speaker model and the AudioVAE encoder are
+            # independent. Each encoding thread runs the speaker on its own stream,
+            # so it overlaps the encoder and other references' speaker work instead
+            # of queueing behind them on the shared stream.
+            main_stream = torch.cuda.current_stream(self.device)
+            speaker_stream = self.speaker_stream()
+            speaker_stream.wait_stream(main_stream)
+            with torch.cuda.stream(speaker_stream):
+                speaker = self.speaker(speaker_batch, audio_lengths=speaker_lengths)
+        else:
+            speaker = self.speaker(speaker_batch, audio_lengths=speaker_lengths)
         if self.encoder_graphs is None:
             latent_distribution = self.inference.extract_latents(batch)
         else:
             latent_distribution = self.encoder_graphs.extract_latents(batch)
+        if self.device.type == "cuda":
+            main_stream.wait_stream(speaker_stream)
+        else:
+            pass
 
         frames = int(latent_distribution.shape[-1])
         expected_frames = length // self.hop_size
@@ -264,6 +280,16 @@ class DotsAudioCodec:
             }
             for index in range(len(waveforms))
         ]
+
+    def speaker_stream(self) -> torch.cuda.Stream:
+        """The calling thread's stream for the speaker model."""
+        stream = getattr(self.speaker_streams, "stream", None)
+        if stream is None:
+            stream = torch.cuda.Stream(device=self.device)
+            self.speaker_streams.stream = stream
+        else:
+            pass
+        return stream
 
     def speaker_input(
         self, batch: torch.Tensor, audio_lengths: torch.Tensor
