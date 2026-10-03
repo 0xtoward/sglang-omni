@@ -832,6 +832,12 @@ class DotsTtsAcousticTail:
         )
         self.window = zeros(pool_rows, spec.window_len, spec.fm_hidden_size)
         self.all_mods = zeros(spec.nfe, pool_rows, mods_width)
+        # note (0xtoward): one contiguous modulation buffer per DiT block; a step
+        # fills all of them with one multi-tensor copy instead of a copy per block.
+        block_mod_width = 6 * int(self.dit.input_layer.out_features)
+        self.block_mod_buffers = [
+            zeros(pool_rows, block_mod_width) for _ in self.dit.blocks
+        ]
 
         dit_query = 2 * spec.unit_len
         self.dit_scratch_k = zeros(
@@ -1382,16 +1388,22 @@ class DotsTtsAcousticTail:
                 )
                 if self.tail_block_compile:
                     block_mods, final_mods = self.dit.split_mods(mods[ode_index])
+                    # note (0xtoward): Contiguous modulation avoids recompiling
+                    # each layer's storage offset.
+                    contiguous_mods = [
+                        buffer[:rows] for buffer in self.block_mod_buffers
+                    ]
+                    torch._foreach_copy_(  # noqa: leading-underscore  # upstream name
+                        contiguous_mods, list(block_mods)
+                    )
                     value = self.dit.input_layer(value)
                     for layer, (block, block_mod) in enumerate(
-                        zip(self.dit.blocks, block_mods, strict=True)
+                        zip(self.dit.blocks, contiguous_mods, strict=True)
                     ):
-                        # note (0xtoward): Contiguous modulation avoids recompiling
-                        # each layer's storage offset.
                         value = self.compiled_dit_block_step(
                             block,
                             value,
-                            block_mod.contiguous(),
+                            block_mod,
                             keys[layer],
                             values[layer],
                             cos,
@@ -1479,14 +1491,18 @@ class DotsTtsAcousticTail:
             value = torch.cat([previous, hidden, self.coordinate_proj(latent)], dim=1)
             if self.tail_block_compile:
                 block_mods, final_mods = self.dit.split_mods(mods[ode_index])
+                contiguous_mods = [buffer[:rows] for buffer in self.block_mod_buffers]
+                torch._foreach_copy_(  # noqa: leading-underscore  # upstream name
+                    contiguous_mods, list(block_mods)
+                )
                 value = self.dit.input_layer(value)
                 for layer, (block, block_mod) in enumerate(
-                    zip(self.dit.blocks, block_mods, strict=True)
+                    zip(self.dit.blocks, contiguous_mods, strict=True)
                 ):
                     value = self.compiled_dit_block_step_cached(
                         block,
                         value,
-                        block_mod.contiguous(),
+                        block_mod,
                         key_pools[layer],
                         value_pools[layer],
                         slot_index,
