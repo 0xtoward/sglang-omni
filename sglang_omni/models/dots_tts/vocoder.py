@@ -203,9 +203,13 @@ class DotsTTSStreamingVocoder(
         self.stream_slots = int(stream_slots)
         self.batch_vocoder = DotsTTSBatchVocoder(codec)
         self.slot_pool = slot_pool
-        # note (guozhihao-224): coalesce width follows max_batch_size only;
+        # note (guozhihao-224): step width follows max_batch_size only;
         # stream_slots is admission capacity and must not redefine the batch cap.
-        self.stream_chunk_batch_max = int(max_batch_size)
+        self.step_batch_max = int(max_batch_size)
+        # note (0xtoward): intake takes one chunk per live stream. Capped at the
+        # step width, a saturated vocoder took a latent step's chunks over
+        # several pumps, and new streams' first patches queued behind them.
+        self.stream_chunk_batch_max = self.stream_slots
         super().__init__(
             self.batch_vocoder.decode_payload,
             batch_compute_fn=self.batch_vocoder.decode_payloads,
@@ -373,7 +377,7 @@ class DotsTTSStreamingVocoder(
         for entry in slotted:
             frames = self.step_frames(entry[1])
             by_frames.setdefault(frames, []).append(entry)
-        return max(by_frames.values(), key=len)[: self.stream_chunk_batch_max]
+        return max(by_frames.values(), key=len)[: self.step_batch_max]
 
     def build_step_plan(
         self, participants: list[tuple[str, DotsStreamState]]
