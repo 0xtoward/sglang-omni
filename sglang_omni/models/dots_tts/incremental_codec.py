@@ -16,8 +16,17 @@ from typing import TYPE_CHECKING
 import torch
 import torch.nn.functional as F
 
-from sglang_omni.models.dots_tts.alias_free import FusedAliasFree, residual_bias_add
+from sglang_omni.models.dots_tts.alias_free import (
+    FusedAliasFree,
+    alias_free_valid_channels_last,
+    residual_bias_add,
+    residual_bias_add_channels_last,
+)
 from sglang_omni.models.dots_tts.codec_state_arena import DotsCodecStateArena
+from sglang_omni.utils.channels_last_conv import (
+    channels_last_weight,
+    is_channels_last_conv_device,
+)
 
 if TYPE_CHECKING:
     # note (0xtoward): dots.tts is optional on Apple; CPU scheduler tests still import this module.
@@ -36,7 +45,9 @@ class DotsIncrementalDecoder:
     per-slot history in a DotsCodecStateArena.
     """
 
-    def __init__(self, inference: VocoderInference) -> None:
+    def __init__(
+        self, inference: VocoderInference, *, channels_last: bool = True
+    ) -> None:
         decoder = inference.vocoder.decoder
         self.decoder: Decoder = decoder
         self.lookahead: int = int(
@@ -105,6 +116,42 @@ class DotsIncrementalDecoder:
         self.device: torch.device = decoder.conv_pre.weight.device
         self.dtype: torch.dtype = decoder.conv_pre.weight.dtype
         self.latent_channels: int = int(decoder.conv_pre.in_channels)
+        # note (0xtoward): a warm slot's history covers every op's receptive field,
+        # so the warm path can run each conv and activation on valid samples only,
+        # in (B, T, C) layout: no padding, slicing or cuDNN layout transposes.
+        self.block_contexts: list[int] = [
+            int(
+                inference._ampblock_left_context(block)
+            )  # noqa: leading-underscore  # upstream spelling
+            for block in decoder.resblocks[: self.num_kernels]
+        ]
+        self.channels_last_valid: bool = (
+            channels_last
+            and is_channels_last_conv_device(self.device)
+            and self.dtype == torch.float32
+            and all(
+                isinstance(module, FusedAliasFree)
+                for module in [
+                    *(
+                        activation
+                        for block in decoder.resblocks
+                        for activation in block.activations
+                    ),
+                    decoder.activation_post,
+                ]
+            )
+        )
+        self.channels_last_weights: dict[int, torch.Tensor] = {}
+        if self.channels_last_valid:
+            for module in decoder.modules():
+                if isinstance(module, (torch.nn.Conv1d, torch.nn.ConvTranspose1d)):
+                    self.channels_last_weights[id(module)] = channels_last_weight(
+                        module
+                    )
+                else:
+                    pass
+        else:
+            pass
 
     def new_state_arena(self, num_slots: int) -> DotsCodecStateArena:
         """Allocate zeroed history for num_slots streams, shaped for this decoder."""
@@ -195,6 +242,10 @@ class DotsIncrementalDecoder:
         value = F.conv1d(
             joined, self.decoder.conv_pre.weight, self.decoder.conv_pre.bias
         )
+        if self.channels_last_valid:
+            return self.warm_channels_last(arena, value.transpose(1, 2), slot_index)
+        else:
+            pass
         for index, upsample in enumerate(self.decoder.ups):
             joined = torch.cat(
                 [arena.upsample_histories[index].index_select(0, slot_index), value],
@@ -210,6 +261,86 @@ class DotsIncrementalDecoder:
                 ..., -self.stage_contexts[index] :
             ]
             value = self.run_stage(index, joined)[..., -value.shape[-1] :]
+        return value
+
+    def warm_channels_last(
+        self,
+        arena: DotsCodecStateArena,
+        value: torch.Tensor,
+        slot_index: torch.Tensor,
+    ) -> torch.Tensor:
+        """Warm stages on a (B, n, C) conv_pre output, every op on valid samples only."""
+        for index, upsample in enumerate(self.decoder.ups):
+            conv = upsample[0]
+            joined = torch.cat(
+                [
+                    arena.upsample_histories[index]
+                    .index_select(0, slot_index)
+                    .transpose(1, 2),
+                    value,
+                ],
+                dim=1,
+            )
+            arena.upsample_histories[index][slot_index] = joined[:, -1:].transpose(1, 2)
+            stride = self.upsample_strides[index]
+            # note (0xtoward): the causal transposed conv drops its last stride
+            # outputs; the first stride outputs belong to the history sample.
+            upsampled = (
+                F.conv_transpose2d(
+                    joined.transpose(1, 2).unsqueeze(2),
+                    self.channels_last_weights[id(conv)].unsqueeze(2),
+                    conv.bias,
+                    stride=(1, stride),
+                )
+                .squeeze(2)
+                .transpose(1, 2)[:, stride:-stride]
+            )
+            joined = torch.cat(
+                [
+                    arena.stage_histories[index]
+                    .index_select(0, slot_index)
+                    .transpose(1, 2),
+                    upsampled,
+                ],
+                dim=1,
+            )
+            arena.stage_histories[index][slot_index] = joined[
+                :, -self.stage_contexts[index] :
+            ].transpose(1, 2)
+            value = self.run_stage_channels_last(index, joined)
+        return value.transpose(1, 2)
+
+    def run_stage_channels_last(self, index: int, value: torch.Tensor) -> torch.Tensor:
+        """run_stage on a (B, T, C) input with full history; returns the last outputs only."""
+        widest = max(self.block_contexts)
+        total = None
+        for block, context in zip(
+            self.decoder.resblocks[
+                index * self.num_kernels : (index + 1) * self.num_kernels
+            ],
+            self.block_contexts,
+        ):
+            output = run_block_channels_last(
+                block, value[:, widest - context :], self.channels_last_weights
+            )
+            total = output if total is None else total + output
+        value = total / self.num_kernels
+        if index == len(self.upsample_strides) - 1:
+            value = valid_conv(
+                self.decoder.conv_post,
+                alias_free_valid_channels_last(
+                    self.decoder.activation_post, value, None
+                ),
+                self.channels_last_weights,
+                with_bias=True,
+            )
+            value = (
+                torch.tanh(value)
+                if self.use_tanh
+                else torch.clamp(value, min=-1.0, max=1.0)
+            )
+        else:
+            pass
         return value
 
 
@@ -270,6 +401,51 @@ def run_block(block: AMPBlock1, value: torch.Tensor) -> torch.Tensor:
         activated = activate(second_activation, hidden, first.bias)
         value = residual_bias_add(
             causal_conv(second, activated, with_bias=False), second.bias, value
+        )
+    return value
+
+
+def valid_conv(
+    conv: Conv1d,
+    value: torch.Tensor,
+    channels_last_weights: dict[int, torch.Tensor],
+    *,
+    with_bias: bool,
+) -> torch.Tensor:
+    """Conv1d of a (B, T, C) activation without padding, as one channels-last cuDNN call."""
+    output = F.conv2d(
+        value.transpose(1, 2).unsqueeze(2),
+        channels_last_weights[id(conv)].unsqueeze(2),
+        conv.bias if with_bias else None,
+        dilation=(1, conv.dilation[0]),
+    )
+    return output.squeeze(2).transpose(1, 2)
+
+
+def run_block_channels_last(
+    block: AMPBlock1,
+    value: torch.Tensor,
+    channels_last_weights: dict[int, torch.Tensor],
+) -> torch.Tensor:
+    """run_block on valid samples of a (B, T, C) input; each pair shortens it by its receptive field."""
+    activations = block.activations
+    for first, second, first_activation, second_activation in zip(
+        block.convs1, block.convs2, activations[::2], activations[1::2]
+    ):
+        hidden = valid_conv(
+            first,
+            alias_free_valid_channels_last(first_activation, value, None),
+            channels_last_weights,
+            with_bias=False,
+        )
+        convolved = valid_conv(
+            second,
+            alias_free_valid_channels_last(second_activation, hidden, first.bias),
+            channels_last_weights,
+            with_bias=False,
+        )
+        value = residual_bias_add_channels_last(
+            convolved, second.bias, value[:, -convolved.shape[1] :]
         )
     return value
 

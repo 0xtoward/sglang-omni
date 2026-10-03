@@ -184,3 +184,65 @@ def test_incremental_codec_reused_slot_matches_window_decode(
     assert candidate.shape == reference.shape
     error = (candidate - reference).norm() / reference.norm()
     assert error < 1e-5, error
+
+
+def cuda_fused_inference(monkeypatch: pytest.MonkeyPatch) -> VocoderInference:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    else:
+        pass
+    from sglang_omni.models.dots_tts.alias_free import install_alias_free_fusion
+
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    inference = tiny_inference()
+    inference.vocoder.to("cuda")
+    assert install_alias_free_fusion(inference.vocoder.decoder) > 0
+    return inference
+
+
+@torch.no_grad()
+def test_alias_free_valid_channels_last_matches_fused_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.dots_tts.alias_free import alias_free_valid_channels_last
+
+    inference = cuda_fused_inference(monkeypatch)
+    activation = inference.vocoder.decoder.resblocks[0].activations[0]
+    channels = activation.frozen_alpha.numel()
+    generator = torch.Generator(device="cuda").manual_seed(3)
+    value = torch.randn(2, channels, 70, device="cuda", generator=generator)
+    bias = torch.randn(channels, device="cuda", generator=generator)
+    for folded in (None, bias):
+        expected = activation(value, bias=folded)[..., 11:]
+        observed = alias_free_valid_channels_last(
+            activation, value.transpose(1, 2).contiguous(), folded
+        ).transpose(1, 2)
+        assert torch.equal(observed, expected)
+
+
+@torch.no_grad()
+def test_channels_last_warm_step_matches_current_warm_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inference = cuda_fused_inference(monkeypatch)
+    current = DotsIncrementalDecoder(inference, channels_last=False)
+    valid = DotsIncrementalDecoder(inference)
+    assert valid.channels_last_valid
+    assert not current.channels_last_valid
+    generator = torch.Generator(device="cuda").manual_seed(5)
+    arena = current.new_state_arena(3)
+    for tensor in arena.tensors():
+        tensor.copy_(torch.randn(tensor.shape, device="cuda", generator=generator))
+    twin = valid.new_state_arena(3)
+    for target, source in zip(twin.tensors(), arena.tensors()):
+        target.copy_(source)
+    slot_index = torch.tensor([2, 0, 1], device="cuda")
+    for frames_count in (PATCH, 3 * PATCH):
+        frames = torch.randn(
+            3, current.latent_channels, frames_count, device="cuda", generator=generator
+        )
+        expected = current.warm_forward(arena, frames, slot_index)
+        observed = valid.warm_forward(twin, frames, slot_index)
+        torch.testing.assert_close(observed, expected, rtol=1e-4, atol=1e-5)
+    for observed, expected in zip(twin.tensors(), arena.tensors()):
+        torch.testing.assert_close(observed, expected, rtol=1e-4, atol=1e-5)
