@@ -1109,3 +1109,41 @@ def test_cached_block_attention_graphs_follow_member_changes_and_slot_reuse() ->
     assert cached.graph_replays["semantic_encoder"] == len(schedule)
     assert cached.graph_misses["meanflow"] == 0
     assert cached.graph_misses["semantic_encoder"] == 0
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="needs CUDA"
+            ),
+        ),
+    ],
+)
+def test_gelu_tanh_linear_matches_linear_then_tanh_gelu(device: str) -> None:
+    generator = torch.Generator().manual_seed(5)
+    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    value = torch.randn(3, 6, 64, generator=generator).to(device=device, dtype=dtype)
+    weight = (torch.randn(256, 64, generator=generator) * 0.1).to(
+        device=device, dtype=dtype
+    )
+    bias = torch.randn(256, generator=generator).to(device=device, dtype=dtype)
+
+    expected = torch.nn.functional.gelu(
+        torch.nn.functional.linear(value.float(), weight.float(), bias.float()),
+        approximate="tanh",
+    )
+    observed = tail.gelu_tanh_linear(value, weight, bias)
+    compiled = torch.compile(tail.gelu_tanh_linear, fullgraph=True)(value, weight, bias)
+
+    assert observed.shape == (3, 6, 256) and observed.dtype == dtype
+    tolerance = (
+        {"rtol": 2e-2, "atol": 2e-2}
+        if device == "cuda"
+        else {"rtol": 1e-5, "atol": 1e-5}
+    )
+    torch.testing.assert_close(observed.float(), expected, **tolerance)
+    torch.testing.assert_close(compiled, observed, rtol=0, atol=0)
