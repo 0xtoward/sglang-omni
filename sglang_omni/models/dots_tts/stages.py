@@ -588,9 +588,11 @@ def create_vocoder_executor(
             decoder,
             decoder.new_state_arena(pool.num_slots),
             max_batch_size=max_batch_size,
+            # note (0xtoward): a final step adds the lookahead frames of the flush.
             warm_fresh_frames=[
-                codec.patch_size * patches
+                codec.patch_size * patches + tail
                 for patches in range(1, vocoder.merge_steps + 1)
+                for tail in (0, decoder.lookahead)
             ],
             cold_window_frames=sorted({*COLD_WINDOW_BUCKET_FRAMES, pool.window_size}),
         )

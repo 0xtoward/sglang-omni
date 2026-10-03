@@ -153,8 +153,14 @@ class DotsVocoderSlotPool:
         self.free_slots.append(slot)
 
     @torch.no_grad()
-    def step(self, slot_latents: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
-        """One uniform-T eager step. slot -> [1, T, C] in, slot -> wav out."""
+    def step(
+        self, slot_latents: dict[int, torch.Tensor], *, final: bool = False
+    ) -> dict[int, torch.Tensor]:
+        """One uniform-T eager step. slot -> [1, T, C] in, slot -> wav out.
+
+        final marks the last latents of the streams: warm rows then also decode
+        the lookahead zero frames of the flush and emit all their audio.
+        """
         if not slot_latents:
             return {}
         else:
@@ -244,7 +250,9 @@ class DotsVocoderSlotPool:
                 )
             return out
         else:
-            return self.incremental_step(slots, decoder_input, new_window, step_t)
+            return self.incremental_step(
+                slots, decoder_input, new_window, step_t, final=final
+            )
 
     def is_warm(self, slot: int) -> bool:
         """Whether the slot's decoded history covers every stage's left context."""
@@ -258,6 +266,8 @@ class DotsVocoderSlotPool:
         decoder_input: torch.Tensor,
         new_window: torch.Tensor,
         step_t: int,
+        *,
+        final: bool = False,
     ) -> dict[int, torch.Tensor]:
         """Decode one step: warm rows decode only their new frames.
 
@@ -269,13 +279,30 @@ class DotsVocoderSlotPool:
         cold_rows = [row for row, slot in enumerate(slots) if not self.is_warm(slot)]
         out: dict[int, torch.Tensor] = {}
         if warm_rows:
+            frames = decoder_input[warm_rows]
+            if final:
+                # note (0xtoward): the flush's lookahead zero frames ride along with
+                # the last latents, saving a separate one-row decoder step.
+                frames = torch.cat(
+                    [
+                        frames,
+                        frames.new_zeros(
+                            frames.shape[0], frames.shape[1], self.lookahead
+                        ),
+                    ],
+                    dim=-1,
+                )
+            else:
+                pass
             audio = self.incremental_codec.decode_warm(
-                decoder_input[warm_rows], [slots[row] for row in warm_rows]
+                frames, [slots[row] for row in warm_rows]
             )
             for position, row in enumerate(warm_rows):
                 slot = slots[row]
                 self.total_frames[slot] += step_t
-                self.emitted_frames[slot] = self.total_frames[slot] - self.lookahead
+                self.emitted_frames[slot] = self.total_frames[slot] - (
+                    0 if final else self.lookahead
+                )
                 out[slot] = audio[position : position + 1]
         else:
             pass
@@ -307,7 +334,10 @@ class DotsVocoderSlotPool:
             raise RuntimeError(f"dots.tts streaming flush referenced free slot {slot}")
         else:
             pass
-        if self.incremental_codec is None:
+        if self.emitted_frames[slot] >= self.total_frames[slot]:
+            # note (0xtoward): a final step already emitted this slot's audio.
+            return self.window.new_zeros((1, 1, 0))
+        elif self.incremental_codec is None:
             audio_window = self.inference._decode_stream_window(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 self.window[slot : slot + 1]
             )
