@@ -1116,6 +1116,74 @@ def test_cached_block_attention_graphs_follow_member_changes_and_slot_reuse() ->
     assert cached.graph_misses["semantic_encoder"] == 0
 
 
+@torch.no_grad()
+def test_compiled_tail_steps_match_eager_cached_tail() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    eager_model = TailModel().eval().to(device=device, dtype=dtype)
+    compiled_model = copy.deepcopy(eager_model)
+    torch.manual_seed(9)
+    eager = build_tail(
+        eager_model,
+        slots=4,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        cached_block_attention=True,
+    )
+    torch.manual_seed(9)
+    compiled = build_tail(
+        compiled_model,
+        slots=4,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=True,
+        pad_to_bucket=True,
+        compile_blocks=True,
+        cached_block_attention=True,
+    )
+    unit = eager.spec.unit_len
+    grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
+    g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    mods = eager.dit.build_mods(grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond)
+    for units in (2, 5, 3, 4):
+        history = torch.randn(units * unit, FM_HIDDEN, device=device, dtype=dtype)
+        for acoustic_tail in (eager, compiled):
+            slot = acoustic_tail.acquire_slot()
+            acoustic_tail.seed_fm_history(slot, fm_rows=history, all_mods=mods)
+            acoustic_tail.initialize_slot_rng(slot, 100 + units)
+    for members in ([3, 0, 1], [0, 1, 2, 3], [2], [1, 3]):
+        hidden = torch.randn(len(members), FM_HIDDEN, device=device, dtype=dtype)
+        torch.testing.assert_close(
+            compiled.sample_patches(members, fm_hidden_rows=hidden),
+            eager.sample_patches(members, fm_hidden_rows=hidden),
+            rtol=3e-2,
+            atol=3e-2,
+        )
+        feedback = torch.randn(
+            len(members), PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype
+        )
+        torch.testing.assert_close(
+            compiled.encode_feedback(members, feedback),
+            eager.encode_feedback(members, feedback),
+            rtol=3e-2,
+            atol=3e-2,
+        )
+    for slot in range(4):
+        stored = eager.fm_seq_len(slot) - eager.spec.window_len
+        assert compiled.fm_seq_len(slot) == eager.fm_seq_len(slot)
+        for name in ("dit_k", "dit_v"):
+            observed = getattr(compiled, name)[:, :, slot, :, :stored].float()
+            expected = getattr(eager, name)[:, :, slot, :, :stored].float()
+            assert (observed - expected).norm() / expected.norm() < 2e-2
+    assert compiled.dit_contiguous_view_steps == NFE
+    assert compiled.graph_misses["meanflow"] == 0
+
+
 @pytest.mark.parametrize(
     "device",
     [
