@@ -183,6 +183,8 @@ class DotsTTSFlowHead(nn.Module):
         max_audio_patches: int,
         optimize: bool = False,
         pad_to_bucket: bool = True,
+        compile_blocks: bool = False,
+        prefill_graphs: bool = False,
     ) -> None:
         if self.mode != "meanflow":
             raise ValueError(
@@ -215,6 +217,8 @@ class DotsTTSFlowHead(nn.Module):
             dtype=parameter.dtype,
             optimize=optimize,
             pad_to_bucket=pad_to_bucket,
+            compile_blocks=compile_blocks,
+            prefill_graphs=prefill_graphs,
         )
         self.batched_nfe = int(nfe)
         self.prepare_batched_eos_staging(int(num_slots), parameter.device)
