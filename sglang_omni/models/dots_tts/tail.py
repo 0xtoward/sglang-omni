@@ -183,6 +183,37 @@ def fuse_dit_for_inference(model: nn.Module) -> AutocastFusedDiT:
     return dit
 
 
+def encoder_layer_step_cached(
+    layer: nn.Module,
+    value: torch.Tensor,
+    key_pool: torch.Tensor,
+    value_pool: torch.Tensor,
+    slots: torch.Tensor,
+    valid: torch.Tensor,
+    rotary_cos: torch.Tensor | None,
+    rotary_sin: torch.Tensor | None,
+    num_heads: int,
+    head_dim: int,
+    previous_rows: int,
+) -> torch.Tensor:
+    """One semantic-encoder layer attending to the slot pools; the unit compiled for feedback."""
+    output = project_cached_attention(
+        layer.attn,
+        layer.attn_norm(value),
+        num_heads=num_heads,
+        head_dim=head_dim,
+        rotary_cos=rotary_cos,
+        rotary_sin=rotary_sin,
+        key_pool=key_pool,
+        value_pool=value_pool,
+        slots=slots,
+        valid=valid,
+        previous_rows=previous_rows,
+    )
+    value = value + output
+    return value + layer.ffn(layer.ffn_norm(value))
+
+
 class SemanticEncoderDecodeStep(nn.Module):
     def __init__(self, encoder: nn.Module) -> None:
         super().__init__()
@@ -190,6 +221,7 @@ class SemanticEncoderDecodeStep(nn.Module):
         attention = encoder.encoder.layers[0].attn
         self.num_heads = int(attention.num_heads)
         self.head_dim = int(attention.head_dim)
+        self.layer_step_cached = encoder_layer_step_cached
 
     def forward(
         self,
@@ -230,22 +262,22 @@ class SemanticEncoderDecodeStep(nn.Module):
                     kv_prefix_len=kv_prefix_len,
                     attn_mask=attn_mask,
                 )
+                value = value + output
+                value = value + layer.ffn(layer.ffn_norm(value))
             else:
-                output = project_cached_attention(
-                    layer.attn,
-                    layer.attn_norm(value),
-                    num_heads=self.num_heads,
-                    head_dim=self.head_dim,
-                    rotary_cos=rotary_cos if layer.attn.rotary_bias else None,
-                    rotary_sin=rotary_sin if layer.attn.rotary_bias else None,
-                    key_pool=keys[layer_index],
-                    value_pool=values[layer_index],
-                    slots=cached_slots,
-                    valid=cached_valid,
-                    previous_rows=int(value.shape[1]),
+                value = self.layer_step_cached(
+                    layer,
+                    value,
+                    keys[layer_index],
+                    values[layer_index],
+                    cached_slots,
+                    cached_valid,
+                    rotary_cos if layer.attn.rotary_bias else None,
+                    rotary_sin if layer.attn.rotary_bias else None,
+                    self.num_heads,
+                    self.head_dim,
+                    int(value.shape[1]),
                 )
-            value = value + output
-            value = value + layer.ffn(layer.ffn_norm(value))
         return (
             encoder._project_embeddings(value),
             raw[..., -projection.left_padding :],
@@ -694,6 +726,9 @@ class DotsTtsAcousticTail:
             self.compiled_dit_block_step = torch.compile(dit_block_step, dynamic=True)
             self.compiled_dit_block_step_cached = torch.compile(
                 dit_block_step_cached, dynamic=True
+            )
+            self.encoder_step.layer_step_cached = torch.compile(
+                encoder_layer_step_cached, dynamic=True
             )
         else:
             self.compiled_dit_block_step = dit_block_step
