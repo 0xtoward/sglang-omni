@@ -162,7 +162,8 @@ def test_streaming_vocoder_enables_payload_and_chunk_batching() -> None:
 
     assert scheduler.batch_fn is not None
     assert scheduler.max_batch_size == 4
-    assert scheduler.stream_chunk_batch_max == 4
+    assert scheduler.step_batch_max == 4
+    assert scheduler.stream_chunk_batch_max == 16
     assert scheduler.max_batch_wait_s == 0.002
     assert scheduler.can_batch_stream_chunks
     results = asyncio.run(
