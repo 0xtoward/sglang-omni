@@ -507,6 +507,7 @@ def create_sglang_latent_engine_executor(
     enable_acoustic_tail_batch_padding: bool = True,
     compile_tail_blocks: bool = False,
     enable_prefill_graphs: bool = False,
+    enable_cached_block_attention: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
@@ -524,6 +525,7 @@ def create_sglang_latent_engine_executor(
         enable_acoustic_tail_batch_padding=enable_acoustic_tail_batch_padding,
         compile_tail_blocks=compile_tail_blocks,
         enable_prefill_graphs=enable_prefill_graphs,
+        enable_cached_block_attention=enable_cached_block_attention,
     ).build(
         model_path,
         device=device,
