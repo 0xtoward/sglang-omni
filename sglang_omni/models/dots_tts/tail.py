@@ -252,6 +252,33 @@ class SemanticEncoderDecodeStep(nn.Module):
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
+@torch.library.custom_op("dots_tts::gelu_tanh_linear", mutates_args=())
+def gelu_tanh_linear(
+    value: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
+) -> torch.Tensor:
+    """Tanh GELU of a linear projection, applied in the CUDA GEMM epilogue."""
+    rows = value.reshape(-1, value.shape[-1])
+    if rows.is_cuda:
+        output = torch._addmm_activation(  # noqa: leading-underscore  # upstream name
+            bias, rows, weight.t(), use_gelu=True
+        )
+    else:
+        output = F.gelu(F.linear(rows, weight, bias), approximate="tanh")
+    return output.reshape(*value.shape[:-1], weight.shape[0])
+
+
+@gelu_tanh_linear.register_fake
+def gelu_tanh_linear_fake(
+    value: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
+) -> torch.Tensor:
+    return value.new_empty(*value.shape[:-1], weight.shape[0])
+
+
+def tanh_gelu_mlp(mlp: nn.Module, value: torch.Tensor) -> torch.Tensor:
+    """The DiT feed-forward (fc1, tanh GELU, fc2) with the GELU fused into fc1."""
+    return mlp.fc2(gelu_tanh_linear(value, mlp.fc1.weight, mlp.fc1.bias))
+
+
 def dit_block_step(
     block: nn.Module,
     value: torch.Tensor,
@@ -285,7 +312,7 @@ def dit_block_step(
     )
     value = value + gate_attn.unsqueeze(1) * output
     ffn_in = block.norm2(value) * (1 + scale_ffn.unsqueeze(1)) + shift_ffn.unsqueeze(1)
-    return value + gate_ffn.unsqueeze(1) * block.ffn(ffn_in)
+    return value + gate_ffn.unsqueeze(1) * tanh_gelu_mlp(block.ffn, ffn_in)
 
 
 def dit_block_step_cached(
@@ -324,7 +351,7 @@ def dit_block_step_cached(
     )
     value = value + gate_attn.unsqueeze(1) * output
     ffn_in = block.norm2(value) * (1 + scale_ffn.unsqueeze(1)) + shift_ffn.unsqueeze(1)
-    return value + gate_ffn.unsqueeze(1) * block.ffn(ffn_in)
+    return value + gate_ffn.unsqueeze(1) * tanh_gelu_mlp(block.ffn, ffn_in)
 
 
 @dataclass(frozen=True)
@@ -659,6 +686,11 @@ class DotsTtsAcousticTail:
         # note (0xtoward): Compile before capture so decode replays the fused blocks.
         self.tail_block_compile = self.cuda_graph_enabled and bool(compile_blocks)
         if self.tail_block_compile:
+            for block in dit.blocks:
+                activation = block.ffn.act
+                assert (
+                    isinstance(activation, nn.GELU) and activation.approximate == "tanh"
+                )
             self.compiled_dit_block_step = torch.compile(dit_block_step, dynamic=True)
             self.compiled_dit_block_step_cached = torch.compile(
                 dit_block_step_cached, dynamic=True
