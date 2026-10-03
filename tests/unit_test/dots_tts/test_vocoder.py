@@ -480,3 +480,27 @@ def test_alias_free_autocast_falls_back(
         actual = candidate(inputs)
     assert actual.dtype == expected.dtype == dtype
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("cuda_alias_free_activation", [False, True], indirect=True)
+@pytest.mark.parametrize("frames", [1, 3, 17, 257])
+@pytest.mark.parametrize("bias_stride", [1, 2])
+@torch.inference_mode()
+def test_alias_free_folded_bias_matches_bias_then_activation(
+    cuda_alias_free_activation: torch.nn.Module, frames: int, bias_stride: int
+) -> None:
+    activation = cuda_alias_free_activation
+    candidate = FusedAliasFree(activation)
+    inputs = torch.randn(2, 7, frames, device="cuda")
+    bias = torch.randn(7 * bias_stride, device="cuda")[::bias_stride]
+    expected = candidate(inputs + bias.view(1, -1, 1))
+    torch.testing.assert_close(candidate(inputs, bias=bias), expected, rtol=0, atol=0)
+
+    residual = torch.randn_like(inputs)
+    torch.testing.assert_close(
+        alias_free.residual_bias_add(inputs, bias, residual),
+        (inputs + bias.view(1, -1, 1)) + residual,
+        rtol=0,
+        atol=0,
+    )
