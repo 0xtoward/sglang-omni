@@ -35,6 +35,8 @@ stages:
     gpu_memory_fraction: 0.55
     factory:
       optimize: true
+      compile_tail_blocks: true
+      enable_prefill_graphs: true
       # note (0xtoward): Disable padding to favor first-audio latency over throughput.
       enable_acoustic_tail_batch_padding: true
     engine:

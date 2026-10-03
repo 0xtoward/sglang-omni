@@ -111,6 +111,7 @@ def build_tail(
     patch_capacity: int = 8,
     optimize: bool = False,
     pad_to_bucket: bool = False,
+    prefill_graphs: bool = False,
 ):
     encoder = patch_encoder().to(device=device, dtype=dtype)
     with torch.no_grad():
@@ -134,6 +135,7 @@ def build_tail(
         dtype=dtype,
         optimize=optimize,
         pad_to_bucket=pad_to_bucket,
+        prefill_graphs=prefill_graphs,
     )
 
 
@@ -790,3 +792,70 @@ def test_tail_without_captured_graphs_logs_no_counters(caplog) -> None:
         {"meanflow": 50, "semantic_encoder": 50}
     )
     assert not counter_records(caplog)
+
+
+@pytest.mark.parametrize("prompt_patches", [10, 16])
+def test_prefill_graphs_match_eager_prompt_encode_and_history_seed(
+    prompt_patches: int,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    eager_model = TailModel().eval().to(device=device, dtype=dtype)
+    graph_model = copy.deepcopy(eager_model)
+    torch.manual_seed(9)
+    eager = build_tail(
+        eager_model, slots=2, device=device, dtype=dtype, patch_capacity=33
+    )
+    torch.manual_seed(9)
+    graph = build_tail(
+        graph_model,
+        slots=2,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=True,
+        prefill_graphs=True,
+    )
+    prompt = torch.randn(
+        1, prompt_patches * PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype
+    )
+    eager_slot = eager.acquire_slot()
+    graph_slot = graph.acquire_slot()
+
+    eager_embeddings = eager.encode_prompt_patches(eager_slot, prompt)
+    graph_embeddings = graph.encode_prompt_patches(graph_slot, prompt)
+    torch.testing.assert_close(
+        graph_embeddings, eager_embeddings, rtol=2e-2, atol=2e-2
+    )
+    tokens = eager.encoder_seq_len[eager_slot]
+    assert graph.encoder_seq_len[graph_slot] == tokens
+    for name in ("encoder_k", "encoder_v"):
+        torch.testing.assert_close(
+            getattr(graph, name)[:, graph_slot, :, :tokens],
+            getattr(eager, name)[:, eager_slot, :, :tokens],
+            rtol=2e-2,
+            atol=2e-2,
+        )
+
+    grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
+    g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    mods = eager.dit.build_mods(grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond)
+    rows = torch.randn(
+        prompt_patches * eager.spec.unit_len, FM_HIDDEN, device=device, dtype=dtype
+    )
+    eager.seed_fm_history(eager_slot, fm_rows=rows, all_mods=mods)
+    graph.seed_fm_history(graph_slot, fm_rows=rows, all_mods=mods)
+    persistent = rows.size(0) - eager.spec.unit_len
+    for name in ("dit_k", "dit_v"):
+        torch.testing.assert_close(
+            getattr(graph, name)[:, :, graph_slot, :, :persistent],
+            getattr(eager, name)[:, :, eager_slot, :, :persistent],
+            rtol=2e-2,
+            atol=2e-2,
+        )
+    assert graph.graph_replays["prompt_encoder"] == 1
+    assert graph.graph_replays["history_seed"] == 1
+    assert not graph.graph_misses
