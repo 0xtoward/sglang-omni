@@ -58,6 +58,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         enable_prefill_graphs: bool = False,
         stream_latents_on_cpu: bool = False,
         enable_cached_block_attention: bool = False,
+        prefill_coalesce_requests: int = 0,
+        prefill_coalesce_wait_ms: float = 60.0,
     ) -> None:
         from sglang_omni.models.dots_tts.hf_config import DOTS_TTS_MODEL_ARCH_OVERRIDE
 
@@ -71,6 +73,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         self.enable_prefill_graphs = bool(enable_prefill_graphs)
         self.stream_latents_on_cpu = stream_latents_on_cpu
         self.enable_cached_block_attention = bool(enable_cached_block_attention)
+        self.prefill_coalesce_requests = int(prefill_coalesce_requests)
+        self.prefill_coalesce_wait_ms = float(prefill_coalesce_wait_ms)
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
         else:
@@ -274,6 +278,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
                 build_stream_output, stream_latents_on_cpu=self.stream_latents_on_cpu
             ),
             "enable_async_decode": False,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
 
