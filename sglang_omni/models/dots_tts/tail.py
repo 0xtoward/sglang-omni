@@ -385,7 +385,8 @@ def dit_history_block_step(
 def dit_block_step_cached(
     block: nn.Module,
     value: torch.Tensor,
-    block_mod: torch.Tensor,
+    block_mods: torch.Tensor,
+    mod_index: torch.Tensor,
     key_pool: torch.Tensor,
     value_pool: torch.Tensor,
     slots: torch.Tensor,
@@ -396,7 +397,12 @@ def dit_block_step_cached(
     head_dim: int,
     previous_rows: int,
 ) -> torch.Tensor:
-    """dit_block_step with the block attending to the slot pools in place."""
+    """dit_block_step with the block attending to the slot pools in place.
+
+    block_mods holds every block's modulation rows for the step; mod_index selects this
+    block's and ODE step's, so one compiled graph serves every layer.
+    """
+    block_mod = block_mods.index_select(0, mod_index).squeeze(0)
     shift_attn, scale_attn, gate_attn, shift_ffn, scale_ffn, gate_ffn = block_mod.chunk(
         6, dim=1
     )
@@ -943,6 +949,12 @@ class DotsTtsAcousticTail:
         block_mod_width = 6 * int(self.dit.input_layer.out_features)
         self.block_mod_buffers = [
             zeros(max(pool_rows, spec.nfe), block_mod_width) for _ in self.dit.blocks
+        ]
+        # note (0xtoward): separate one-element tensors keep every index a fresh base,
+        # so the compiled block step never specializes on which block it runs.
+        self.block_mod_indices = [
+            torch.full((1,), index, dtype=torch.long, device=self.device)
+            for index in range(len(self.dit.blocks) * spec.nfe)
         ]
 
         dit_query = 2 * spec.unit_len
@@ -1597,6 +1609,19 @@ class DotsTtsAcousticTail:
             unit + spec.hidden_patch_size + spec.latent_patch_size,
         )
         cos, sin = rotary_cos_sin(self.dit_rotary, persistent_index, 2 * unit)
+        if self.tail_block_compile:
+            blocks = len(self.dit.blocks)
+            block_width = 6 * int(self.dit.input_layer.out_features)
+            # note (0xtoward): one block-major copy of the step's modulations; each
+            # compiled block reads its rows by index instead of a copy per block.
+            step_block_mods = (
+                mods[:, :, : blocks * block_width]
+                .reshape(spec.nfe, rows, blocks, block_width)
+                .permute(2, 0, 1, 3)
+                .reshape(blocks * spec.nfe, rows, block_width)
+            )
+        else:
+            step_block_mods = None
         for ode_index in range(spec.nfe):
             key_pools = self.dit_k[ode_index]
             value_pools = self.dit_v[ode_index]
@@ -1620,19 +1645,14 @@ class DotsTtsAcousticTail:
 
             value = torch.cat([previous, hidden, self.coordinate_proj(latent)], dim=1)
             if self.tail_block_compile:
-                block_mods, final_mods = self.dit.split_mods(mods[ode_index])
-                contiguous_mods = [buffer[:rows] for buffer in self.block_mod_buffers]
-                torch._foreach_copy_(  # noqa: leading-underscore  # upstream name
-                    contiguous_mods, list(block_mods)
-                )
+                _, final_mods = self.dit.split_mods(mods[ode_index])
                 value = self.dit.input_layer(value)
-                for layer, (block, block_mod) in enumerate(
-                    zip(self.dit.blocks, contiguous_mods, strict=True)
-                ):
+                for layer, block in enumerate(self.dit.blocks):
                     value = self.compiled_dit_block_step_cached(
                         block,
                         value,
-                        block_mod,
+                        step_block_mods,
+                        self.block_mod_indices[layer * spec.nfe + ode_index],
                         key_pools[layer],
                         value_pools[layer],
                         slot_index,
