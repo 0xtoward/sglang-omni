@@ -162,8 +162,250 @@ if triton is not None:
             output_pointer + row * frames + frame, (convolved + bias) + residual, mask
         )
 
+    @triton.jit
+    def upsample_snake_valid_kernel(
+        input_pointer,
+        bias_pointer,
+        filter_pointer,
+        alpha_pointer,
+        inverse_beta_pointer,
+        output_pointer,
+        channels,
+        samples,
+        input_batch_stride,
+        input_frame_stride,
+        shared_filter: tl.constexpr,
+        has_bias: tl.constexpr,
+        block_samples: tl.constexpr,
+        block_channels: tl.constexpr,
+    ) -> None:
+        batch = tl.program_id(2)
+        index = tl.program_id(0) * block_samples + tl.arange(0, block_samples)
+        channel = tl.program_id(1) * block_channels + tl.arange(0, block_channels)
+        channel_mask = channel < channels
+        mask = (index < samples)[:, None] & channel_mask[None, :]
+        # note (0xtoward): output index i is the 2x sample i + 10, the first one
+        # whose six input frames are all real.
+        sample = index + 10
+        phase = sample % 2
+        first_frame = sample // 2
+        filter_offset = tl.full((block_channels,), 0, tl.int32)
+        if not shared_filter:
+            filter_offset = channel * 12
+        else:
+            pass
+        bias = tl.full((block_channels,), 0, tl.float32)
+        if has_bias:
+            bias = tl.load(bias_pointer + channel, channel_mask, other=0)
+        else:
+            pass
+        rows = input_pointer + batch * input_batch_stride + channel[None, :]
+        accumulator = tl.full((block_samples, block_channels), 0, tl.float32)
+        for tap in tl.static_range(6):
+            value = tl.load(
+                rows + (first_frame - tap)[:, None] * input_frame_stride, mask, other=0
+            )
+            if has_bias:
+                value = value + bias[None, :]
+            else:
+                pass
+            even = tl.load(
+                filter_pointer + filter_offset + 2 * tap, channel_mask, other=0
+            )
+            odd = tl.load(
+                filter_pointer + filter_offset + 1 + 2 * tap, channel_mask, other=0
+            )
+            coefficient = tl.where(phase[:, None] == 0, even[None, :], odd[None, :])
+            accumulator = tl.fma(value, coefficient, accumulator)
+        upsampled = 2.0 * accumulator
+        alpha = tl.load(alpha_pointer + channel, channel_mask, other=0)
+        inverse_beta = tl.load(inverse_beta_pointer + channel, channel_mask, other=0)
+        periodic = libdevice.sin(upsampled * alpha[None, :])
+        activated = upsampled + inverse_beta[None, :] * (periodic * periodic)
+        tl.store(
+            output_pointer
+            + batch * samples * channels
+            + index[:, None] * channels
+            + channel[None, :],
+            activated,
+            mask,
+        )
+
+    @triton.jit
+    def downsample_valid_kernel(
+        input_pointer,
+        filter_pointer,
+        output_pointer,
+        channels,
+        samples,
+        output_frames,
+        shared_filter: tl.constexpr,
+        block_frames: tl.constexpr,
+        block_channels: tl.constexpr,
+    ) -> None:
+        batch = tl.program_id(2)
+        frame = tl.program_id(0) * block_frames + tl.arange(0, block_frames)
+        channel = tl.program_id(1) * block_channels + tl.arange(0, block_channels)
+        channel_mask = channel < channels
+        mask = (frame < output_frames)[:, None] & channel_mask[None, :]
+        filter_offset = tl.full((block_channels,), 0, tl.int32)
+        if not shared_filter:
+            filter_offset = channel * 12
+        else:
+            pass
+        rows = input_pointer + batch * samples * channels + channel[None, :]
+        accumulator = tl.full((block_frames, block_channels), 0, tl.float32)
+        # note (0xtoward): valid frame t reads 2x samples 2t + 11 + tap, stored at
+        # index 2t + 1 + tap of the upsampled tensor.
+        for tap in tl.static_range(12):
+            value = tl.load(
+                rows + (2 * frame + 1 + tap)[:, None] * channels, mask, other=0
+            )
+            coefficient = tl.load(
+                filter_pointer + filter_offset + tap, channel_mask, other=0
+            )
+            accumulator = tl.fma(value, coefficient[None, :], accumulator)
+        tl.store(
+            output_pointer
+            + batch * output_frames * channels
+            + frame[:, None] * channels
+            + channel[None, :],
+            accumulator,
+            mask,
+        )
+
+    @triton.jit
+    def residual_bias_channels_last_kernel(
+        conv_pointer,
+        bias_pointer,
+        residual_pointer,
+        output_pointer,
+        channels,
+        frames,
+        conv_batch_stride,
+        residual_batch_stride,
+        block_frames: tl.constexpr,
+        block_channels: tl.constexpr,
+    ) -> None:
+        batch = tl.program_id(2)
+        frame = tl.program_id(0) * block_frames + tl.arange(0, block_frames)
+        channel = tl.program_id(1) * block_channels + tl.arange(0, block_channels)
+        channel_mask = channel < channels
+        mask = (frame < frames)[:, None] & channel_mask[None, :]
+        offsets = frame[:, None] * channels + channel[None, :]
+        convolved = tl.load(
+            conv_pointer + batch * conv_batch_stride + offsets, mask, other=0
+        )
+        residual = tl.load(
+            residual_pointer + batch * residual_batch_stride + offsets, mask, other=0
+        )
+        bias = tl.load(bias_pointer + channel, channel_mask, other=0)
+        tl.store(
+            output_pointer + batch * frames * channels + offsets,
+            (convolved + bias[None, :]) + residual,
+            mask,
+        )
+
 else:
     pass
+
+
+VALID_BLOCK_FRAMES = 64
+VALID_BLOCK_CHANNELS = 32
+
+
+def alias_free_valid_channels_last(
+    activation: FusedAliasFree, value: torch.Tensor, bias: torch.Tensor | None
+) -> torch.Tensor:
+    """Fused alias-free activation of a (B, T, C) activation whose channel stride is 1.
+
+    Returns the T - 11 outputs that depend only on real input frames, the
+    causal receptive field of the upsample and lowpass filters.
+    """
+    batch_size, frames, channels = value.shape
+    samples = RESAMPLE_RATIO * frames - 10
+    output_frames = frames - (FILTER_TAPS - 1)
+    upsampled = torch.empty(
+        (batch_size, samples, channels), device=value.device, dtype=value.dtype
+    )
+    output = torch.empty(
+        (batch_size, output_frames, channels), device=value.device, dtype=value.dtype
+    )
+    block_channels = min(VALID_BLOCK_CHANNELS, triton.next_power_of_2(channels))
+    upsample_snake_valid_kernel[
+        (
+            triton.cdiv(samples, VALID_BLOCK_FRAMES),
+            triton.cdiv(channels, block_channels),
+            batch_size,
+        )
+    ](
+        value,
+        value if bias is None else bias,
+        activation.upsample.filter,
+        activation.frozen_alpha,
+        activation.frozen_inverse_beta,
+        upsampled,
+        channels,
+        samples,
+        value.stride(0),
+        value.stride(1),
+        activation.upsample.filter.numel() == FILTER_TAPS,
+        bias is not None,
+        VALID_BLOCK_FRAMES,
+        block_channels,
+        num_warps=4,
+        enable_fp_fusion=False,
+    )
+    downsample_valid_kernel[
+        (
+            triton.cdiv(output_frames, VALID_BLOCK_FRAMES),
+            triton.cdiv(channels, block_channels),
+            batch_size,
+        )
+    ](
+        upsampled,
+        activation.downsample.lowpass.filter,
+        output,
+        channels,
+        samples,
+        output_frames,
+        activation.downsample.lowpass.filter.numel() == FILTER_TAPS,
+        VALID_BLOCK_FRAMES,
+        block_channels,
+        num_warps=4,
+        enable_fp_fusion=False,
+    )
+    return output
+
+
+def residual_bias_add_channels_last(
+    convolved: torch.Tensor, bias: torch.Tensor, residual: torch.Tensor
+) -> torch.Tensor:
+    """(convolved + bias) + residual for (B, T, C) tensors whose rows are contiguous."""
+    batch_size, frames, channels = convolved.shape
+    output = torch.empty(
+        (batch_size, frames, channels), device=convolved.device, dtype=convolved.dtype
+    )
+    residual_bias_channels_last_kernel[
+        (
+            triton.cdiv(frames, VALID_BLOCK_FRAMES),
+            triton.cdiv(channels, VALID_BLOCK_CHANNELS),
+            batch_size,
+        )
+    ](
+        convolved,
+        bias,
+        residual,
+        output,
+        channels,
+        frames,
+        convolved.stride(0),
+        residual.stride(0),
+        VALID_BLOCK_FRAMES,
+        VALID_BLOCK_CHANNELS,
+        num_warps=4,
+    )
+    return output
 
 
 def residual_bias_add(
