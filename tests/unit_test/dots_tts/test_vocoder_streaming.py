@@ -23,6 +23,7 @@ class RecordingSlotPool:
         self.free = list(reversed(range(num_slots)))
         self.in_use: set[int] = set()
         self.steps: list[dict[int, torch.Tensor]] = []
+        self.finals: list[bool] = []
         self.flushes: list[int] = []
 
     def acquire(self) -> int:
@@ -42,10 +43,13 @@ class RecordingSlotPool:
         self.in_use.remove(slot)
         self.free.append(slot)
 
-    def step(self, slot_latents: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
+    def step(
+        self, slot_latents: dict[int, torch.Tensor], *, final: bool = False
+    ) -> dict[int, torch.Tensor]:
         self.steps.append(
             {slot: latents.clone() for slot, latents in slot_latents.items()}
         )
+        self.finals.append(final)
         return {slot: torch.full((1, 1, 8), float(slot + 1)) for slot in slot_latents}
 
     def flush(self, slot: int) -> torch.Tensor:
@@ -301,6 +305,7 @@ def test_stream_done_flushes_and_releases_slot() -> None:
     waveform = vocoder.decode_delta("req", state, is_final=True)
     assert waveform is not None
     assert state.slot is None
+    assert pool.finals == [True]
     assert pool.flushes == [slot]
     assert slot not in pool.in_use
 

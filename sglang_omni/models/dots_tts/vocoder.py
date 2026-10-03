@@ -301,7 +301,9 @@ class DotsTTSStreamingVocoder(
                 # note (db-ol): compiled stream_step cudagraph trees corrupt the
                 # backbone decode graph replay in this process, see issue 1392;
                 # the slot pool stays on the eager kernels (#1395).
-                chunk = pool.step({state.slot: torch.cat(patches, dim=1)})[state.slot]
+                chunk = pool.step({state.slot: torch.cat(patches, dim=1)}, final=True)[
+                    state.slot
+                ]
                 if chunk.numel():
                     chunks.append(chunk)
                 else:

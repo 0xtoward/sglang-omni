@@ -85,9 +85,15 @@ def schedule(total_patches: int) -> list[int]:
 
 
 def decode(
-    pool: DotsVocoderSlotPool, streams: list[torch.Tensor]
+    pool: DotsVocoderSlotPool,
+    streams: list[torch.Tensor],
+    *,
+    fuse_final: bool = False,
 ) -> list[torch.Tensor]:
-    """Run staggered streams through one pool; rows of different ages share equal-length steps."""
+    """Run staggered streams through one pool; rows of different ages share equal-length steps.
+
+    fuse_final runs each stream's last latents as a final step of its own.
+    """
     plans = [schedule(stream.shape[1] // PATCH) for stream in streams]
     slots = [pool.acquire() for _ in streams]
     cursor = [0] * len(streams)
@@ -104,17 +110,30 @@ def decode(
         for index in active:
             by_size.setdefault(plans[index][cursor[index]], []).append(index)
         for size, members in sorted(by_size.items()):
-            latents: dict[int, torch.Tensor] = {}
-            for index in members:
-                frames = size * PATCH
-                latents[slots[index]] = streams[index][
-                    :, progress[index] : progress[index] + frames
-                ]
-                progress[index] += frames
-                cursor[index] += 1
-            out = pool.step(latents)
-            for index in members:
-                chunks[index].append(out[slots[index]].reshape(-1))
+            groups = [
+                [index for index in members if cursor[index] + 1 < len(plans[index])],
+                [index for index in members if cursor[index] + 1 == len(plans[index])],
+            ]
+            if not fuse_final:
+                groups = [members, []]
+            else:
+                pass
+            for final, group in enumerate(groups):
+                if not group:
+                    continue
+                else:
+                    pass
+                latents: dict[int, torch.Tensor] = {}
+                for index in group:
+                    frames = size * PATCH
+                    latents[slots[index]] = streams[index][
+                        :, progress[index] : progress[index] + frames
+                    ]
+                    progress[index] += frames
+                    cursor[index] += 1
+                out = pool.step(latents, final=bool(final))
+                for index in group:
+                    chunks[index].append(out[slots[index]].reshape(-1))
         round_index += 1
     for index, slot in enumerate(slots):
         chunks[index].append(pool.flush(slot).reshape(-1))
@@ -144,6 +163,29 @@ def test_incremental_codec_matches_window_decode() -> None:
         error = (candidate - reference).norm() / reference.norm()
         assert error < 1e-5, error
     assert codec.decoder.warm_history_frames < 96 // 2
+
+
+@torch.no_grad()
+def test_incremental_codec_final_step_matches_step_then_flush() -> None:
+    inference = tiny_inference()
+    window_pool = DotsVocoderSlotPool(inference, num_slots=2, chunk_size=PATCH * MERGE)
+    incremental_pool = DotsVocoderSlotPool(
+        inference, num_slots=2, chunk_size=PATCH * MERGE
+    )
+    attach_incremental_codec(incremental_pool, inference, max_batch_size=2)
+    generator = torch.Generator().manual_seed(4)
+    latent_dim = int(inference.vocoder.h.latent_dim)
+    streams = [
+        torch.randn(1, frames, latent_dim, generator=generator) for frames in (92, 68)
+    ]
+
+    expected = decode(window_pool, streams)
+    observed = decode(incremental_pool, streams, fuse_final=True)
+
+    for reference, candidate in zip(expected, observed, strict=True):
+        assert candidate.shape == reference.shape
+        error = (candidate - reference).norm() / reference.norm()
+        assert error < 1e-5, error
 
 
 @pytest.mark.parametrize("cancel_early", [False, True])
