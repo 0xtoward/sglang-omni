@@ -47,6 +47,10 @@ stages:
       # disable_cuda_graph: true) to fall back to eager backbone decode.
       disable_cuda_graph: false
       cuda_graph_max_bs: 16
+      # Whole-request prefills replay the backbone as breakable CUDA graphs
+      # (attention stays eager); chunked prefill stays off for dots.
+      cuda_graph_backend_prefill: breakable
+      cuda_graph_max_bs_prefill: 2048
   vocoder:
     process: vocoder
     gpu_memory_fraction: 0.25
