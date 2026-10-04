@@ -154,19 +154,79 @@ def copy_live_state(source, destination) -> None:
         destination_value[tuple(live)].copy_(source_value)
 
 
-def assert_live_state_close(actual, expected) -> None:
+def assert_no_further_from_fp32(
+    observed: torch.Tensor, eager_value: torch.Tensor, fp32_value: torch.Tensor
+) -> None:
+    """A graph or compiled bf16 result may round differently from eager bf16, but
+    it must stay within a small factor of eager's own distance from the fp32 run,
+    by norm and by the largest element."""
+    fp32_value = fp32_value.float()
+    observed_error = observed.float() - fp32_value
+    eager_error = eager_value.float() - fp32_value
+    scale = fp32_value.norm().clamp_min(1e-12)
+    observed_norm = (observed_error.norm() / scale).item()
+    eager_norm = (eager_error.norm() / scale).item()
+    assert observed_norm <= 1.5 * eager_norm + 1e-4, (observed_norm, eager_norm)
+    observed_max = observed_error.abs().max().item()
+    eager_max = eager_error.abs().max().item()
+    assert observed_max <= 2 * eager_max + 1e-3, (observed_max, eager_max)
+
+
+def fp32_twin(
+    eager: tail.DotsTtsAcousticTail,
+    model: TailModel,
+    *,
+    slots: int,
+    device: torch.device,
+    patch_capacity: int,
+) -> tail.DotsTtsAcousticTail:
+    """The same weights in fp32; sampling replays eager's last noise draw."""
+    reference = build_tail(
+        copy.deepcopy(model).float(),
+        slots=slots,
+        device=device,
+        dtype=torch.float32,
+        patch_capacity=patch_capacity,
+    )
+    reference.encoder.load_state_dict(
+        {key: value.float() for key, value in eager.encoder.state_dict().items()}
+    )
+    draws: list[torch.Tensor] = []
+    eager_sample_noise = eager.sample_noise
+
+    def recorded_noise(slots: list[int]) -> torch.Tensor:
+        draws.append(eager_sample_noise(slots))
+        return draws[-1]
+
+    eager.sample_noise = recorded_noise
+    reference.sample_noise = lambda slots: draws[-1].float()
+    return reference
+
+
+def assert_live_state_close(
+    actual: tail.DotsTtsAcousticTail,
+    expected: tail.DotsTtsAcousticTail,
+    reference: tail.DotsTtsAcousticTail | None = None,
+) -> None:
     slots = expected.spec.num_slots
     for name, slot_dim in SLOT_DIMS.items():
         actual_value = getattr(actual, name)
         expected_value = getattr(expected, name)
         live = [slice(None)] * expected_value.ndim
         live[slot_dim] = slice(0, slots)
-        torch.testing.assert_close(
-            actual_value[tuple(live)],
-            expected_value,
-            rtol=2e-2,
-            atol=2e-2,
-        )
+        if reference is None:
+            torch.testing.assert_close(
+                actual_value[tuple(live)],
+                expected_value,
+                rtol=2e-2,
+                atol=2e-2,
+            )
+        else:
+            assert_no_further_from_fp32(
+                actual_value[tuple(live)],
+                expected_value,
+                getattr(reference, name),
+            )
     for slot in range(slots):
         assert torch.equal(
             actual.generators[slot].get_state(),
@@ -546,21 +606,29 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
         optimize=True,
         pad_to_bucket=True,
     )
+    # note (0xtoward): padding changes GEMM shapes and so bf16 rounding; the
+    # padded replay is judged by its distance from an fp32 run, like eager.
+    reference = fp32_twin(
+        eager, eager_model, slots=slots, device=device, patch_capacity=40
+    )
 
     copy_live_state(eager, graph)
+    for name in SLOT_DIMS:
+        getattr(reference, name).copy_(getattr(eager, name))
     assert [eager.acquire_slot() for _ in range(slots)] == list(range(slots))
     assert [graph.acquire_slot() for _ in range(slots)] == list(range(slots))
+    assert [reference.acquire_slot() for _ in range(slots)] == list(range(slots))
     for slot in range(slots):
         fm_length = 52 if slot in {slots - 3, slots - 1} else 15
         encoder_length = (
             18 if slot in {slots - 3, slots - 1} else 4
         ) * graph.encoder_block
-        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = (
-            fm_length  # noqa: leading-underscore  # production name
-        )
-        eager.encoder_seq_len[slot] = graph.encoder_seq_len[slot] = encoder_length
-        eager.initialize_slot_rng(slot, 100 + slot)
-        graph.initialize_slot_rng(slot, 100 + slot)
+        for acoustic_tail in (eager, graph, reference):
+            acoustic_tail._fm_seq_len[slot] = (
+                fm_length  # noqa: leading-underscore  # production name
+            )
+            acoustic_tail.encoder_seq_len[slot] = encoder_length
+            acoustic_tail.initialize_slot_rng(slot, 100 + slot)
 
     # note (0xtoward): A uses the maximum-batch gather twin; B changes live
     # members and uses the largest permitted filler count (2 -> 4).
@@ -576,7 +644,7 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
         if replay_index == 5:
             # note (0xtoward): These histories fit the pool but exceed every
             # captured context, so even a legal 2 -> 4 batch must run eagerly.
-            for acoustic_tail in (eager, graph):
+            for acoustic_tail in (eager, graph, reference):
                 for slot in slot_order:
                     acoustic_tail._fm_seq_len[slot] = (
                         32 * acoustic_tail.spec.unit_len + acoustic_tail.spec.window_len
@@ -588,15 +656,19 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
         hidden = torch.randn(len(slot_order), FM_HIDDEN, device=device, dtype=dtype)
         eager_latent = eager.sample_patches(slot_order, fm_hidden_rows=hidden)
         graph_latent = graph.sample_patches(slot_order, fm_hidden_rows=hidden)
-        torch.testing.assert_close(graph_latent, eager_latent, rtol=2e-2, atol=2e-2)
+        reference_latent = reference.sample_patches(
+            slot_order, fm_hidden_rows=hidden.float()
+        )
+        assert_no_further_from_fp32(graph_latent, eager_latent, reference_latent)
 
         latent = torch.randn(
             len(slot_order), PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype
         )
         eager_feedback = eager.encode_feedback(slot_order, latent)
         graph_feedback = graph.encode_feedback(slot_order, latent)
-        torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
-        assert_live_state_close(graph, eager)
+        reference_feedback = reference.encode_feedback(slot_order, latent.float())
+        assert_no_further_from_fp32(graph_feedback, eager_feedback, reference_feedback)
+        assert_live_state_close(graph, eager, reference)
         if replay_index == 3:
             for captured in shared_graphs:
                 assert captured.inputs["slots"].tolist() == full
@@ -630,12 +702,16 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
     hidden_one = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
     eager_one = eager.sample_patches([bystander], fm_hidden_rows=hidden_one)
     graph_one = graph.sample_patches([bystander], fm_hidden_rows=hidden_one)
-    torch.testing.assert_close(graph_one, eager_one, rtol=2e-2, atol=2e-2)
+    reference_one = reference.sample_patches(
+        [bystander], fm_hidden_rows=hidden_one.float()
+    )
+    assert_no_further_from_fp32(graph_one, eager_one, reference_one)
 
     # note (0xtoward): Reacquiring a real row must not inherit filler state.
-    eager.release_slot(bystander)
-    graph.release_slot(bystander)
+    for acoustic_tail in (eager, graph, reference):
+        acoustic_tail.release_slot(bystander)
     assert eager.acquire_slot() == graph.acquire_slot() == bystander
+    assert reference.acquire_slot() == bystander
     grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
     g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
     mods = eager.dit.build_mods(grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond)
@@ -645,14 +721,16 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
     for acoustic_tail in (eager, graph):
         acoustic_tail.seed_fm_history(bystander, fm_rows=history, all_mods=mods)
         acoustic_tail.initialize_slot_rng(bystander, 999)
+    reference.seed_fm_history(bystander, fm_rows=history.float(), all_mods=mods.float())
+    reference.initialize_slot_rng(bystander, 999)
     hidden_one = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
-    torch.testing.assert_close(
-        graph.sample_patches([bystander], fm_hidden_rows=hidden_one),
-        eager.sample_patches([bystander], fm_hidden_rows=hidden_one),
-        rtol=2e-2,
-        atol=2e-2,
+    eager_one = eager.sample_patches([bystander], fm_hidden_rows=hidden_one)
+    graph_one = graph.sample_patches([bystander], fm_hidden_rows=hidden_one)
+    reference_one = reference.sample_patches(
+        [bystander], fm_hidden_rows=hidden_one.float()
     )
-    assert_live_state_close(graph, eager)
+    assert_no_further_from_fp32(graph_one, eager_one, reference_one)
+    assert_live_state_close(graph, eager, reference)
 
 
 @pytest.mark.accelerator
@@ -891,33 +969,13 @@ def test_prefill_graphs_match_eager_prompt_encode_and_history_seed(
         compile_blocks=compile_blocks,
         prefill_graphs=True,
     )
-    # note (0xtoward): the same weights in fp32 are the yardstick. A compiled
-    # seed rounds its fused block once instead of per op, so it may differ from
-    # eager bf16, but it must not be further from fp32 than eager bf16 is.
-    reference = build_tail(
-        copy.deepcopy(eager_model).float(),
-        slots=2,
-        device=device,
-        dtype=torch.float32,
-        patch_capacity=33,
-    )
-    reference.encoder.load_state_dict(
-        {key: value.float() for key, value in eager.encoder.state_dict().items()}
-    )
+    # note (0xtoward): a compiled seed rounds its fused block once instead of
+    # per op, so it differs from eager bf16; fp32 is the yardstick for both.
+    reference = fp32_twin(eager, eager_model, slots=2, device=device, patch_capacity=33)
     noise = torch.randn(1, PATCH_SIZE, LATENT_DIM, device=device).to(dtype)
-    for candidate in (eager, graph, reference):
-        candidate.sample_noise = lambda slots, candidate=candidate: noise.to(
-            candidate.dtype
-        ).expand(len(slots), -1, -1)
-
-    def assert_no_further_from_fp32(
-        observed: torch.Tensor, eager_value: torch.Tensor, fp32_value: torch.Tensor
-    ) -> None:
-        observed_error = observed.float() - fp32_value
-        eager_error = eager_value.float() - fp32_value
-        scale = fp32_value.norm()
-        assert observed_error.norm() / scale <= 1.25 * eager_error.norm() / scale + 1e-4
-        assert observed_error.abs().max() <= 2 * eager_error.abs().max() + 1e-3
+    graph.sample_noise = lambda slots: noise.expand(len(slots), -1, -1)
+    eager.sample_noise = lambda slots: noise.expand(len(slots), -1, -1)
+    reference.sample_noise = lambda slots: noise.float().expand(len(slots), -1, -1)
 
     for prompt_patches in (16, 12, 10):
         prompt = torch.randn(
