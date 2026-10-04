@@ -105,6 +105,8 @@ def create_talker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         session_adapter=TalkerAdapter(model) if session_mode else None,
+        enable_async_decode=not session_mode,
+        async_decode_min_batch_size=2,
     )
 
 
