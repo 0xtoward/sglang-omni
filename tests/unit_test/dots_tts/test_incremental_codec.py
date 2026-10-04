@@ -242,6 +242,7 @@ def cuda_fused_inference(monkeypatch: pytest.MonkeyPatch) -> VocoderInference:
     return inference
 
 
+@pytest.mark.accelerator
 @torch.no_grad()
 def test_alias_free_valid_channels_last_matches_fused_kernel(
     monkeypatch: pytest.MonkeyPatch,
@@ -262,6 +263,7 @@ def test_alias_free_valid_channels_last_matches_fused_kernel(
         assert torch.equal(observed, expected)
 
 
+@pytest.mark.accelerator
 @torch.no_grad()
 def test_channels_last_warm_step_matches_current_warm_step(
     monkeypatch: pytest.MonkeyPatch,

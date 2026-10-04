@@ -82,6 +82,7 @@ def test_encoder_graphs_reject_unsafe_padding(
         )
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graphs need a GPU")
 @torch.no_grad()
 def test_encoder_graphs_match_eager_before_the_dropped_patch() -> None:

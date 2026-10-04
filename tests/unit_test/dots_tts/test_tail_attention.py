@@ -20,6 +20,7 @@ def require_cuda() -> None:
         pass
 
 
+@pytest.mark.accelerator
 @pytest.mark.parametrize(("query_rows", "previous_rows"), [(10, 5), (2, 2)])
 @torch.no_grad()
 def test_cached_block_attention_matches_masked_sdpa(

@@ -864,6 +864,7 @@ def test_cpu_tail_keeps_eager_when_compile_is_requested(
     ).all()
 
 
+@pytest.mark.accelerator
 @pytest.mark.parametrize("compile_blocks", [False, True])
 def test_prefill_graphs_match_eager_prompt_encode_and_history_seed(
     compile_blocks: bool,
@@ -958,6 +959,7 @@ def test_prefill_graphs_match_eager_prompt_encode_and_history_seed(
     assert not graph.graph_misses
 
 
+@pytest.mark.accelerator
 @torch.no_grad()
 def test_cached_block_attention_tail_matches_masked_tail() -> None:
     if not torch.cuda.is_available():
@@ -1022,6 +1024,7 @@ def test_cached_block_attention_tail_matches_masked_tail() -> None:
             assert (promoted - reference).norm() / reference.norm() < 2e-2
 
 
+@pytest.mark.accelerator
 @torch.no_grad()
 def test_cached_block_attention_graphs_follow_member_changes_and_slot_reuse() -> None:
     if not torch.cuda.is_available():
@@ -1116,6 +1119,7 @@ def test_cached_block_attention_graphs_follow_member_changes_and_slot_reuse() ->
     assert cached.graph_misses["semantic_encoder"] == 0
 
 
+@pytest.mark.accelerator
 @torch.no_grad()
 def test_compiled_tail_steps_match_eager_cached_tail() -> None:
     if not torch.cuda.is_available():

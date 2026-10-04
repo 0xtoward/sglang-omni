@@ -591,6 +591,7 @@ def test_encode_does_not_wait_for_the_vocoder_lock() -> None:
     worker.join()
 
 
+@pytest.mark.accelerator
 def test_cuda_speaker_runs_on_its_own_stream_with_unchanged_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
