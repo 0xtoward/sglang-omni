@@ -1378,6 +1378,7 @@ def test_retract_commits_pending_outputs_and_rechecks_capacity(
         batch=batch, scheduler_output=None, device_step=None
     )
     scheduler.forward_ct = 1
+    scheduler.decode_offload_manager = None
     scheduler.token_to_kv_pool_allocator = batch.token_to_kv_pool_allocator
     scheduler.tree_cache = batch.tree_cache
     scheduler.metrics_reporter = types.SimpleNamespace(enable_metrics=False)

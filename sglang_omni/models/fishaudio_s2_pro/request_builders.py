@@ -5,16 +5,17 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
+from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.sglang_backend.cache import prompt_cache_key
+from sglang_omni.scheduling.types import RequestOutput
 
 _S2PRO_GRAPH_TOP_K = 30
 
@@ -23,7 +24,7 @@ _S2PRO_GRAPH_TOP_K = 30
 class S2ProSGLangRequestData(SGLangARRequestData):
     """S2-Pro per-request state."""
 
-    vq_mask_tokens: Any = None
+    vq_mask_tokens: torch.Tensor | None = None
     vq_parts: list[torch.Tensor] | None = None
     num_codebooks: int = 10
     codebook_size: int = 4096
@@ -40,7 +41,7 @@ class S2ProSGLangRequestData(SGLangARRequestData):
     previous_semantic_tokens: list[int] = field(default_factory=list)
     semantic_history_tokens: torch.Tensor | None = None
     semantic_history_count: int = 0
-    last_codebook_values: Any = None
+    last_codebook_values: torch.Tensor | None = None
     latest_stream_code_chunk: torch.Tensor | None = None
     finish_reason: str | None = None
     engine_start_s: float = 0.0
@@ -64,7 +65,7 @@ def validate_s2pro_top_k(top_k: int) -> None:
 
 def build_sglang_tts_request(
     state: S2ProState,
-    tokenizer: Any,
+    tokenizer: PreTrainedTokenizerFast,
     request_id: str = "",
     *,
     im_end_token_id: int | None = None,
@@ -193,7 +194,7 @@ def apply_tts_result(state: S2ProState, result: S2ProSGLangRequestData) -> None:
 
 def make_tts_scheduler_adapters(
     *,
-    tokenizer: Any,
+    tokenizer: PreTrainedTokenizerFast,
     max_new_tokens_cap: int | None = None,
     context_length: int | None = None,
     im_end_token_id: int | None = None,
@@ -263,7 +264,7 @@ def make_tts_scheduler_adapters(
         )
 
     def stream_output_builder(
-        request_id: str, data: S2ProSGLangRequestData, req_output: Any
+        request_id: str, data: S2ProSGLangRequestData, req_output: RequestOutput
     ) -> list[OutgoingMessage]:
         del req_output
         if not data.stage_payload.request.params.get("stream"):

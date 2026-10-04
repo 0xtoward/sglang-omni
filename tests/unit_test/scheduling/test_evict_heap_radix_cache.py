@@ -226,6 +226,7 @@ def test_shared_prompt_switches_to_private_chunked_replay(
         request.full_untruncated_fill_ids = prompt[:]
         request.set_extend_range(0, len(prompt))
         request.kv.req_pool_idx = index + 1
+        request.kv.kv_allocated_len = request.kv.kv_committed_len = 9
         request.last_node = cache.root_node
         allocated = allocator.alloc((9 + page_size - 1) // page_size * page_size)
         request_pool.write((index + 1, slice(0, 9)), allocated[:9])
@@ -245,8 +246,12 @@ def test_shared_prompt_switches_to_private_chunked_replay(
     )
     private_keys = []
     for index, request in enumerate(requests):
-        cache.cache_finished_req(request, is_insert=False, kv_len_to_handle=9)
+        cache.free_kv_row(
+            request.kv, [(request.kv.cache_protected_len, request.kv.kv_committed_len)]
+        )
+        cache.unpin(request)
         request.kv.req_pool_idx = None
+        request.kv.mark_kv_released()
         request.reset_for_retract()
         scheduler._add_request_to_queue(
             request, is_retracted=True
@@ -262,6 +267,7 @@ def test_shared_prompt_switches_to_private_chunked_replay(
         request.init_next_round_input(cache)
         assert len(request.prefix_indices) == 0
         request.kv.req_pool_idx = index + 1
+        request.kv.kv_allocated_len = request.kv.kv_committed_len = 10
         request.is_retracted = False
         allocated = allocator.alloc((10 + page_size - 1) // page_size * page_size)
         request_pool.write((index + 1, slice(0, 10)), allocated[:10])
@@ -274,8 +280,12 @@ def test_shared_prompt_switches_to_private_chunked_replay(
         request.set_extend_range(8, 10)
         maybe_cache_unfinished_req(request, cache, chunked=True)
         assert len(request.prefix_indices) == 10
-        cache.cache_finished_req(request, is_insert=False, kv_len_to_handle=10)
+        cache.free_kv_row(
+            request.kv, [(request.kv.cache_protected_len, request.kv.kv_committed_len)]
+        )
+        cache.unpin(request)
         request.kv.req_pool_idx = None
+        request.kv.mark_kv_released()
         request.reset_for_retract()
         scheduler._add_request_to_queue(
             request, is_retracted=True
