@@ -488,6 +488,24 @@ def test_voxtral_reprefill_replays_absolute_rows_and_consumes_queue(
     assert runner.model.decode_input_embed_buffer.tolist() == [[30.0, 31.0]]
 
 
+def test_voxtral_reprefill_without_generated_feedback_fails_loudly() -> None:
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    runner.model = SimpleNamespace(
+        get_input_embeddings=lambda: (lambda ids: ids.float().unsqueeze(1))
+    )
+    data = SimpleNamespace(
+        req=SimpleNamespace(extend_range=SimpleNamespace(start=0, end=5, length=5)),
+        input_ids=torch.tensor([1, 24, 3]),
+        generated_input_embeds=[],
+    )
+    batch = SimpleNamespace(input_ids=torch.tensor([1, 24, 3, 10, 20]))
+
+    with pytest.raises(RuntimeError, match="missing generated feedback"):
+        runner.build_prefill_input_embeds(batch, [SimpleNamespace(data=data)])
+
+
 def test_voxtral_middle_prefill_does_not_sample_feedback() -> None:
     from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
 

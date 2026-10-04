@@ -1659,6 +1659,24 @@ def test_fish_retract_replays_decode_inputs_at_absolute_positions(
         )
 
 
+def test_fish_reprefill_without_generated_codes_fails_loudly() -> None:
+    runner = object.__new__(FishS2ProModelRunner)
+    runner.model = SimpleNamespace(
+        get_embed_tokens=lambda: (lambda ids: ids.float().unsqueeze(1))
+    )
+    data = SimpleNamespace(
+        req=SimpleNamespace(extend_range=SimpleNamespace(start=0, end=5, length=5)),
+        input_ids=[1, 2, 3],
+        vq_mask_tokens=None,
+        vq_parts=None,
+        output_codes=[],
+    )
+    batch = SimpleNamespace(input_ids=torch.tensor([1, 2, 3, 201, 202]))
+
+    with pytest.raises(AssertionError):
+        runner.build_prefill_input_embeds(batch, [SimpleNamespace(data=data)])
+
+
 def test_fish_identical_reference_shares_prompt_key() -> None:
     tokenizer = FakeFishTokenizer()
     first = build_sglang_tts_request(make_s2pro_state(), tokenizer, request_id="first")

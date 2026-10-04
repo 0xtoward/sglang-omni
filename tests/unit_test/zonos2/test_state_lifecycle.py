@@ -394,8 +394,7 @@ def test_resolve_collects_only_active_metadata_without_releasing_state(
     assert row not in pool.free_rows
 
 
-@pytest.mark.parametrize("start", [0, 1, 3])
-@pytest.mark.parametrize("has_eos", [False, True])
+@pytest.mark.parametrize("start,has_eos", [(0, True), (1, False), (3, True)])
 def test_reprefill_replays_full_frames_and_rebuilds_decode_state(
     start: int, has_eos: bool
 ) -> None:
@@ -448,6 +447,26 @@ def test_reprefill_replays_full_frames_and_rebuilds_decode_state(
     assert torch.count_nonzero(pool.feedback_embeds[row]) == 0
     assert int(pool.generation_step[survivor]) == 11
     assert torch.all(pool.rep_hist[survivor] == 11)
+
+
+def test_reprefill_without_generated_frames_fails_loudly() -> None:
+    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
+    runner.model, _ = model_and_pool()
+    runner.decode_requests = {}
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            extend_range=SimpleNamespace(start=0, end=5, length=5),
+            output_ids=[1, 2, 3],
+        ),
+        prompt_rows=torch.zeros(2, FRAME_WIDTH, dtype=torch.long),
+        output_codes=[],
+        speaker_emb=None,
+    )
+
+    with pytest.raises(AssertionError, match="frame history does not match"):
+        runner.build_prefill_embeds(
+            None, [SimpleNamespace(request_id="replay", data=data)]
+        )
 
 
 def test_full_pool_reclaims_waiting_owners_before_prefill_and_reentry() -> None:

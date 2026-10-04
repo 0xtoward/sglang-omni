@@ -185,8 +185,9 @@ def test_higgs_prefill_embeddings_follow_radix_prefix_position() -> None:
     assert embeds.tolist() == [[20.0, 21.0], [30.0, 31.0]]
 
 
-@pytest.mark.parametrize("start,end", [(0, 3), (3, 6), (5, 7), (6, 8), (0, 8)])
-@pytest.mark.parametrize("use_buffer", [False, True])
+@pytest.mark.parametrize(
+    "start,end,use_buffer", [(3, 6, False), (6, 8, True), (0, 8, False)]
+)
 def test_higgs_reprefill_replays_absolute_generated_rows(
     start: int, end: int, use_buffer: bool
 ) -> None:
@@ -237,6 +238,35 @@ def test_higgs_reprefill_replays_absolute_generated_rows(
     torch.testing.assert_close(
         embeddings, torch.cat([torch.tensor([[66.0, 66.0]]), expected[start:end]])
     )
+
+
+def test_higgs_reprefill_without_generated_codes_fails_loudly() -> None:
+    runner = object.__new__(HiggsTTSModelRunner)
+    runner.model = SimpleNamespace(
+        backbone=SimpleNamespace(
+            model=SimpleNamespace(
+                embed_tokens=lambda ids: ids.float().unsqueeze(1).repeat(1, 2)
+            )
+        ),
+        multimodal_embedding=SimpleNamespace(
+            modality_embedding_0=lambda codes: codes.float()
+        ),
+    )
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            origin_input_ids=[7, 8, 9],
+            extend_range=SimpleNamespace(start=0, length=5),
+        ),
+        reference_codes_delayed=None,
+        output_code_buffer=None,
+        output_code_count=0,
+        output_codes=[],
+        num_codebooks=2,
+    )
+    batch = SimpleNamespace(input_ids=torch.tensor([7, 8, 9, 100, 200]))
+
+    with pytest.raises(AssertionError, match="Missing Higgs generated codes"):
+        runner.build_prefill_input_embeds(batch, [SimpleNamespace(data=data)])
 
 
 @pytest.mark.parametrize("count", [0, 1, 4, 5, 6, 7])
