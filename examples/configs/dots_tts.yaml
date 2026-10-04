@@ -33,6 +33,9 @@ stages:
     gpu_memory_fraction: 0.55
     factory:
       optimize: true
+      # note (0xtoward): Prefill graphs can increase first-audio latency.
+      compile_tail_blocks: false
+      enable_prefill_graphs: false
     engine:
       mem_fraction_static: 0.20
       max_running_requests: 16
