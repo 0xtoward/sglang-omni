@@ -335,7 +335,7 @@ def test_speech_sampling_fields_reach_the_talker() -> None:
             len(token_ids) + 2, 8
         )
     )
-    sampling_params = build_sglang_talker_request(
+    talker_request = build_sglang_talker_request(
         state,
         model=talker,
         codec_vocab_size=64,
@@ -343,9 +343,10 @@ def test_speech_sampling_fields_reach_the_talker() -> None:
         tts_bos_token_id=151703,
         tts_eos_token_id=151704,
         params=result.request.params,
-    ).req.sampling_params
+    )
+    sampling_params = talker_request.req.sampling_params
     assert sampling_params.max_new_tokens == 30
-    assert sampling_params.min_new_tokens == 30
+    assert talker_request.talker_model_inputs["min_new_tokens"] == 30
     assert sampling_params.temperature == pytest.approx(0.3)
     assert sampling_params.top_k == 25
 
