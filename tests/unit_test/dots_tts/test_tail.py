@@ -891,13 +891,33 @@ def test_prefill_graphs_match_eager_prompt_encode_and_history_seed(
         compile_blocks=compile_blocks,
         prefill_graphs=True,
     )
+    # note (0xtoward): the same weights in fp32 are the yardstick. A compiled
+    # seed rounds its fused block once instead of per op, so it may differ from
+    # eager bf16, but it must not be further from fp32 than eager bf16 is.
+    reference = build_tail(
+        copy.deepcopy(eager_model).float(),
+        slots=2,
+        device=device,
+        dtype=torch.float32,
+        patch_capacity=33,
+    )
+    reference.encoder.load_state_dict(
+        {key: value.float() for key, value in eager.encoder.state_dict().items()}
+    )
+    noise = torch.randn(1, PATCH_SIZE, LATENT_DIM, device=device).to(dtype)
+    for candidate in (eager, graph, reference):
+        candidate.sample_noise = lambda slots, candidate=candidate: noise.to(
+            candidate.dtype
+        ).expand(len(slots), -1, -1)
 
-    # note (0xtoward): a compiled seed rounds its fused block once, so a few
-    # elements differ by bf16 rounding; the history and what is sampled from
-    # it must match as a whole.
-    def assert_close_overall(observed: torch.Tensor, expected: torch.Tensor) -> None:
-        difference = (observed.float() - expected.float()).norm()
-        assert difference / expected.float().norm() < 2e-2
+    def assert_no_further_from_fp32(
+        observed: torch.Tensor, eager_value: torch.Tensor, fp32_value: torch.Tensor
+    ) -> None:
+        observed_error = observed.float() - fp32_value
+        eager_error = eager_value.float() - fp32_value
+        scale = fp32_value.norm()
+        assert observed_error.norm() / scale <= 1.25 * eager_error.norm() / scale + 1e-4
+        assert observed_error.abs().max() <= 2 * eager_error.abs().max() + 1e-3
 
     for prompt_patches in (16, 12, 10):
         prompt = torch.randn(
@@ -905,11 +925,13 @@ def test_prefill_graphs_match_eager_prompt_encode_and_history_seed(
         )
         eager_slot = eager.acquire_slot()
         graph_slot = graph.acquire_slot()
+        reference_slot = reference.acquire_slot()
         eager.initialize_slot_rng(eager_slot, 31)
         graph.initialize_slot_rng(graph_slot, 31)
 
         eager_embeddings = eager.encode_prompt_patches(eager_slot, prompt)
         graph_embeddings = graph.encode_prompt_patches(graph_slot, prompt)
+        reference.encode_prompt_patches(reference_slot, prompt.float())
         torch.testing.assert_close(
             graph_embeddings, eager_embeddings, rtol=2e-2, atol=2e-2
         )
@@ -933,24 +955,33 @@ def test_prefill_graphs_match_eager_prompt_encode_and_history_seed(
         )
         eager.seed_fm_history(eager_slot, fm_rows=rows, all_mods=mods)
         graph.seed_fm_history(graph_slot, fm_rows=rows, all_mods=mods)
+        reference.seed_fm_history(
+            reference_slot, fm_rows=rows.float(), all_mods=mods.float()
+        )
         persistent = rows.size(0) - eager.spec.unit_len
 
         for name in ("dit_k", "dit_v"):
-            assert_close_overall(
+            assert_no_further_from_fp32(
                 getattr(graph, name)[:, :, graph_slot, :, :persistent],
                 getattr(eager, name)[:, :, eager_slot, :, :persistent],
+                getattr(reference, name)[:, :, reference_slot, :, :persistent],
             )
 
         hidden_rows = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
         eager_latents = eager.sample_patches([eager_slot], fm_hidden_rows=hidden_rows)
         graph_latents = graph.sample_patches([graph_slot], fm_hidden_rows=hidden_rows)
-        assert_close_overall(graph_latents, eager_latents)
-        assert_close_overall(
+        reference_latents = reference.sample_patches(
+            [reference_slot], fm_hidden_rows=hidden_rows.float()
+        )
+        assert_no_further_from_fp32(graph_latents, eager_latents, reference_latents)
+        assert_no_further_from_fp32(
             graph.encode_feedback([graph_slot], graph_latents),
             eager.encode_feedback([eager_slot], eager_latents),
+            reference.encode_feedback([reference_slot], reference_latents),
         )
         eager.release_slot(eager_slot)
         graph.release_slot(graph_slot)
+        reference.release_slot(reference_slot)
 
     assert graph.graph_replays["prompt_encoder"] == 3
     assert graph.graph_replays["history_seed"] == 3
