@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from functools import partial
 from typing import TYPE_CHECKING
 
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -53,6 +54,9 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         max_audio_patches: int = 500,
         max_running_requests: int = 16,
         enable_acoustic_tail_batch_padding: bool = True,
+        compile_tail_blocks: bool = False,
+        enable_prefill_graphs: bool = False,
+        stream_latents_on_cpu: bool = False,
     ) -> None:
         from sglang_omni.models.dots_tts.hf_config import DOTS_TTS_MODEL_ARCH_OVERRIDE
 
@@ -62,6 +66,9 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         self.max_audio_patches = int(max_audio_patches)
         self.max_running_requests = int(max_running_requests)
         self.enable_acoustic_tail_batch_padding = enable_acoustic_tail_batch_padding
+        self.compile_tail_blocks = bool(compile_tail_blocks)
+        self.enable_prefill_graphs = bool(enable_prefill_graphs)
+        self.stream_latents_on_cpu = stream_latents_on_cpu
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
         else:
@@ -179,6 +186,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
                 max_audio_patches=self.max_audio_patches,
                 optimize=self.optimize,
                 pad_to_bucket=self.enable_acoustic_tail_batch_padding,
+                compile_blocks=self.compile_tail_blocks,
+                prefill_graphs=self.enable_prefill_graphs,
             )
             self.acoustic_tail = model.flow.batched_tail
         else:
@@ -254,7 +263,9 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         from sglang_omni.models.dots_tts.request_builders import build_stream_output
 
         return {
-            "stream_output_builder": build_stream_output,
+            "stream_output_builder": partial(
+                build_stream_output, stream_latents_on_cpu=self.stream_latents_on_cpu
+            ),
             "enable_async_decode": False,
         }
 
