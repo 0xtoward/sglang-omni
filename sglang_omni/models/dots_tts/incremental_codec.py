@@ -274,40 +274,9 @@ class DotsIncrementalDecoder:
                 slot_index,
                 stable * self.upsample_factors[index],
             )
-            value = self.run_padded_stage_channels_last(index, value)
+            value = self.run_stage_channels_last(index, value, padded=True)
             previous_factor = self.upsample_factors[index]
         return value.transpose(1, 2)
-
-    def run_padded_stage_channels_last(
-        self, index: int, value: torch.Tensor
-    ) -> torch.Tensor:
-        """run_stage on a (B, T, C) input that starts at the stream start."""
-        total = None
-        for block in self.decoder.resblocks[
-            index * self.num_kernels : (index + 1) * self.num_kernels
-        ]:
-            output = run_padded_block_channels_last(
-                block, value, self.channels_last_weights
-            )
-            total = output if total is None else total + output
-        value = total / self.num_kernels
-        if index == len(self.upsample_strides) - 1:
-            value = padded_conv(
-                self.decoder.conv_post,
-                alias_free_channels_last(
-                    self.decoder.activation_post, value, None, padded=True
-                ),
-                self.channels_last_weights,
-                with_bias=True,
-            )
-            value = (
-                torch.tanh(value)
-                if self.use_tanh
-                else torch.clamp(value, min=-1.0, max=1.0)
-            )
-        else:
-            pass
-        return value
 
     def warm_forward(
         self,
@@ -393,11 +362,18 @@ class DotsIncrementalDecoder:
             arena.stage_histories[index][slot_index] = joined[
                 :, -self.stage_contexts[index] :
             ].transpose(1, 2)
-            value = self.run_stage_channels_last(index, joined)
+            value = self.run_stage_channels_last(index, joined, padded=False)
         return value.transpose(1, 2)
 
-    def run_stage_channels_last(self, index: int, value: torch.Tensor) -> torch.Tensor:
-        """run_stage on a (B, T, C) input with full history; returns the last outputs only."""
+    def run_stage_channels_last(
+        self, index: int, value: torch.Tensor, *, padded: bool
+    ) -> torch.Tensor:
+        """run_stage on a (B, T, C) input.
+
+        padded takes an input that starts at the stream start and returns T
+        outputs; otherwise the input carries every block's full history and
+        only the last outputs are computed.
+        """
         widest = max(self.block_contexts)
         total = None
         for block, context in zip(
@@ -407,15 +383,19 @@ class DotsIncrementalDecoder:
             self.block_contexts,
         ):
             output = run_block_channels_last(
-                block, value[:, widest - context :], self.channels_last_weights
+                block,
+                value if padded else value[:, widest - context :],
+                self.channels_last_weights,
+                padded=padded,
             )
             total = output if total is None else total + output
         value = total / self.num_kernels
         if index == len(self.upsample_strides) - 1:
-            value = valid_conv(
+            conv = padded_conv if padded else valid_conv
+            value = conv(
                 self.decoder.conv_post,
                 alias_free_channels_last(
-                    self.decoder.activation_post, value, None, padded=False
+                    self.decoder.activation_post, value, None, padded=padded
                 ),
                 self.channels_last_weights,
                 with_bias=True,
@@ -547,54 +527,34 @@ def padded_conv(
     return output.squeeze(2).transpose(1, 2)[:, :frames]
 
 
-def run_padded_block_channels_last(
-    block: AMPBlock1,
-    value: torch.Tensor,
-    channels_last_weights: dict[int, torch.Tensor],
-) -> torch.Tensor:
-    """run_block on a (B, T, C) input that starts at the stream start: T outputs."""
-    activations = block.activations
-    for first, second, first_activation, second_activation in zip(
-        block.convs1, block.convs2, activations[::2], activations[1::2]
-    ):
-        hidden = padded_conv(
-            first,
-            alias_free_channels_last(first_activation, value, None, padded=True),
-            channels_last_weights,
-            with_bias=False,
-        )
-        convolved = padded_conv(
-            second,
-            alias_free_channels_last(
-                second_activation, hidden, first.bias, padded=True
-            ),
-            channels_last_weights,
-            with_bias=False,
-        )
-        value = residual_bias_add_channels_last(convolved, second.bias, value)
-    return value
-
-
 def run_block_channels_last(
     block: AMPBlock1,
     value: torch.Tensor,
     channels_last_weights: dict[int, torch.Tensor],
+    *,
+    padded: bool,
 ) -> torch.Tensor:
-    """run_block on valid samples of a (B, T, C) input; each pair shortens it by its receptive field."""
+    """run_block on a (B, T, C) input.
+
+    padded runs from the stream start with the native padding and keeps T
+    outputs; otherwise only valid samples are computed and each conv pair
+    shortens the input by its receptive field.
+    """
+    conv = padded_conv if padded else valid_conv
     activations = block.activations
     for first, second, first_activation, second_activation in zip(
         block.convs1, block.convs2, activations[::2], activations[1::2]
     ):
-        hidden = valid_conv(
+        hidden = conv(
             first,
-            alias_free_channels_last(first_activation, value, None, padded=False),
+            alias_free_channels_last(first_activation, value, None, padded=padded),
             channels_last_weights,
             with_bias=False,
         )
-        convolved = valid_conv(
+        convolved = conv(
             second,
             alias_free_channels_last(
-                second_activation, hidden, first.bias, padded=False
+                second_activation, hidden, first.bias, padded=padded
             ),
             channels_last_weights,
             with_bias=False,
