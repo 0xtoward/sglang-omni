@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 
 import pytest
@@ -84,6 +85,30 @@ def test_packed_causal_conv_preserves_sequence_boundaries() -> None:
         torch.cat(rows), real_frame_positions, real_frame_mask
     )
     torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_channels_last_causal_conv_matches_channel_first() -> None:
+    torch.manual_seed(0)
+    channel_first = CausalConvBlock(64, 64).to("cuda", torch.float16).eval()
+    channels_last = copy.deepcopy(channel_first)
+    channels_last.use_channels_last()
+    frames = torch.randn(9, 64, device="cuda", dtype=torch.float16)
+    causal_padding_frames = channel_first.kernel_size - 1
+    real_frame_positions = torch.arange(9, device="cuda") + causal_padding_frames
+    real_frame_mask = torch.zeros(
+        9 + causal_padding_frames, dtype=torch.bool, device="cuda"
+    )
+    real_frame_mask[real_frame_positions] = True
+    with torch.inference_mode():
+        torch.testing.assert_close(
+            channels_last(frames.unsqueeze(0))[0],
+            channel_first(frames.unsqueeze(0))[0],
+        )
+        torch.testing.assert_close(
+            channels_last.forward_packed(frames, real_frame_positions, real_frame_mask),
+            channel_first.forward_packed(frames, real_frame_positions, real_frame_mask),
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")

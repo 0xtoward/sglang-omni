@@ -22,6 +22,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
 )
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
+from sglang_omni.utils.channels_last_conv import is_channels_last_conv_device
 
 FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
@@ -117,6 +118,11 @@ class MiniCPMOCode2Wav(nn.Module):
             )
             # note (zhaochenyang20): weights are published on the load stream.
             self.decode_stream.wait_stream(device_module.current_stream())
+        if is_channels_last_conv_device(resolved_device):
+            for block in self.token2wav.flow.decoder.estimator.blocks:
+                block.conv.use_channels_last()
+        else:
+            pass
 
         if prompt_wav is None:
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")
