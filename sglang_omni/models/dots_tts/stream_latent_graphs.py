@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import functools
 import logging
 import math
 import time
@@ -46,28 +45,6 @@ def relative_errors(
     return errors
 
 
-def cudnn_stream_latents(
-    vocoder: torch.nn.Module,
-    latents: torch.Tensor,
-    hidden: tuple[torch.Tensor, torch.Tensor],
-) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-    """post_proj, the SLSTM as one stateful cuDNN call, and the output projection."""
-    value = vocoder.post_proj(latents.float()).permute(0, 2, 1)
-    value = vocoder.dec_mi_layer[0](value)
-    recurrent = vocoder.dec_mi_layer[1]
-    # note (0xtoward): the per-frame gate loop multiplies in fp32; TF32 gates
-    # drift about 1e-4 from it in the carried state, so cuDNN runs fp32 too.
-    with torch.backends.cudnn.flags(enabled=True, allow_tf32=False):
-        output, next_hidden = recurrent.lstm(value, (hidden[0], hidden[1]))
-    if recurrent.skip:
-        output = output + value
-    else:
-        pass
-    value = vocoder.dec_mi_layer[2](output)
-    decoder_dtype = next(vocoder.decoder.conv_pre.parameters()).dtype
-    return value.permute(0, 2, 1).to(dtype=decoder_dtype), next_hidden
-
-
 @dataclass(kw_only=True)
 class StreamLatentGraph:
     graph: torch.cuda.CUDAGraph
@@ -82,9 +59,8 @@ class StreamLatentGraph:
 class StreamLatentGraphs:
     """Replays one captured graph per (batch, frames) instead of launching the front end op by op.
 
-    The graphs capture the eager front end, or with cudnn_lstm the SLSTM as one stateful
-    cuDNN call. Shapes outside the captured set run eagerly. A replay returns the graph's
-    static output buffers, which hold until the next call with the same shape.
+    Shapes outside the captured set run eagerly. A replay returns the graph's static
+    output buffers, which hold until the next call with the same shape.
     """
 
     def __init__(
@@ -93,20 +69,10 @@ class StreamLatentGraphs:
         *,
         max_batch_size: int,
         frame_counts: list[int],
-        cudnn_lstm: bool = False,
     ) -> None:
         self.eager_decode: StreamLatentDecode = (
             inference._decode_stream_latents
         )  # noqa: leading-underscore  # upstream spelling
-        self.capture_decode: StreamLatentDecode = self.eager_decode
-        if cudnn_lstm:
-            # note (0xtoward): one stateful cuDNN LSTM call per chunk instead of the
-            # per-frame, per-layer gate loop (~780 kernels per replay).
-            vocoder = inference.vocoder
-            vocoder.dec_mi_layer[1].lstm.flatten_parameters()
-            self.capture_decode = functools.partial(cudnn_stream_latents, vocoder)
-        else:
-            pass
         self.graphs: dict[tuple[int, int], StreamLatentGraph] = {}
         self.replay_calls: int = 0
         self.fallback_calls: int = 0
@@ -180,12 +146,12 @@ class StreamLatentGraphs:
         capture_stream.wait_stream(current_stream)
         with torch.cuda.stream(capture_stream):
             for _ in range(WARMUP_ITERATIONS):
-                self.capture_decode(latents, (hidden_state, cell_state))
+                self.eager_decode(latents, (hidden_state, cell_state))
         current_stream.wait_stream(capture_stream)
         torch.cuda.synchronize(self.device)
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, stream=capture_stream):
-            decoder_input, (next_hidden_state, next_cell_state) = self.capture_decode(
+            decoder_input, (next_hidden_state, next_cell_state) = self.eager_decode(
                 latents, (hidden_state, cell_state)
             )
         captured = StreamLatentGraph(
@@ -266,7 +232,7 @@ class StreamLatentGraphs:
                 )
             else:
                 pass
-            return self.capture_decode(latents, hidden)
+            return self.eager_decode(latents, hidden)
         else:
             captured.latents.copy_(latents)
             captured.hidden_state.copy_(hidden[0])

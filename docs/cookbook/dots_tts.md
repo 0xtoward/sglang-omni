@@ -81,8 +81,6 @@ The config also turns on the streaming optimizations of the latent engine and th
 | `vocoder.factory.enable_stream_latent_graph` | `true` | The vocoder's latent front end replays as CUDA graphs, checked against the eager front end at startup. |
 | `vocoder.factory.vocoder_merge_steps`, `vocoder_initial_merge_steps`, `vocoder_initial_merge_patches` | `8`, `4`, `10` | A stream decodes up to 4 patches per vocoder step until it received 10 patches, then up to 8. |
 
-`vocoder.factory.stream_latent_cudnn_lstm: true` runs the front end's SLSTM as one fp32 cuDNN call inside those graphs instead of the per-frame gate loop. It is off by default.
-
 The examples below read local clips from `docs/_static/audio`. To fetch reference audio over HTTP instead, allow the domains you need, e.g. `--allowed-media-domain huggingface.co`.
 
 ## Memory and capacity

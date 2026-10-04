@@ -565,7 +565,6 @@ def create_vocoder_executor(
     stream_slots: int = 16,
     enable_stateful_codec_decoder: bool = False,
     enable_stream_latent_graph: bool = False,
-    stream_latent_cudnn_lstm: bool = False,
 ) -> DotsTTSStreamingVocoder:
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -616,7 +615,6 @@ def create_vocoder_executor(
                     codec.patch_size * patches
                     for patches in range(1, vocoder.merge_steps + 1)
                 ],
-                cudnn_lstm=stream_latent_cudnn_lstm,
             )
         )
     else:

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""One stateful LSTM call per chunk matches the per-frame streaming gate loop."""
+"""Stream latent graphs replay the eager front end and refuse a capture that drifts from it."""
 
 from __future__ import annotations
 
@@ -14,49 +14,11 @@ import_dots_tts()
 
 from dots_tts.modules.vocoder.vocoder_inference import VocoderInference
 
-from sglang_omni.models.dots_tts import stream_latent_graphs
 from sglang_omni.models.dots_tts.stream_latent_graphs import (
     StreamLatentGraphs,
-    cudnn_stream_latents,
     relative_errors,
 )
 from tests.unit_test.dots_tts.test_incremental_codec import tiny_inference
-
-
-@torch.no_grad()
-def test_chunked_lstm_matches_frame_loop() -> None:
-    inference = tiny_inference()
-    inference._prepare_lstm_stream_params()  # noqa: leading-underscore  # upstream spelling
-    generator = torch.Generator().manual_seed(2)
-    latent_dim = int(inference.vocoder.h.latent_dim)
-    layers = int(
-        inference._lstm_num_layers
-    )  # noqa: leading-underscore  # upstream spelling
-    hidden_size = int(
-        inference._lstm_hidden_size
-    )  # noqa: leading-underscore  # upstream spelling
-    hidden = (
-        torch.randn(layers, 2, hidden_size, generator=generator) * 0.1,
-        torch.randn(layers, 2, hidden_size, generator=generator) * 0.1,
-    )
-    for frames in (4, 16):
-        latents = torch.randn(2, latent_dim, frames, generator=generator)
-        expected, (expected_hidden_state, expected_cell_state) = (
-            inference._decode_stream_latents(  # noqa: leading-underscore  # upstream spelling
-                latents, hidden
-            )
-        )
-        observed, (observed_hidden_state, observed_cell_state) = cudnn_stream_latents(
-            inference.vocoder, latents, hidden
-        )
-        torch.testing.assert_close(observed, expected, rtol=1e-5, atol=1e-5)
-        torch.testing.assert_close(
-            observed_hidden_state, expected_hidden_state, rtol=1e-5, atol=1e-5
-        )
-        torch.testing.assert_close(
-            observed_cell_state, expected_cell_state, rtol=1e-5, atol=1e-5
-        )
-        hidden = (observed_hidden_state, observed_cell_state)
 
 
 def test_relative_errors_count_non_finite_values_as_infinite() -> None:
@@ -78,24 +40,15 @@ def cuda_inference(monkeypatch: pytest.MonkeyPatch) -> VocoderInference:
 
 
 @pytest.mark.accelerator
-@pytest.mark.parametrize("cudnn_lstm", [False, True])
 @torch.no_grad()
 def test_graphs_match_eager_over_consecutive_replays(
-    monkeypatch: pytest.MonkeyPatch, cudnn_lstm: bool
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     inference = cuda_inference(monkeypatch)
-    if cudnn_lstm:
-        # note (0xtoward): cuDNN's TF32 default stays on, so the fp32 LSTM call
-        # is what keeps the carried state on the per-frame gate loop.
-        monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", True)
-    else:
-        pass
     eager = (
         inference._decode_stream_latents
     )  # noqa: leading-underscore  # upstream spelling
-    graphs = StreamLatentGraphs(
-        inference, max_batch_size=2, frame_counts=[4, 8], cudnn_lstm=cudnn_lstm
-    )
+    graphs = StreamLatentGraphs(inference, max_batch_size=2, frame_counts=[4, 8])
     generator = torch.Generator(device="cuda").manual_seed(4)
     latent_dim = int(inference.vocoder.h.latent_dim)
     layers = int(
@@ -128,22 +81,25 @@ def test_parity_gate_rejects_a_wrong_state_or_a_non_finite_output(
     monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
     inference = cuda_inference(monkeypatch)
-    correct = stream_latent_graphs.cudnn_stream_latents
+    correct = (
+        inference._decode_stream_latents
+    )  # noqa: leading-underscore  # upstream spelling
 
-    def faulty(
-        vocoder: torch.nn.Module,
-        latents: torch.Tensor,
-        hidden: tuple[torch.Tensor, torch.Tensor],
+    def faulty_while_capturing(
+        latents: torch.Tensor, hidden: tuple[torch.Tensor, torch.Tensor]
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-        value, (next_hidden_state, next_cell_state) = correct(vocoder, latents, hidden)
-        if fault == "state":
+        value, (next_hidden_state, next_cell_state) = correct(latents, hidden)
+        if not torch.cuda.is_current_stream_capturing():
+            return value, (next_hidden_state, next_cell_state)
+        elif fault == "state":
             # note (0xtoward): the output stays right; only the carried state is wrong.
             return value, (next_hidden_state + 1.0, next_cell_state)
         else:
             return value * math.nan, (next_hidden_state, next_cell_state)
 
-    monkeypatch.setattr(stream_latent_graphs, "cudnn_stream_latents", faulty)
+    # note (0xtoward): the eager reference stays correct; only the captured work is wrong.
+    inference._decode_stream_latents = (  # noqa: leading-underscore  # upstream spelling
+        faulty_while_capturing
+    )
     with pytest.raises(RuntimeError, match="failed parity gate"):
-        StreamLatentGraphs(
-            inference, max_batch_size=1, frame_counts=[4], cudnn_lstm=True
-        )
+        StreamLatentGraphs(inference, max_batch_size=1, frame_counts=[4])
