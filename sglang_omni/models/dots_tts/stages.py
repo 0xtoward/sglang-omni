@@ -573,9 +573,8 @@ def create_vocoder_executor(
         raise RuntimeError("dots.tts requires CUDA")
     else:
         pass
-    codec = load_dots_audio_codec(
-        model_path, device=str(resolve_concrete_device(device, gpu_id))
-    )
+    codec_device = resolve_concrete_device(device, gpu_id)
+    codec = load_dots_audio_codec(model_path, device=str(codec_device))
     codec.configure_alias_free_fusion(optimize and enable_alias_free_fusion)
     vocoder = DotsTTSStreamingVocoder(
         codec,
@@ -606,7 +605,9 @@ def create_vocoder_executor(
         )
     else:
         pass
-    if enable_stream_latent_graph:
+    # note (0xtoward): the front-end graphs are CUDA graphs; a codec on another
+    # device keeps the eager front end, as the codec graph runner does.
+    if enable_stream_latent_graph and codec_device.type == "cuda":
         codec.inference._decode_stream_latents = (
             StreamLatentGraphs(  # noqa: leading-underscore  # upstream spelling
                 codec.inference,

@@ -333,6 +333,46 @@ class TestAliasFreeFusion:
         assert resolve_stage_typed_kwargs(stage)["enable_alias_free_fusion"] is True
 
 
+def test_factory_keeps_the_eager_stream_latent_front_end_for_a_cpu_codec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if stages is None:
+        pytest.skip("Requires the SGLang runtime")
+    else:
+        pass
+
+    class Codec:
+        patch_size = 4
+        inference = SimpleNamespace()
+
+        def configure_alias_free_fusion(self, flag: bool) -> None:
+            pass
+
+    class Vocoder:
+        def __init__(self, codec: Codec, **kwargs) -> None:
+            self.merge_steps = 4
+            self.stream_slots = 16
+            self.step_batch_max = 4
+            self.stream_chunk_batch_max = 16
+
+        def ensure_slot_pool(self) -> None:
+            pass
+
+    def refuse_graphs(*args, **kwargs) -> None:
+        raise AssertionError("stream latent graphs need a CUDA codec")
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        stages, "load_dots_audio_codec", lambda *args, **kwargs: Codec()
+    )
+    monkeypatch.setattr(stages, "DotsTTSStreamingVocoder", Vocoder)
+    monkeypatch.setattr(stages, "StreamLatentGraphs", refuse_graphs)
+
+    stages.create_vocoder_executor(
+        "model", device="cpu", enable_stream_latent_graph=True
+    )
+
+
 @pytest.fixture
 def cuda_alias_free_activation(request: pytest.FixtureRequest) -> torch.nn.Module:
     if (
