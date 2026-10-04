@@ -41,6 +41,10 @@ if TYPE_CHECKING:
 else:
     pass
 
+# note (0xtoward): the read-aloud prompts of the SeedTTS benchmark that the TTS CI scores.
+TTS_READ_PROMPT_EN = "Please read the following text out loud in English: "
+TTS_READ_PROMPT_ZH = "请用中文朗读以下文本: "
+
 IMAGE_PLACEHOLDER = "<image>./</image>"
 AUDIO_PLACEHOLDER = "<audio>./</audio>"
 
@@ -144,7 +148,21 @@ class MiniCPMOPreprocessor:
     async def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
         params = payload.request.params or {}
-        known_tts_text = params.get("known_tts_text")
+        metadata = payload.request.metadata or {}
+        known_tts_text = None
+        if metadata.get("task") == "tts":
+            # note (0xtoward): a speech request names the exact words, so the thinker
+            # prefills them instead of generating them one token at a time.
+            known_tts_text = inputs["text"] if isinstance(inputs, Mapping) else inputs
+            language = (metadata.get("tts_params") or {}).get("language")
+            read_prompt = (
+                TTS_READ_PROMPT_ZH if language == "Chinese" else TTS_READ_PROMPT_EN
+            )
+            inputs = [{"role": "user", "content": f"{read_prompt}{known_tts_text}"}]
+            params = {**params, "known_tts_text": known_tts_text}
+            payload.request.params = params
+        else:
+            pass
         raw_images = None
         raw_audios = None
         raw_videos = None
@@ -176,13 +194,13 @@ class MiniCPMOPreprocessor:
 
         if known_tts_text is not None:
             if not isinstance(known_tts_text, str) or not known_tts_text.strip():
-                raise ValueError("known_tts_text must be a nonempty string")
+                raise ValueError("speech input must be nonempty text")
             elif not self.should_use_tts_template(payload):
-                raise ValueError("known_tts_text requires the speech pipeline")
+                raise ValueError("speech requests require the speech pipeline")
             elif raw_images or raw_audios or raw_videos:
-                raise ValueError("known_tts_text currently supports text-only input")
+                raise ValueError("speech requests take text only")
             elif params.get("stream", False):
-                raise ValueError("known_tts_text does not support text streaming")
+                raise ValueError("MiniCPM-o speech output does not stream")
             else:
                 pass
         else:
@@ -223,7 +241,7 @@ class MiniCPMOPreprocessor:
             tts_bos_token_id = self.tokenizer.convert_tokens_to_ids("<|tts_bos|>")
             tts_eos_token_id = self.tokenizer.convert_tokens_to_ids("<|tts_eos|>")
             if int(input_ids[-1]) != tts_bos_token_id:
-                raise ValueError("known_tts_text requires a TTS prompt boundary")
+                raise ValueError("speech prompt must end at the TTS boundary")
             else:
                 pass
             known_tts_output_ids = self.tokenizer.encode(
@@ -233,7 +251,7 @@ class MiniCPMOPreprocessor:
                 token_id in (tts_bos_token_id, tts_eos_token_id)
                 for token_id in known_tts_output_ids
             ):
-                raise ValueError("known_tts_text contains no usable speech tokens")
+                raise ValueError("speech input has no speakable tokens")
             else:
                 pass
             suffix = torch.tensor(

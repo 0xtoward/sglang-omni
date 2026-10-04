@@ -123,26 +123,17 @@ Session settings go in the `sglang` field of `session.update`, before the first 
 
 Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.
 
-## Speaking text already known to the caller
+## Text to speech
 
-For a text-only speech request whose exact words are known in advance, pass
-`known_tts_text` to `/v1/chat/completions`. MiniCPM-o conditions its Talker on
-hidden states from one Thinker prefill of those words, instead of generating
-the same words one token at a time. The option is explicit: ordinary chat,
-audio understanding, and video requests keep their normal generation path.
+`/v1/audio/speech` reads the given text aloud. MiniCPM-o prefills the text in one Thinker pass and conditions the Talker on each of its tokens, instead of generating the same words one token at a time. Set `language` to `Chinese` for Chinese text, and pass a base64 audio data URI as `ref_audio` to clone a voice.
 
 ```python
-response = client.chat.completions.create(
+audio = client.audio.speech.create(
     model="MiniCPM-o-4_5",
-    messages=[{"role": "user", "content": "Please say hello."}],
-    modalities=["text", "audio"],
-    extra_body={"known_tts_text": "Hello!"},
+    voice="default",
+    input="Hello!",
+    extra_body={"language": "English"},
 )
 ```
 
-The caller is responsible for the text. This is not a speculative verification
-of what autoregressive decoding would have produced; the resulting audio can
-therefore differ from an ordinary chat response. The option requires the speech
-pipeline and currently supports only non-streaming, text-only input. Each such
-request is isolated from prefix reuse because the Talker needs every text
-position's hidden state.
+The speech output is non-streaming.
