@@ -175,7 +175,6 @@ class Zonos2ModelRunner(ModelRunner):
             else:
                 pass
             pieces.append(emb)
-            # note (luojiaxuan): Restore state only after replay rows pass validation.
             row = pool.acquire_row(sr.request_id)
             self.decode_requests[sr.request_id] = req
             pool.reset_row(row)

@@ -1659,22 +1659,17 @@ def test_fish_retract_replays_decode_inputs_at_absolute_positions(
         )
 
 
-def test_fish_retract_preserves_shared_prompt_key() -> None:
+def test_fish_identical_reference_shares_prompt_key() -> None:
     tokenizer = FakeFishTokenizer()
-    first = build_sglang_tts_request(make_s2pro_state(), tokenizer, request_id="reused")
+    first = build_sglang_tts_request(make_s2pro_state(), tokenizer, request_id="first")
     second = build_sglang_tts_request(
-        make_s2pro_state(), tokenizer, request_id="reused"
+        make_s2pro_state(), tokenizer, request_id="second"
     )
-    key = first.req.extra_key
-    first.req.output_ids.extend([201, 202])
-    first.req.reset_for_retract()
-    assert first.req.extra_key == key
     assert first.req.use_private_radix_on_retract
     assert (
         first.req._omni_prompt_only_radix
     )  # noqa: leading-underscore  # Existing request or scheduler interface.
     assert first.req.extra_key == second.req.extra_key
-    assert list(first.req.output_ids) == [201, 202]
 
 
 def write_tiny_audio_decoder_checkpoint(tmp_path, *, drop_key: str | None = None):

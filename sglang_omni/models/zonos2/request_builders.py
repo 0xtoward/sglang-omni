@@ -31,7 +31,6 @@ from sglang_omni.models.zonos2.streaming_contract import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
-from sglang_omni.scheduling.sglang_backend.cache import prompt_cache_key
 from sglang_omni.scheduling.streaming_vocoder import (
     INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     resolve_initial_codec_chunk_frames,
@@ -226,7 +225,7 @@ def build_sglang_zonos2_request(
         sampling_params=sp,
         eos_token_ids={RADIX_HASH_SPACE},
         vocab_size=RADIX_HASH_SPACE + 1,
-        extra_key=prompt_cache_key("zonos2", rows, speaker_emb),
+        extra_key=state.speaker_fingerprint,
     )
     req._omni_prompt_only_radix = True  # noqa: leading-underscore
     req.use_private_radix_on_retract = True

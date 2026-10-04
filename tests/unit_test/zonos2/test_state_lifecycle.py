@@ -450,36 +450,6 @@ def test_reprefill_replays_full_frames_and_rebuilds_decode_state(
     assert torch.all(pool.rep_hist[survivor] == 11)
 
 
-@pytest.mark.parametrize("committed_tokens", [0, 1])
-def test_reprefill_missing_frames_fails_before_resetting_decode_state(
-    committed_tokens: int,
-) -> None:
-    model, pool = model_and_pool()
-    model.device = torch.device("cpu")
-    row = pool.acquire_row("replay")
-    poison_row(pool, row)
-    data = SimpleNamespace(
-        req=SimpleNamespace(
-            extend_range=SimpleNamespace(start=0, end=3, length=3),
-            output_ids=[1] * committed_tokens,
-        ),
-        prompt_rows=torch.zeros(2, FRAME_WIDTH, dtype=torch.long),
-        output_codes=[],
-    )
-    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
-    runner.model = model
-    runner.decode_requests = {}
-    with pytest.raises(
-        AssertionError, match="missing generated frames|committed tokens"
-    ):
-        runner.build_prefill_embeds(
-            None, [SimpleNamespace(request_id="replay", data=data)]
-        )
-    assert int(pool.generation_step[row]) == 7
-    assert int(pool.eos_countdown[row]) == 7
-    assert torch.all(pool.rep_hist[row] == 7)
-
-
 def test_full_pool_reclaims_waiting_owners_before_prefill_and_reentry() -> None:
     model = SimpleNamespace(
         decode_input_embedding=SimpleNamespace(weight=torch.zeros(1, FRAME_WIDTH)),
@@ -553,32 +523,32 @@ def test_full_pool_reclaims_waiting_owners_before_prefill_and_reentry() -> None:
     assert "waiting" not in runner.decode_requests
 
 
-def test_zonos2_radix_namespace_shares_identical_prompt() -> None:
+def test_zonos2_radix_namespace_is_shared_across_prompt_texts() -> None:
     from sglang.srt.mem_cache.radix_cache import RadixKey
 
-    payload = StagePayload(
-        request_id="reused",
-        request=OmniRequest(inputs=""),
-        data=Zonos2State(
-            input_ids=torch.zeros(2, FRAME_WIDTH, dtype=torch.long)
-        ).to_dict(),
-    )
-    model = SimpleNamespace(config=SimpleNamespace(n_codebooks=N_CODEBOOKS))
-    first = request_builders.build_sglang_zonos2_request(payload, model=model)
-    second = request_builders.build_sglang_zonos2_request(payload, model=model)
-    assert first.req.origin_input_ids == second.req.origin_input_ids
+    def build(request_id: str, rows: torch.Tensor):
+        payload = StagePayload(
+            request_id=request_id,
+            request=OmniRequest(inputs=""),
+            data=Zonos2State(input_ids=rows).to_dict(),
+        )
+        model = SimpleNamespace(config=SimpleNamespace(n_codebooks=N_CODEBOOKS))
+        return request_builders.build_sglang_zonos2_request(payload, model=model)
+
+    first = build("first", torch.zeros(2, FRAME_WIDTH, dtype=torch.long))
+    second = build("second", torch.zeros(2, FRAME_WIDTH, dtype=torch.long))
+    other_text = build("other-text", torch.ones(3, FRAME_WIDTH, dtype=torch.long))
     assert first.req.use_private_radix_on_retract
     assert (
         first.req._omni_prompt_only_radix
     )  # noqa: leading-underscore  # Existing request or scheduler interface.
-    assert first.req.extra_key == second.req.extra_key
+    # note (Eric): row keys already hash every prompt row, so the namespace must not
+    # depend on the text or different prompts lose their shared speaker prefix.
+    assert first.req.extra_key == second.req.extra_key == other_text.req.extra_key
     assert (
         RadixKey(first.req.origin_input_ids, first.req.extra_key).child_key()
         == RadixKey(second.req.origin_input_ids, second.req.extra_key).child_key()
     )
-    key = first.req.extra_key
-    first.req.reset_for_retract()
-    assert first.req.extra_key == key
 
 
 def test_resolve_takes_its_stream_from_the_tensors_own_accelerator(

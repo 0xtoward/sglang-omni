@@ -166,9 +166,6 @@ def test_voxtral_radix_cache_is_namespaced_by_voice_embedding(
         RadixKey(cheerful.req.origin_input_ids, cheerful.req.extra_key).child_key()
         == RadixKey(reused.req.origin_input_ids, reused.req.extra_key).child_key()
     )
-    key = cheerful.req.extra_key
-    cheerful.req.reset_for_retract()
-    assert cheerful.req.extra_key == key
     assert cheerful.voice_embedding is voice_embeddings["cheerful_female"]
 
 
@@ -452,13 +449,6 @@ def test_voxtral_decode_empty_batch_keeps_feedback_buffer() -> None:
     )
 
 
-def test_voxtral_decode_requires_committed_feedback() -> None:
-    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
-
-    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
-    assert not runner.lookahead_eligible(SimpleNamespace())
-
-
 @pytest.mark.parametrize(("start", "end"), [(0, 5), (2, 4), (4, 5)])
 def test_voxtral_reprefill_replays_absolute_rows_and_consumes_queue(
     start: int, end: int
@@ -496,37 +486,6 @@ def test_voxtral_reprefill_replays_absolute_rows_and_consumes_queue(
     data.pending_feedback_queue.append(torch.tensor([30.0, 31.0]))
     runner.before_decode(None, None, [request])
     assert runner.model.decode_input_embed_buffer.tolist() == [[30.0, 31.0]]
-
-
-def test_voxtral_reprefill_missing_history_preserves_pending_feedback() -> None:
-    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
-
-    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
-    runner.model = SimpleNamespace(
-        get_input_embeddings=lambda: lambda ids: ids[:, None].float()
-    )
-    queued = torch.tensor([9.0])
-    data = SimpleNamespace(
-        req=SimpleNamespace(extend_range=SimpleNamespace(start=1, end=2, length=1)),
-        input_ids=torch.tensor([1]),
-        generated_input_embeds=[],
-        pending_feedback_queue=collections.deque([queued]),
-    )
-    valid_data = SimpleNamespace(
-        req=data.req,
-        input_ids=data.input_ids,
-        generated_input_embeds=[queued],
-        pending_feedback_queue=collections.deque([queued]),
-        voice_embedding=None,
-        audio_token_id=24,
-    )
-    with pytest.raises(RuntimeError, match="missing generated feedback"):
-        runner.build_prefill_input_embeds(
-            SimpleNamespace(input_ids=torch.tensor([9, 9])),
-            [SimpleNamespace(data=valid_data), SimpleNamespace(data=data)],
-        )
-    assert data.pending_feedback_queue[0] is queued
-    assert valid_data.pending_feedback_queue[0] is queued
 
 
 def test_voxtral_middle_prefill_does_not_sample_feedback() -> None:

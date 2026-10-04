@@ -122,7 +122,6 @@ class VoxtralTTSModelRunner(ModelRunner):
         input_ids = forward_batch.input_ids
         input_embeds = self.model.get_input_embeddings()(input_ids)
         offset = 0
-        replayed = []
         for sched_req in requests:
             data: VoxtralSGLangRequestData = sched_req.data
             req = data.req
@@ -130,7 +129,6 @@ class VoxtralTTSModelRunner(ModelRunner):
             prefix_len = req.extend_range.start
             end = req.extend_range.end
             full_ids = data.input_ids
-            # note (luojiaxuan): Replay the absolute generated interval, not scalar IDs.
             prompt_len = len(full_ids)
             if end > prompt_len:
                 start = max(prefix_len, prompt_len)
@@ -145,7 +143,8 @@ class VoxtralTTSModelRunner(ModelRunner):
                     data.generated_input_embeds[start - prompt_len : history_end]
                 ).to(device=input_embeds.device, dtype=input_embeds.dtype)
                 input_embeds[offset + start - prefix_len : offset + req_len] = history
-                replayed.append(data)
+                # note (Eric): the replayed history already holds this queued row.
+                data.pending_feedback_queue.clear()
             else:
                 pass
             current_ids = full_ids[prefix_len:end]
@@ -175,9 +174,6 @@ class VoxtralTTSModelRunner(ModelRunner):
             else:
                 pass
             offset += req_len
-        # note (luojiaxuan): Clear stale queued rows only after every replay succeeds.
-        for data in replayed:
-            data.pending_feedback_queue.clear()
         return input_embeds
 
     def collect_audio_step(
@@ -256,7 +252,6 @@ class VoxtralTTSModelRunner(ModelRunner):
             else:
                 pass
             sched_req.data.output_codes.append(codes[row_idx].detach().clone())
-            # note (luojiaxuan): The queue and replay history share the exact fused row.
             feedback = embeds[row_idx, 0].detach().clone()
             sched_req.data.pending_feedback_queue.append(feedback)
             sched_req.data.generated_input_embeds.append(feedback)

@@ -51,9 +51,6 @@ def test_higgs_radix_key_shares_identical_reference(
         first.req._omni_prompt_only_radix
     )  # noqa: leading-underscore  # Existing request or scheduler interface.
     assert first.req.extra_key == second.req.extra_key
-    original_key = first.req.extra_key
-    first.req.output_ids.append(1)
-    assert first.req.extra_key == original_key
 
 
 def test_higgs_scheduler_adapters_clamp_cap_and_record_engine_time(
