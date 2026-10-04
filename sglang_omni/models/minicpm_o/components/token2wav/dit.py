@@ -21,6 +21,10 @@ from sglang_omni.models.minicpm_o.components.token2wav.causal_conv import (
 from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
     AttentionState,
 )
+from sglang_omni.utils.channels_last_conv import (
+    channels_last_conv1d,
+    channels_last_weight,
+)
 
 TIMESTEP_MAX_PERIOD = 10000
 MIN_PACKED_BATCH_SIZE = 3
@@ -239,6 +243,25 @@ class CausalConvBlock(nn.Module):
             CausalConv1d(out_channels, out_channels, kernel_size),
             Transpose(1, 2),
         )
+        self.is_channels_last = False
+
+    def use_channels_last(self) -> None:
+        """Store both conv weights channels last for the stateless (B, T, C) path."""
+        for convolution in (self.block[1], self.block[6]):
+            convolution.weight.data = channels_last_weight(convolution)
+        self.is_channels_last = True
+
+    def channels_last_convolution(
+        self, hidden_states: torch.Tensor, convolution: CausalConv1d
+    ) -> torch.Tensor:
+        """Causal conv of (B, T, C) frames without a channel-first transpose."""
+        history_length = (convolution.kernel_size[0] - 1) * convolution.dilation[0]
+        return channels_last_conv1d(
+            F.pad(hidden_states, (0, 0, history_length, 0)),
+            convolution,
+            convolution.weight,
+            hidden_states.shape[1],
+        )
 
     def forward(
         self,
@@ -250,24 +273,30 @@ class CausalConvBlock(nn.Module):
             x = x * mask
         else:
             pass
-        previous = iter(
-            (state.first, state.second) if state is not None else (None, None)
-        )
-        histories: list[ConvState] = []
-        for module in self.block:
-            if isinstance(module, CausalConv1d):
-                x, history = module(x, next(previous))
-                if history is not None:
-                    histories.append(history)
+        if state is None and self.is_channels_last:
+            x = self.channels_last_convolution(x, self.block[1])
+            x = self.block[4](self.block[3](x))
+            x = self.channels_last_convolution(x, self.block[6])
+            next_state = None
+        else:
+            previous = iter(
+                (state.first, state.second) if state is not None else (None, None)
+            )
+            histories: list[ConvState] = []
+            for module in self.block:
+                if isinstance(module, CausalConv1d):
+                    x, history = module(x, next(previous))
+                    if history is not None:
+                        histories.append(history)
+                    else:
+                        pass
                 else:
-                    pass
-            else:
-                x = module(x)
-        next_state = (
-            ConvBlockState(first=histories[0], second=histories[1])
-            if state is not None
-            else None
-        )
+                    x = module(x)
+            next_state = (
+                ConvBlockState(first=histories[0], second=histories[1])
+                if state is not None
+                else None
+            )
         if mask is not None:
             x = x * mask
         else:
@@ -281,11 +310,16 @@ class CausalConvBlock(nn.Module):
         real_frame_mask: torch.Tensor,
     ) -> torch.Tensor:
         def apply_causal_convolution(
-            frames: torch.Tensor, convolution: nn.Module
+            frames: torch.Tensor, convolution: CausalConv1d
         ) -> torch.Tensor:
-            channel_first = frames.transpose(0, 1).unsqueeze(0)
-            convolved, _ = convolution(channel_first)
-            return convolved.squeeze(0).transpose(0, 1)
+            if self.is_channels_last:
+                return self.channels_last_convolution(
+                    frames.unsqueeze(0), convolution
+                ).squeeze(0)
+            else:
+                channel_first = frames.transpose(0, 1).unsqueeze(0)
+                convolved, _ = convolution(channel_first)
+                return convolved.squeeze(0).transpose(0, 1)
 
         first_convolution = self.block[1]
         layer_norm = self.block[3]
