@@ -52,6 +52,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         num_steps: int = 4,
         max_audio_patches: int = 500,
         max_running_requests: int = 16,
+        enable_acoustic_tail_batch_padding: bool = True,
     ) -> None:
         from sglang_omni.models.dots_tts.hf_config import DOTS_TTS_MODEL_ARCH_OVERRIDE
 
@@ -60,6 +61,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         self.num_steps = int(num_steps)
         self.max_audio_patches = int(max_audio_patches)
         self.max_running_requests = int(max_running_requests)
+        self.enable_acoustic_tail_batch_padding = enable_acoustic_tail_batch_padding
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
         else:
@@ -176,6 +178,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
                 nfe=self.num_steps,
                 max_audio_patches=self.max_audio_patches,
                 optimize=self.optimize,
+                pad_to_bucket=self.enable_acoustic_tail_batch_padding,
             )
             self.acoustic_tail = model.flow.batched_tail
         else:
