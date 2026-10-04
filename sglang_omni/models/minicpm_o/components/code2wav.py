@@ -43,6 +43,7 @@ class MiniCPMOCode2Wav(nn.Module):
         n_timesteps: int = 10,
         prompt_wav: str | None = None,
         enable_dit_torch_compile: bool = False,
+        enable_hift_torch_compile: bool = False,
         enable_flow_variable_length: bool,
         reference_workers: int,
         prompt_cache_capacity: int,
@@ -58,10 +59,12 @@ class MiniCPMOCode2Wav(nn.Module):
                 "reference_workers and prompt_cache_capacity must be positive, got "
                 f"{reference_workers} and {prompt_cache_capacity}"
             )
-        elif enable_dit_torch_compile and resolved_device.type != "cuda":
+        elif (
+            enable_dit_torch_compile or enable_hift_torch_compile
+        ) and resolved_device.type != "cuda":
             raise ValueError(
-                f"enable_dit_torch_compile is validated on CUDA only, got {device}; "
-                "set enable_dit_torch_compile to false"
+                f"Code2Wav torch.compile is validated on CUDA only, got {device}; "
+                "set enable_dit_torch_compile and enable_hift_torch_compile to false"
             )
         else:
             pass
@@ -167,6 +170,26 @@ class MiniCPMOCode2Wav(nn.Module):
                     warmup_prompt.prompt_token_lengths,
                     [warmup_prompt],
                 )
+        else:
+            pass
+        if enable_hift_torch_compile:
+            hift = self.token2wav.hift
+            # note (0xtoward): the STFT and iSTFT around the body stay eager because
+            # Inductor has no complex-number codegen.
+            hift.decode_body = torch.compile(
+                hift.decode_body, dynamic=True, fullgraph=True
+            )
+            mel_bins = self.token2wav.flow.output_size
+            mel_frames = FLOW_WARMUP_TOKENS * self.token2wav.flow.up_rate
+            # note (0xtoward): one and two rows trace both batch-size specializations;
+            # outside inference mode, like the mel vocode passes, so the guards match.
+            with self.device_context:
+                for batch_size in (1, 2):
+                    hift(
+                        speech_feat=torch.zeros(
+                            batch_size, mel_bins, mel_frames, device=resolved_device
+                        )
+                    )
         else:
             pass
 
