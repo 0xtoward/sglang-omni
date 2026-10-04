@@ -18,6 +18,7 @@ import torch.nn.functional as F
 
 from sglang_omni.models.dots_tts.alias_free import (
     FusedAliasFree,
+    alias_free_padded_channels_last,
     alias_free_valid_channels_last,
     residual_bias_add,
     residual_bias_add_channels_last,
@@ -125,7 +126,9 @@ class DotsIncrementalDecoder:
             )  # noqa: leading-underscore  # upstream spelling
             for block in decoder.resblocks[: self.num_kernels]
         ]
-        self.channels_last_valid: bool = (
+        # note (0xtoward): warm steps and cold windows both run in (B, T, C) layout
+        # on this path, so cuDNN needs no layout transposes around the convs.
+        self.use_channels_last: bool = (
             channels_last
             and is_channels_last_conv_device(self.device)
             and self.dtype == torch.float32
@@ -142,7 +145,7 @@ class DotsIncrementalDecoder:
             )
         )
         self.channels_last_weights: dict[int, torch.Tensor] = {}
-        if self.channels_last_valid:
+        if self.use_channels_last:
             for module in decoder.modules():
                 if isinstance(module, (torch.nn.Conv1d, torch.nn.ConvTranspose1d)):
                     self.channels_last_weights[id(module)] = channels_last_weight(
@@ -203,6 +206,10 @@ class DotsIncrementalDecoder:
         frames, so the next warm step continues exactly there.
         """
         record_context(arena.conv_pre_history, window, slot_index, valid)
+        if self.use_channels_last:
+            return self.cold_channels_last(arena, window, slot_index, stable)
+        else:
+            pass
         value = self.decoder.conv_pre(window)
         previous_factor = 1
         for index, upsample in enumerate(self.decoder.ups):
@@ -221,6 +228,86 @@ class DotsIncrementalDecoder:
             )
             value = self.run_stage(index, value)
             previous_factor = self.upsample_factors[index]
+        return value
+
+    def cold_channels_last(
+        self,
+        arena: DotsCodecStateArena,
+        window: torch.Tensor,
+        slot_index: torch.Tensor,
+        stable: torch.Tensor,
+    ) -> torch.Tensor:
+        """cold_forward after conv_pre history, in (B, T, C) layout without layout transforms.
+
+        Every conv and activation pads like the native module, so the window
+        decodes from the stream start exactly as the NCL path does.
+        """
+        value = padded_conv(
+            self.decoder.conv_pre,
+            window.transpose(1, 2).contiguous(),
+            self.channels_last_weights,
+            with_bias=True,
+        )
+        previous_factor = 1
+        for index, upsample in enumerate(self.decoder.ups):
+            record_context_channels_last(
+                arena.upsample_histories[index],
+                value,
+                slot_index,
+                stable * previous_factor,
+            )
+            conv = upsample[0]
+            stride = self.upsample_strides[index]
+            # note (0xtoward): the causal transposed conv drops its last stride outputs.
+            value = (
+                F.conv_transpose2d(
+                    value.transpose(1, 2).unsqueeze(2),
+                    self.channels_last_weights[id(conv)].unsqueeze(2),
+                    conv.bias,
+                    stride=(1, stride),
+                )
+                .squeeze(2)
+                .transpose(1, 2)[:, :-stride]
+            )
+            record_context_channels_last(
+                arena.stage_histories[index],
+                value,
+                slot_index,
+                stable * self.upsample_factors[index],
+            )
+            value = self.run_padded_stage_channels_last(index, value)
+            previous_factor = self.upsample_factors[index]
+        return value.transpose(1, 2)
+
+    def run_padded_stage_channels_last(
+        self, index: int, value: torch.Tensor
+    ) -> torch.Tensor:
+        """run_stage on a (B, T, C) input that starts at the stream start."""
+        total = None
+        for block in self.decoder.resblocks[
+            index * self.num_kernels : (index + 1) * self.num_kernels
+        ]:
+            output = run_padded_block_channels_last(
+                block, value, self.channels_last_weights
+            )
+            total = output if total is None else total + output
+        value = total / self.num_kernels
+        if index == len(self.upsample_strides) - 1:
+            value = padded_conv(
+                self.decoder.conv_post,
+                alias_free_padded_channels_last(
+                    self.decoder.activation_post, value, None
+                ),
+                self.channels_last_weights,
+                with_bias=True,
+            )
+            value = (
+                torch.tanh(value)
+                if self.use_tanh
+                else torch.clamp(value, min=-1.0, max=1.0)
+            )
+        else:
+            pass
         return value
 
     def warm_forward(
@@ -242,7 +329,7 @@ class DotsIncrementalDecoder:
         value = F.conv1d(
             joined, self.decoder.conv_pre.weight, self.decoder.conv_pre.bias
         )
-        if self.channels_last_valid:
+        if self.use_channels_last:
             return self.warm_channels_last(arena, value.transpose(1, 2), slot_index)
         else:
             pass
@@ -363,6 +450,23 @@ def record_context(
     history[slot_index] = picked * (positions >= 0).unsqueeze(1).to(picked.dtype)
 
 
+def record_context_channels_last(
+    history: torch.Tensor,
+    value: torch.Tensor,
+    slot_index: torch.Tensor,
+    end: torch.Tensor,
+) -> None:
+    """record_context for a (B, T, C) value; the arena keeps each slot's (C, width) rows."""
+    width = history.shape[-1]
+    positions = end.unsqueeze(1) - width + torch.arange(width, device=value.device)
+    picked = value.gather(
+        1, positions.clamp(min=0).unsqueeze(2).expand(-1, -1, value.shape[2])
+    )
+    history[slot_index] = (
+        picked * (positions >= 0).unsqueeze(2).to(picked.dtype)
+    ).transpose(1, 2)
+
+
 def causal_conv(
     conv: Conv1d, value: torch.Tensor, *, with_bias: bool = True
 ) -> torch.Tensor:
@@ -420,6 +524,54 @@ def valid_conv(
         dilation=(1, conv.dilation[0]),
     )
     return output.squeeze(2).transpose(1, 2)
+
+
+def padded_conv(
+    conv: Conv1d,
+    value: torch.Tensor,
+    channels_last_weights: dict[int, torch.Tensor],
+    *,
+    with_bias: bool,
+) -> torch.Tensor:
+    """Conv1d of a (B, T, C) activation with the module's own zero padding, as one channels-last cuDNN call."""
+    frames = int(value.shape[1])
+    padding = int(conv.left_padding) if conv.causal else int(conv.padding[0])
+    output = F.conv2d(
+        value.transpose(1, 2).unsqueeze(2),
+        channels_last_weights[id(conv)].unsqueeze(2),
+        conv.bias if with_bias else None,
+        dilation=(1, conv.dilation[0]),
+        padding=(0, padding),
+    )
+    # note (0xtoward): a causal conv pads both sides by its left context; the
+    # first T outputs are the causal ones.
+    return output.squeeze(2).transpose(1, 2)[:, :frames]
+
+
+def run_padded_block_channels_last(
+    block: AMPBlock1,
+    value: torch.Tensor,
+    channels_last_weights: dict[int, torch.Tensor],
+) -> torch.Tensor:
+    """run_block on a (B, T, C) input that starts at the stream start: T outputs."""
+    activations = block.activations
+    for first, second, first_activation, second_activation in zip(
+        block.convs1, block.convs2, activations[::2], activations[1::2]
+    ):
+        hidden = padded_conv(
+            first,
+            alias_free_padded_channels_last(first_activation, value, None),
+            channels_last_weights,
+            with_bias=False,
+        )
+        convolved = padded_conv(
+            second,
+            alias_free_padded_channels_last(second_activation, hidden, first.bias),
+            channels_last_weights,
+            with_bias=False,
+        )
+        value = residual_bias_add_channels_last(convolved, second.bias, value)
+    return value
 
 
 def run_block_channels_last(

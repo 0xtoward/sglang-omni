@@ -163,7 +163,7 @@ if triton is not None:
         )
 
     @triton.jit
-    def upsample_snake_valid_kernel(
+    def upsample_snake_channels_last_kernel(
         input_pointer,
         bias_pointer,
         filter_pointer,
@@ -176,6 +176,7 @@ if triton is not None:
         input_frame_stride,
         shared_filter: tl.constexpr,
         has_bias: tl.constexpr,
+        padded: tl.constexpr,
         block_samples: tl.constexpr,
         block_channels: tl.constexpr,
     ) -> None:
@@ -184,9 +185,14 @@ if triton is not None:
         channel = tl.program_id(1) * block_channels + tl.arange(0, block_channels)
         channel_mask = channel < channels
         mask = (index < samples)[:, None] & channel_mask[None, :]
-        # note (0xtoward): output index i is the 2x sample i + 10, the first one
-        # whose six input frames are all real.
-        sample = index + 10
+        if padded:
+            # note (0xtoward): every 2x sample, with zeros before the first frame
+            # like the causal upsample.
+            sample = index
+        else:
+            # note (0xtoward): output index i is the 2x sample i + 10, the first one
+            # whose six input frames are all real.
+            sample = index + 10
         phase = sample % 2
         first_frame = sample // 2
         filter_offset = tl.full((block_channels,), 0, tl.int32)
@@ -202,10 +208,17 @@ if triton is not None:
         rows = input_pointer + batch * input_batch_stride + channel[None, :]
         accumulator = tl.full((block_samples, block_channels), 0, tl.float32)
         for tap in tl.static_range(6):
+            if padded:
+                real = mask & ((first_frame - tap) >= 0)[:, None]
+            else:
+                real = mask
             value = tl.load(
-                rows + (first_frame - tap)[:, None] * input_frame_stride, mask, other=0
+                rows + (first_frame - tap)[:, None] * input_frame_stride, real, other=0
             )
-            if has_bias:
+            if has_bias and padded:
+                # note (0xtoward): the producing conv's bias, added only to real frames.
+                value = tl.where(real, value + bias[None, :], 0.0)
+            elif has_bias:
                 value = value + bias[None, :]
             else:
                 pass
@@ -232,7 +245,7 @@ if triton is not None:
         )
 
     @triton.jit
-    def downsample_valid_kernel(
+    def downsample_channels_last_kernel(
         input_pointer,
         filter_pointer,
         output_pointer,
@@ -240,6 +253,7 @@ if triton is not None:
         samples,
         output_frames,
         shared_filter: tl.constexpr,
+        padded: tl.constexpr,
         block_frames: tl.constexpr,
         block_channels: tl.constexpr,
     ) -> None:
@@ -255,12 +269,16 @@ if triton is not None:
             pass
         rows = input_pointer + batch * samples * channels + channel[None, :]
         accumulator = tl.full((block_frames, block_channels), 0, tl.float32)
-        # note (0xtoward): valid frame t reads 2x samples 2t + 11 + tap, stored at
-        # index 2t + 1 + tap of the upsampled tensor.
         for tap in tl.static_range(12):
-            value = tl.load(
-                rows + (2 * frame + 1 + tap)[:, None] * channels, mask, other=0
-            )
+            if padded:
+                # note (0xtoward): the lowpass replicates the first 2x sample on the
+                # left, like the native downsample.
+                position = tl.maximum(2 * frame + tap - 11, 0)
+            else:
+                # note (0xtoward): valid frame t reads 2x samples 2t + 11 + tap,
+                # stored at index 2t + 1 + tap of the upsampled tensor.
+                position = 2 * frame + 1 + tap
+            value = tl.load(rows + position[:, None] * channels, mask, other=0)
             coefficient = tl.load(
                 filter_pointer + filter_offset + tap, channel_mask, other=0
             )
@@ -322,9 +340,34 @@ def alias_free_valid_channels_last(
     Returns the T - 11 outputs that depend only on real input frames, the
     causal receptive field of the upsample and lowpass filters.
     """
+    return alias_free_channels_last(activation, value, bias, padded=False)
+
+
+def alias_free_padded_channels_last(
+    activation: FusedAliasFree, value: torch.Tensor, bias: torch.Tensor | None
+) -> torch.Tensor:
+    """FusedAliasFree on a (B, T, C) activation whose channel stride is 1: T outputs.
+
+    The upsample sees zeros before the first frame and the lowpass replicates
+    the first upsampled sample, the padding of the native activation.
+    """
+    return alias_free_channels_last(activation, value, bias, padded=True)
+
+
+def alias_free_channels_last(
+    activation: FusedAliasFree,
+    value: torch.Tensor,
+    bias: torch.Tensor | None,
+    *,
+    padded: bool,
+) -> torch.Tensor:
     batch_size, frames, channels = value.shape
-    samples = RESAMPLE_RATIO * frames - 10
-    output_frames = frames - (FILTER_TAPS - 1)
+    if padded:
+        samples = RESAMPLE_RATIO * frames
+        output_frames = frames
+    else:
+        samples = RESAMPLE_RATIO * frames - 10
+        output_frames = frames - (FILTER_TAPS - 1)
     upsampled = torch.empty(
         (batch_size, samples, channels), device=value.device, dtype=value.dtype
     )
@@ -332,7 +375,7 @@ def alias_free_valid_channels_last(
         (batch_size, output_frames, channels), device=value.device, dtype=value.dtype
     )
     block_channels = min(VALID_BLOCK_CHANNELS, triton.next_power_of_2(channels))
-    upsample_snake_valid_kernel[
+    upsample_snake_channels_last_kernel[
         (
             triton.cdiv(samples, VALID_BLOCK_FRAMES),
             triton.cdiv(channels, block_channels),
@@ -351,12 +394,13 @@ def alias_free_valid_channels_last(
         value.stride(1),
         activation.upsample.filter.numel() == FILTER_TAPS,
         bias is not None,
+        padded,
         VALID_BLOCK_FRAMES,
         block_channels,
         num_warps=4,
         enable_fp_fusion=False,
     )
-    downsample_valid_kernel[
+    downsample_channels_last_kernel[
         (
             triton.cdiv(output_frames, VALID_BLOCK_FRAMES),
             triton.cdiv(channels, block_channels),
@@ -370,6 +414,7 @@ def alias_free_valid_channels_last(
         samples,
         output_frames,
         activation.downsample.lowpass.filter.numel() == FILTER_TAPS,
+        padded,
         VALID_BLOCK_FRAMES,
         block_channels,
         num_warps=4,

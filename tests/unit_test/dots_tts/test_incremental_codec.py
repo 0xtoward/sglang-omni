@@ -271,8 +271,8 @@ def test_channels_last_warm_step_matches_current_warm_step(
     inference = cuda_fused_inference(monkeypatch)
     current = DotsIncrementalDecoder(inference, channels_last=False)
     valid = DotsIncrementalDecoder(inference)
-    assert valid.channels_last_valid
-    assert not current.channels_last_valid
+    assert valid.use_channels_last
+    assert not current.use_channels_last
     generator = torch.Generator(device="cuda").manual_seed(5)
     arena = current.new_state_arena(3)
     for tensor in arena.tensors():
@@ -290,3 +290,55 @@ def test_channels_last_warm_step_matches_current_warm_step(
         torch.testing.assert_close(observed, expected, rtol=1e-4, atol=1e-5)
     for observed, expected in zip(twin.tensors(), arena.tensors()):
         torch.testing.assert_close(observed, expected, rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.accelerator
+@torch.no_grad()
+def test_alias_free_padded_channels_last_matches_fused_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.dots_tts.alias_free import alias_free_padded_channels_last
+
+    inference = cuda_fused_inference(monkeypatch)
+    activation = inference.vocoder.decoder.resblocks[0].activations[0]
+    channels = activation.frozen_alpha.numel()
+    generator = torch.Generator(device="cuda").manual_seed(6)
+    value = torch.randn(2, channels, 70, device="cuda", generator=generator)
+    bias = torch.randn(channels, device="cuda", generator=generator)
+    for folded in (None, bias):
+        expected = activation(value, bias=folded)
+        observed = alias_free_padded_channels_last(
+            activation, value.transpose(1, 2).contiguous(), folded
+        ).transpose(1, 2)
+        assert torch.equal(observed, expected)
+
+
+@pytest.mark.accelerator
+@torch.no_grad()
+def test_channels_last_cold_step_matches_current_cold_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inference = cuda_fused_inference(monkeypatch)
+    current = DotsIncrementalDecoder(inference, channels_last=False)
+    padded = DotsIncrementalDecoder(inference)
+    assert padded.use_channels_last
+    assert not current.use_channels_last
+    generator = torch.Generator(device="cuda").manual_seed(7)
+    arena = current.new_state_arena(3)
+    twin = padded.new_state_arena(3)
+    slot_index = torch.tensor([2, 0, 1], device="cuda")
+    window_frames = 6 * PATCH
+    valid = torch.tensor([window_frames, 2, 4 * PATCH + 1], device="cuda")
+    # note (0xtoward): pool windows are left-aligned and zero past each row's valid frames.
+    real = torch.arange(window_frames, device="cuda") < valid.unsqueeze(1)
+    window = torch.randn(
+        3, current.latent_channels, window_frames, device="cuda", generator=generator
+    ) * real.unsqueeze(1)
+    stable = valid - current.lookahead
+    expected = current.cold_forward(arena, window, slot_index, stable, valid)
+    observed = padded.cold_forward(twin, window, slot_index, stable, valid)
+    torch.testing.assert_close(observed, expected, rtol=1e-4, atol=1e-5)
+    for observed_history, expected_history in zip(twin.tensors(), arena.tensors()):
+        torch.testing.assert_close(
+            observed_history, expected_history, rtol=1e-4, atol=1e-5
+        )
