@@ -21,6 +21,7 @@ from dots_tts.modules.backbone.dit import DiT
 from dots_tts.modules.backbone.encoder import VAESemanticEncoder
 
 from sglang_omni.models.dots_tts import tail
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 FM_HIDDEN = 32
 LATENT_DIM = 6
@@ -1278,18 +1279,13 @@ def test_compiled_tail_steps_match_eager_cached_tail() -> None:
 
 
 @pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="needs CUDA"
-            ),
-        ),
-    ],
+    "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
 )
 def test_gelu_tanh_linear_matches_linear_then_tanh_gelu(device: str) -> None:
+    if device == "cuda":
+        require_cuda()
+    else:
+        pass
     generator = torch.Generator().manual_seed(5)
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
     value = torch.randn(3, 6, 64, generator=generator).to(device=device, dtype=dtype)

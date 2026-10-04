@@ -8,16 +8,11 @@ import torch
 import torch.nn.functional as F
 
 from sglang_omni.models.dots_tts.tail import batched_causal_update_mask
+from sglang_omni.models.dots_tts.tail_attention import cached_block_attention
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 HEADS = 4
 HEAD_DIM = 64
-
-
-def require_cuda() -> None:
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA is required")
-    else:
-        pass
 
 
 @pytest.mark.accelerator
@@ -27,8 +22,6 @@ def test_cached_block_attention_matches_masked_sdpa(
     query_rows: int, previous_rows: int
 ) -> None:
     require_cuda()
-    from sglang_omni.models.dots_tts.tail_attention import cached_block_attention
-
     generator = torch.Generator(device="cuda").manual_seed(3)
     slots_total, tokens = 6, 200
     dtype = torch.bfloat16

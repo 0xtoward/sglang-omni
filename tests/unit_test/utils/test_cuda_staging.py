@@ -433,6 +433,7 @@ def test_pinned_transfer_slot_real_cuda_guards_slot_on_other_device() -> None:
         torch.cuda.set_device(previous_device)
 
 
+@pytest.mark.accelerator
 def test_tensor_to_device_keeps_host_tensors_off_the_stream_wait() -> None:
     require_cuda()
     device = torch.device("cuda", torch.cuda.current_device())

@@ -41,18 +41,22 @@ def test_chunked_lstm_matches_frame_loop() -> None:
     )
     for frames in (4, 16):
         latents = torch.randn(2, latent_dim, frames, generator=generator)
-        expected, (expected_h, expected_c) = (
+        expected, (expected_hidden_state, expected_cell_state) = (
             inference._decode_stream_latents(  # noqa: leading-underscore  # upstream spelling
                 latents, hidden
             )
         )
-        observed, (observed_h, observed_c) = cudnn_stream_latents(
+        observed, (observed_hidden_state, observed_cell_state) = cudnn_stream_latents(
             inference.vocoder, latents, hidden
         )
         torch.testing.assert_close(observed, expected, rtol=1e-5, atol=1e-5)
-        torch.testing.assert_close(observed_h, expected_h, rtol=1e-5, atol=1e-5)
-        torch.testing.assert_close(observed_c, expected_c, rtol=1e-5, atol=1e-5)
-        hidden = (observed_h, observed_c)
+        torch.testing.assert_close(
+            observed_hidden_state, expected_hidden_state, rtol=1e-5, atol=1e-5
+        )
+        torch.testing.assert_close(
+            observed_cell_state, expected_cell_state, rtol=1e-5, atol=1e-5
+        )
+        hidden = (observed_hidden_state, observed_cell_state)
 
 
 def test_relative_errors_count_non_finite_values_as_infinite() -> None:
@@ -74,15 +78,24 @@ def cuda_inference(monkeypatch: pytest.MonkeyPatch) -> VocoderInference:
 
 
 @pytest.mark.accelerator
+@pytest.mark.parametrize("cudnn_lstm", [False, True])
 @torch.no_grad()
 def test_graphs_match_eager_over_consecutive_replays(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cudnn_lstm: bool
 ) -> None:
     inference = cuda_inference(monkeypatch)
+    if cudnn_lstm:
+        # note (0xtoward): cuDNN's TF32 default stays on, so the fp32 LSTM call
+        # is what keeps the carried state on the per-frame gate loop.
+        monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", True)
+    else:
+        pass
     eager = (
         inference._decode_stream_latents
     )  # noqa: leading-underscore  # upstream spelling
-    graphs = StreamLatentGraphs(inference, max_batch_size=2, frame_counts=[4, 8])
+    graphs = StreamLatentGraphs(
+        inference, max_batch_size=2, frame_counts=[4, 8], cudnn_lstm=cudnn_lstm
+    )
     generator = torch.Generator(device="cuda").manual_seed(4)
     latent_dim = int(inference.vocoder.h.latent_dim)
     layers = int(
@@ -122,12 +135,12 @@ def test_parity_gate_rejects_a_wrong_state_or_a_non_finite_output(
         latents: torch.Tensor,
         hidden: tuple[torch.Tensor, torch.Tensor],
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-        value, (next_hidden_h, next_hidden_c) = correct(vocoder, latents, hidden)
+        value, (next_hidden_state, next_cell_state) = correct(vocoder, latents, hidden)
         if fault == "state":
             # note (0xtoward): the output stays right; only the carried state is wrong.
-            return value, (next_hidden_h + 1.0, next_hidden_c)
+            return value, (next_hidden_state + 1.0, next_cell_state)
         else:
-            return value * math.nan, (next_hidden_h, next_hidden_c)
+            return value * math.nan, (next_hidden_state, next_cell_state)
 
     monkeypatch.setattr(stream_latent_graphs, "cudnn_stream_latents", faulty)
     with pytest.raises(RuntimeError, match="failed parity gate"):
