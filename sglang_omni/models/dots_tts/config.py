@@ -35,6 +35,7 @@ class DotsVocoderFactoryArgs(FactoryArgs):
 
     stream_slots: int | None = Field(default=None, ge=1)
     enable_stateful_codec_decoder: bool = False
+    enable_alias_free_fusion: bool = False
 
 
 class DotsVocoderStageConfig(StageConfig):
