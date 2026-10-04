@@ -32,7 +32,7 @@ class VoxtralSGLangRequestData(SGLangARRequestData):
     pending_feedback_queue: collections.deque[torch.Tensor] = field(
         default_factory=collections.deque
     )
-    # note (luojiaxuan): Keep all-codebook feedback after decode consumes the queue.
+    # note (0xtoward): Keep all-codebook feedback after decode consumes the queue.
     generated_input_embeds: list[torch.Tensor] = field(default_factory=list)
 
 
@@ -117,7 +117,7 @@ def make_voxtral_scheduler_adapters(
     Callable[[StagePayload], VoxtralSGLangRequestData],
     Callable[[VoxtralSGLangRequestData], StagePayload],
 ]:
-    # note (luojiaxuan): hash the fixed GPU voice embeddings once, not per admission.
+    # note (0xtoward): hash the fixed GPU voice embeddings once, not per admission.
     voice_cache_keys: dict[str | None, str] = {
         voice: prompt_cache_key("voxtral_tts", embedding)
         for voice, embedding in voice_embeddings.items()

@@ -117,7 +117,7 @@ class Zonos2ModelRunner(ModelRunner):
     def build_prefill_embeds(self, forward_batch, requests) -> torch.Tensor:
         model = self.model
         pool = model.decode_state_pool
-        # note (luojiaxuan): Admin retract can resume prefills before any decode cleanup.
+        # note (0xtoward): Admin retract can resume prefills before any decode cleanup.
         for request_id, request in list(self.decode_requests.items()):
             if request.is_retracted or request.finished():
                 pool.release_row(request_id)
@@ -131,7 +131,7 @@ class Zonos2ModelRunner(ModelRunner):
             prefix_len = req.extend_range.start
             end = req.extend_range.end
             req_len = int(req.extend_range.length)
-            # note (luojiaxuan): Re-prefill needs full frames, not their scalar hashes.
+            # note (0xtoward): Re-prefill needs full frames, not their scalar hashes.
             assert len(data.output_codes) == len(
                 req.output_ids
             ), "ZONOS2 frame history does not match committed tokens"
@@ -415,7 +415,7 @@ class Zonos2ModelRunner(ModelRunner):
         eos_val_cpu = packed_cpu[:, n + 1]
         for i, sr in enumerate(requests):
             data = sr.data
-            # note (luojiaxuan): Lagged results must not extend discarded histories.
+            # note (0xtoward): Lagged results must not extend discarded histories.
             if data.req.is_retracted or data.req.finished():
                 continue
             else:

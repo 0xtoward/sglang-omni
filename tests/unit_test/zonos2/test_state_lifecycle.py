@@ -561,7 +561,7 @@ def test_zonos2_radix_namespace_is_shared_across_prompt_texts() -> None:
     assert (
         first.req._omni_prompt_only_radix
     )  # noqa: leading-underscore  # Existing request or scheduler interface.
-    # note (Eric): row keys already hash every prompt row, so the namespace must not
+    # note (0xtoward): row keys already hash every prompt row, so the namespace must not
     # depend on the text or different prompts lose their shared speaker prefix.
     assert first.req.extra_key == second.req.extra_key == other_text.req.extra_key
     assert (

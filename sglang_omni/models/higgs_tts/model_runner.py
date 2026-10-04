@@ -114,7 +114,7 @@ class HiggsTTSModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
-        # note (luojiaxuan): waiting retracts must not occupy every sampler row.
+        # note (0xtoward): waiting retracts must not occupy every sampler row.
         for request_id, request in list(self.sampler_requests.items()):
             if request.is_retracted or request.finished():
                 self.model.release_row(request_id)
@@ -597,7 +597,7 @@ class HiggsTTSModelRunner(ModelRunner):
                 generated_start = start - prompt_length
                 generated_end = end - prompt_length
                 assert generated_end <= len(codes), "Missing Higgs generated codes"
-                # note (luojiaxuan): a replay chunk need not end at the generated tail.
+                # note (0xtoward): a replay chunk need not end at the generated tail.
                 with torch.no_grad():
                     embeddings = fused_embed(
                         codes[generated_start:generated_end].to(device=device)

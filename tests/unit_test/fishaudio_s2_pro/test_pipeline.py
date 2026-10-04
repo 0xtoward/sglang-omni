@@ -1557,7 +1557,7 @@ def test_fish_retract_replays_decode_inputs_at_absolute_positions(
         max_batch_size=8,
         rep_history_len=3,
     )
-    # note (luojiaxuan): retain the production decode fusion and stop before attention.
+    # note (0xtoward): retain the production decode fusion and stop before attention.
     model.start_layer = model.end_layer = 0
     model.tie_word_embeddings = True
     model.norm = lambda hidden, residual: (hidden, residual)

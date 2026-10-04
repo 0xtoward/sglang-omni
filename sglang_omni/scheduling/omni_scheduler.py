@@ -2982,7 +2982,7 @@ class OmniScheduler(Generic[RequestDataT]):
     def _add_request_to_queue(self, req: Req, is_retracted: bool = False) -> None:
         if req.is_retracted:
             if getattr(req, "use_private_radix_on_retract", False):
-                # note (Eric): chunked replay needs inserts, so it gets a private key.
+                # note (0xtoward): chunked replay needs inserts, so use a private key.
                 req.extra_key = f"{req.extra_key}:retract:{uuid4().hex}"
                 req.skip_radix_cache_insert = False
                 req._omni_prompt_only_radix = False  # noqa: leading-underscore
@@ -3467,7 +3467,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 or not batch.check_decode_mem()
             )
         ):
-            # note (Eric): commit acoustic outputs before retract frees their KV.
+            # note (0xtoward): commit acoustic outputs before retract frees their KV.
             self.resolve_pending_async()
         else:
             pass

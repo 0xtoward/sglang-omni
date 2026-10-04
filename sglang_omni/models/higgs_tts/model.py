@@ -286,7 +286,7 @@ class HiggsTTSModel(nn.Module):
         count, num_codebooks = codes.shape
         pool.delay_count[row] = min(count, num_codebooks)
         pool.step_count[row] = count
-        # note (luojiaxuan): lookahead may leave the pool ahead of committed output.
+        # note (0xtoward): lookahead may leave the pool ahead of committed output.
         end_positions = (codes[num_codebooks:, 0] == EOC_ID).nonzero().flatten()
         done = False
         if len(end_positions):
@@ -547,7 +547,7 @@ class HiggsTTSModel(nn.Module):
                 device=hidden_states_last.device,
                 dtype=torch.float32,
             )
-            # note (luojiaxuan): middle chunks rebuild KV without advancing the sampler.
+            # note (0xtoward): middle chunks rebuild KV without advancing the sampler.
             if sample_indices:
                 self.decode_codebooks_batch(
                     hidden_states_last[sample_indices],

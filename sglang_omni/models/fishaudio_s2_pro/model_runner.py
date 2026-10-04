@@ -239,7 +239,7 @@ class FishS2ProModelRunner(ModelRunner):
 
             if data.vq_mask_tokens is not None and data.vq_parts:
                 reference_mask = data.vq_mask_tokens.reshape(-1).to(device=device)
-                # note (luojiaxuan): reference masks end at the original prompt.
+                # note (0xtoward): reference masks end at the original prompt.
                 reference_length = max(0, min(extend_end, prompt_length) - extend_start)
                 mask_slice = reference_mask[
                     extend_start : extend_start + reference_length
@@ -265,7 +265,7 @@ class FishS2ProModelRunner(ModelRunner):
                 pass
 
             if extend_end > prompt_length:
-                # note (luojiaxuan): a replay chunk can end before the generated tail.
+                # note (0xtoward): a replay chunk can end before the generated tail.
                 generated_start = max(extend_start, prompt_length) - prompt_length
                 generated_end = extend_end - prompt_length
                 assert 0 <= generated_start < generated_end <= len(data.output_codes)

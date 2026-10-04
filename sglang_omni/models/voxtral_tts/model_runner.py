@@ -41,7 +41,7 @@ class VoxtralTTSModelRunner(ModelRunner):
         self.pending_audio_embeds: torch.Tensor | None = None
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
-        # note (luojiaxuan): Feedback is committed at resolve, too late for lookahead.
+        # note (0xtoward): Feedback is committed at resolve, too late for lookahead.
         return False
 
     def before_prefill(
@@ -97,7 +97,7 @@ class VoxtralTTSModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> None:
         del forward_batch
-        # note (luojiaxuan): Prefill-only requests do not generate audio.
+        # note (0xtoward): Prefill-only requests do not generate audio.
         if schedule_batch.is_prefill_only:
             return
         else:
@@ -143,7 +143,7 @@ class VoxtralTTSModelRunner(ModelRunner):
                     data.generated_input_embeds[start - prompt_len : history_end]
                 ).to(device=input_embeds.device, dtype=input_embeds.dtype)
                 input_embeds[offset + start - prefix_len : offset + req_len] = history
-                # note (luojiaxuan): the replayed history already holds this queued row.
+                # note (0xtoward): the replayed history already holds this queued row.
                 data.pending_feedback_queue.clear()
             else:
                 pass
@@ -187,7 +187,7 @@ class VoxtralTTSModelRunner(ModelRunner):
             hidden = hidden[:, -1, :]
         else:
             pass
-        # note (luojiaxuan): Middle or discarded rows must not consume acoustic noise.
+        # note (0xtoward): Middle or discarded rows must not consume acoustic noise.
         active_rows = [
             index
             for index, request in enumerate(requests)
@@ -241,7 +241,7 @@ class VoxtralTTSModelRunner(ModelRunner):
         eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
         skip_rids = self.finalize_skip_rids(scheduler_output)
         for row_idx, sched_req in enumerate(scheduler_output.requests):
-            # note (luojiaxuan): Discarded and middle-chunk rows have no committed frame.
+            # note (0xtoward): Discarded and middle-chunk rows have no committed frame.
             if sched_req.request_id in skip_rids:
                 continue
             else:
