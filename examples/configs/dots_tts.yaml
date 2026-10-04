@@ -49,5 +49,6 @@ stages:
     gpu_memory_fraction: 0.25
     factory:
       optimize: true
+      enable_stateful_codec_decoder: true
       max_batch_size: 4
       max_batch_wait_ms: 2
