@@ -58,7 +58,6 @@ class DotsIncrementalCodecCudaGraphRunner:
         max_batch_size: int,
         warm_fresh_frames: list[int],
         cold_window_frames: list[int],
-        cudnn_benchmark: bool = True,
         capture_graphs: bool = True,
     ) -> None:
         self.decoder = decoder
@@ -68,8 +67,11 @@ class DotsIncrementalCodecCudaGraphRunner:
         self.replay_calls = 0
         self.eager_calls = 0
         if capture_graphs and decoder.device.type == "cuda":
+            # note (0xtoward): with cuDNN benchmarking on, capturing the 5 to 8 row
+            # graphs left a later replay faulting on an illegal address; the
+            # heuristic algorithm choice decodes every captured shape correctly.
             previous_cudnn_benchmark = torch.backends.cudnn.benchmark
-            torch.backends.cudnn.benchmark = cudnn_benchmark
+            torch.backends.cudnn.benchmark = False
             try:
                 # note (0xtoward): a flush decodes lookahead zero frames, so that
                 # count is captured next to the regular step sizes.
