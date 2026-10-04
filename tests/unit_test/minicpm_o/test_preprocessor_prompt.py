@@ -17,6 +17,7 @@ from sglang_omni.models.minicpm_o.components.preprocessor import (
     ASR_PROMPT_ZH,
     AUDIO_PLACEHOLDER,
     IMAGE_PLACEHOLDER,
+    TTS_READ_PROMPT_ZH,
     MiniCPMOPreprocessor,
 )
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
@@ -191,7 +192,21 @@ def test_chat_media_placeholders_lead_the_user_text(
     )
 
 
-class KnownTextTokenizer:
+class SpeechTokenizer:
+    """Chat template, prompt ids and speech ids of a tiny MiniCPM-o vocabulary."""
+
+    def apply_chat_template(
+        self, messages: list[dict[str, str]], **template_options: bool
+    ) -> str:
+        assert template_options["use_tts_template"]
+        return messages[0]["content"] + "<|tts_bos|>"
+
+    def __call__(
+        self, prompt_text: str, return_tensors: str
+    ) -> dict[str, torch.Tensor]:
+        assert prompt_text == f"{TTS_READ_PROMPT_ZH}你好<|tts_bos|>"
+        return {"input_ids": torch.tensor([[7, 8, 151703]])}
+
     def convert_tokens_to_ids(self, token: str) -> int:
         return {"<|tts_bos|>": 151703, "<|tts_eos|>": 151704}[token]
 
@@ -201,30 +216,34 @@ class KnownTextTokenizer:
         return [100, 101]
 
 
-def test_known_tts_text_prefills_the_speech_span() -> None:
+def test_speech_request_prefills_its_text() -> None:
     preprocessor = object.__new__(MiniCPMOPreprocessor)
-    preprocessor.tokenizer = KnownTextTokenizer()
+    preprocessor.tokenizer = SpeechTokenizer()
     preprocessor.speech_enabled = True
     payload = StagePayload(
-        request_id="known-text",
+        request_id="speech",
         request=OmniRequest(
-            inputs={"messages": [151703]},
-            params={"known_tts_text": "你好"},
-            metadata={"output_modalities": ["audio"]},
+            inputs="你好",
+            metadata={
+                "task": "tts",
+                "output_modalities": ["audio"],
+                "tts_params": {"language": "Chinese"},
+            },
         ),
         data=None,
     )
 
     result = asyncio.run(preprocessor(payload))
     prompt = result.data["prompt"]
-    assert prompt["input_ids"].tolist() == [151703, 100, 101, 151704]
+    assert prompt["input_ids"].tolist() == [7, 8, 151703, 100, 101, 151704]
     assert prompt["known_tts_output_ids"] == [100, 101]
+    assert result.request.params["known_tts_text"] == "你好"
 
     state = MiniCPMOPipelineState.from_dict(result.data)
     state.thinker_out = {
         "output_ids": [999],
         "extra_model_outputs": {
-            "hidden_states_seq": [torch.full((4,), i) for i in range(4)]
+            "hidden_states_seq": [torch.full((4,), i) for i in range(6)]
         },
     }
     span = build_talker_request(
@@ -235,7 +254,7 @@ def test_known_tts_text_prefills_the_speech_span() -> None:
     assert span["tts_token_ids"].tolist() == [100, 101]
     torch.testing.assert_close(
         span["tts_hidden"],
-        torch.tensor([[1, 1, 1, 1], [2, 2, 2, 2]]),
+        torch.tensor([[3, 3, 3, 3], [4, 4, 4, 4]]),
     )
 
 
@@ -251,14 +270,14 @@ def test_known_tts_text_keeps_its_prefill_out_of_prefix_cache() -> None:
     first = build_sglang_thinker_request(
         state,
         params={},
-        tokenizer=KnownTextTokenizer(),
+        tokenizer=SpeechTokenizer(),
         vocab_size=151808,
         request_id="first",
     ).req
     second = build_sglang_thinker_request(
         state,
         params={},
-        tokenizer=KnownTextTokenizer(),
+        tokenizer=SpeechTokenizer(),
         vocab_size=151808,
         request_id="second",
     ).req
