@@ -1907,25 +1907,19 @@ class DotsTtsAcousticTail:
                 context_buckets[-1:] if self.cached_block_attention else context_buckets
             )
             for batch_size in reversed(batch_buckets):
-                for patches in reversed(context_buckets):
-                    if patches in meanflow_buckets:
-                        self.capture_graph(
-                            self.meanflow_graphs,
-                            batch_size,
-                            patches * self.spec.unit_len,
-                            kind="meanflow",
-                        )
-                    else:
-                        pass
-                    if patches in meanflow_buckets:
-                        self.capture_graph(
-                            self.encoder_graphs,
-                            batch_size,
-                            patches * self.encoder_block,
-                            kind="semantic_encoder",
-                        )
-                    else:
-                        pass
+                for patches in reversed(meanflow_buckets):
+                    self.capture_graph(
+                        self.meanflow_graphs,
+                        batch_size,
+                        patches * self.spec.unit_len,
+                        kind="meanflow",
+                    )
+                    self.capture_graph(
+                        self.encoder_graphs,
+                        batch_size,
+                        patches * self.encoder_block,
+                        kind="semantic_encoder",
+                    )
             if self.pad_to_bucket:
                 # note (0xtoward): Keep the exact full-batch positional path;
                 # padding to this bucket needs a slot-indexed gather capture.

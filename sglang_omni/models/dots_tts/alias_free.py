@@ -328,30 +328,9 @@ else:
     pass
 
 
-VALID_BLOCK_FRAMES = 64
-VALID_BLOCK_CHANNELS = 32
-
-
-def alias_free_valid_channels_last(
-    activation: FusedAliasFree, value: torch.Tensor, bias: torch.Tensor | None
-) -> torch.Tensor:
-    """Fused alias-free activation of a (B, T, C) activation whose channel stride is 1.
-
-    Returns the T - 11 outputs that depend only on real input frames, the
-    causal receptive field of the upsample and lowpass filters.
-    """
-    return alias_free_channels_last(activation, value, bias, padded=False)
-
-
-def alias_free_padded_channels_last(
-    activation: FusedAliasFree, value: torch.Tensor, bias: torch.Tensor | None
-) -> torch.Tensor:
-    """FusedAliasFree on a (B, T, C) activation whose channel stride is 1: T outputs.
-
-    The upsample sees zeros before the first frame and the lowpass replicates
-    the first upsampled sample, the padding of the native activation.
-    """
-    return alias_free_channels_last(activation, value, bias, padded=True)
+# note (0xtoward): channels-last kernels tile 64 frames (or 2x samples) by 32 channels.
+CHANNELS_LAST_BLOCK_FRAMES = 64
+CHANNELS_LAST_BLOCK_CHANNELS = 32
 
 
 def alias_free_channels_last(
@@ -361,6 +340,13 @@ def alias_free_channels_last(
     *,
     padded: bool,
 ) -> torch.Tensor:
+    """FusedAliasFree on a (B, T, C) activation whose channel stride is 1.
+
+    padded keeps the native padding (zeros before the first frame for the
+    upsample, the first upsampled sample replicated for the lowpass) and
+    returns T outputs. Otherwise it returns the T - 11 outputs that depend
+    only on real input frames, the receptive field of the two filters.
+    """
     batch_size, frames, channels = value.shape
     if padded:
         samples = RESAMPLE_RATIO * frames
@@ -374,10 +360,10 @@ def alias_free_channels_last(
     output = torch.empty(
         (batch_size, output_frames, channels), device=value.device, dtype=value.dtype
     )
-    block_channels = min(VALID_BLOCK_CHANNELS, triton.next_power_of_2(channels))
+    block_channels = min(CHANNELS_LAST_BLOCK_CHANNELS, triton.next_power_of_2(channels))
     upsample_snake_channels_last_kernel[
         (
-            triton.cdiv(samples, VALID_BLOCK_FRAMES),
+            triton.cdiv(samples, CHANNELS_LAST_BLOCK_FRAMES),
             triton.cdiv(channels, block_channels),
             batch_size,
         )
@@ -395,14 +381,14 @@ def alias_free_channels_last(
         activation.upsample.filter.numel() == FILTER_TAPS,
         bias is not None,
         padded,
-        VALID_BLOCK_FRAMES,
+        CHANNELS_LAST_BLOCK_FRAMES,
         block_channels,
         num_warps=4,
         enable_fp_fusion=False,
     )
     downsample_channels_last_kernel[
         (
-            triton.cdiv(output_frames, VALID_BLOCK_FRAMES),
+            triton.cdiv(output_frames, CHANNELS_LAST_BLOCK_FRAMES),
             triton.cdiv(channels, block_channels),
             batch_size,
         )
@@ -415,7 +401,7 @@ def alias_free_channels_last(
         output_frames,
         activation.downsample.lowpass.filter.numel() == FILTER_TAPS,
         padded,
-        VALID_BLOCK_FRAMES,
+        CHANNELS_LAST_BLOCK_FRAMES,
         block_channels,
         num_warps=4,
         enable_fp_fusion=False,
@@ -433,8 +419,8 @@ def residual_bias_add_channels_last(
     )
     residual_bias_channels_last_kernel[
         (
-            triton.cdiv(frames, VALID_BLOCK_FRAMES),
-            triton.cdiv(channels, VALID_BLOCK_CHANNELS),
+            triton.cdiv(frames, CHANNELS_LAST_BLOCK_FRAMES),
+            triton.cdiv(channels, CHANNELS_LAST_BLOCK_CHANNELS),
             batch_size,
         )
     ](
@@ -446,8 +432,8 @@ def residual_bias_add_channels_last(
         frames,
         convolved.stride(0),
         residual.stride(0),
-        VALID_BLOCK_FRAMES,
-        VALID_BLOCK_CHANNELS,
+        CHANNELS_LAST_BLOCK_FRAMES,
+        CHANNELS_LAST_BLOCK_CHANNELS,
         num_warps=4,
     )
     return output

@@ -622,15 +622,10 @@ def create_vocoder_executor(
         pass
     logging.getLogger(__name__).info(
         "dots.tts vocoder backend: slot-pooled eager streaming "
-        "(optimize=%s, merge_steps=%d, stream_slots=%d, batch_size=%d, "
-        "step_batch_cap=%d, chunk_intake=%d, wait_ms=%d)",
-        optimize,
-        vocoder.merge_steps,
-        vocoder.stream_slots,
-        max_batch_size,
-        vocoder.step_batch_max,
-        vocoder.stream_chunk_batch_max,
-        max_batch_wait_ms,
+        f"(optimize={optimize}, merge_steps={vocoder.merge_steps}, "
+        f"stream_slots={vocoder.stream_slots}, batch_size={max_batch_size}, "
+        f"step_batch_cap={vocoder.step_batch_max}, "
+        f"chunk_intake={vocoder.stream_chunk_batch_max}, wait_ms={max_batch_wait_ms})"
     )
     return vocoder
 

@@ -18,8 +18,7 @@ import torch.nn.functional as F
 
 from sglang_omni.models.dots_tts.alias_free import (
     FusedAliasFree,
-    alias_free_padded_channels_last,
-    alias_free_valid_channels_last,
+    alias_free_channels_last,
     residual_bias_add,
     residual_bias_add_channels_last,
 )
@@ -295,8 +294,8 @@ class DotsIncrementalDecoder:
         if index == len(self.upsample_strides) - 1:
             value = padded_conv(
                 self.decoder.conv_post,
-                alias_free_padded_channels_last(
-                    self.decoder.activation_post, value, None
+                alias_free_channels_last(
+                    self.decoder.activation_post, value, None, padded=True
                 ),
                 self.channels_last_weights,
                 with_bias=True,
@@ -415,8 +414,8 @@ class DotsIncrementalDecoder:
         if index == len(self.upsample_strides) - 1:
             value = valid_conv(
                 self.decoder.conv_post,
-                alias_free_valid_channels_last(
-                    self.decoder.activation_post, value, None
+                alias_free_channels_last(
+                    self.decoder.activation_post, value, None, padded=False
                 ),
                 self.channels_last_weights,
                 with_bias=True,
@@ -560,13 +559,15 @@ def run_padded_block_channels_last(
     ):
         hidden = padded_conv(
             first,
-            alias_free_padded_channels_last(first_activation, value, None),
+            alias_free_channels_last(first_activation, value, None, padded=True),
             channels_last_weights,
             with_bias=False,
         )
         convolved = padded_conv(
             second,
-            alias_free_padded_channels_last(second_activation, hidden, first.bias),
+            alias_free_channels_last(
+                second_activation, hidden, first.bias, padded=True
+            ),
             channels_last_weights,
             with_bias=False,
         )
@@ -586,13 +587,15 @@ def run_block_channels_last(
     ):
         hidden = valid_conv(
             first,
-            alias_free_valid_channels_last(first_activation, value, None),
+            alias_free_channels_last(first_activation, value, None, padded=False),
             channels_last_weights,
             with_bias=False,
         )
         convolved = valid_conv(
             second,
-            alias_free_valid_channels_last(second_activation, hidden, first.bias),
+            alias_free_channels_last(
+                second_activation, hidden, first.bias, padded=False
+            ),
             channels_last_weights,
             with_bias=False,
         )
