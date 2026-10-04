@@ -41,7 +41,10 @@ def cudnn_stream_latents(
     value = vocoder.post_proj(latents.float()).permute(0, 2, 1)
     value = vocoder.dec_mi_layer[0](value)
     recurrent = vocoder.dec_mi_layer[1]
-    output, next_hidden = recurrent.lstm(value, (hidden[0], hidden[1]))
+    # note (0xtoward): the per-frame gate loop multiplies in fp32; TF32 gates
+    # drift about 1e-4 from it in the carried state, so cuDNN runs fp32 too.
+    with torch.backends.cudnn.flags(enabled=True, allow_tf32=False):
+        output, next_hidden = recurrent.lstm(value, (hidden[0], hidden[1]))
     if recurrent.skip:
         output = output + value
     else:
