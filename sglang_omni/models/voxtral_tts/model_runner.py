@@ -41,7 +41,7 @@ class VoxtralTTSModelRunner(ModelRunner):
         self.pending_audio_embeds: torch.Tensor | None = None
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
-        # note (Eric): Feedback is committed at resolve, too late for lookahead.
+        # note (luojiaxuan): Feedback is committed at resolve, too late for lookahead.
         return False
 
     def before_prefill(
@@ -143,7 +143,7 @@ class VoxtralTTSModelRunner(ModelRunner):
                     data.generated_input_embeds[start - prompt_len : history_end]
                 ).to(device=input_embeds.device, dtype=input_embeds.dtype)
                 input_embeds[offset + start - prefix_len : offset + req_len] = history
-                # note (Eric): the replayed history already holds this queued row.
+                # note (luojiaxuan): the replayed history already holds this queued row.
                 data.pending_feedback_queue.clear()
             else:
                 pass

@@ -117,7 +117,7 @@ def make_voxtral_scheduler_adapters(
     Callable[[StagePayload], VoxtralSGLangRequestData],
     Callable[[VoxtralSGLangRequestData], StagePayload],
 ]:
-    # note (Eric): Fixed GPU voice embeddings must not be copied on each admission.
+    # note (luojiaxuan): hash the fixed GPU voice embeddings once, not per admission.
     voice_cache_keys: dict[str | None, str] = {
         voice: prompt_cache_key("voxtral_tts", embedding)
         for voice, embedding in voice_embeddings.items()

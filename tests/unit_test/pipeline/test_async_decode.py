@@ -1364,7 +1364,7 @@ def test_retract_commits_pending_outputs_and_rechecks_capacity(
         tuple[list[types.SimpleNamespace], float, list[types.SimpleNamespace]]
     ):
         victim = batch.reqs.pop()
-        # Both rails must include the completed launch before the KV is freed.
+        # note (Eric): both rails include the completed launch before KV is freed.
         assert victim.output_ids == [2, 5]
         assert victim.codes == [[2, 3], [5, 7]]
         victim.is_retracted = True
