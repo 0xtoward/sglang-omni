@@ -4,12 +4,32 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 import time
 from dataclasses import dataclass
 
 import torch
 
 logger = logging.getLogger(__name__)
+
+PARITY_RELATIVE_L2 = 1e-4
+
+
+def relative_errors(
+    actual: tuple[torch.Tensor, ...], expected: tuple[torch.Tensor, ...]
+) -> list[float]:
+    """Relative L2 of each tensor pair; a non-finite value on either side is an infinite error."""
+    errors: list[float] = []
+    for value, reference in zip(actual, expected, strict=True):
+        value = value.float()
+        reference = reference.float()
+        if bool(torch.isfinite(value).all()) and bool(torch.isfinite(reference).all()):
+            errors.append(
+                ((value - reference).norm() / reference.norm().clamp_min(1e-12)).item()
+            )
+        else:
+            errors.append(math.inf)
+    return errors
 
 
 def cudnn_stream_latents(
@@ -136,22 +156,64 @@ class StreamLatentGraphs:
                         )
                     graph.replay()
                     torch.cuda.synchronize()
-                    exact = (
-                        torch.equal(decoder_input, expected_input)
-                        and torch.equal(next_hidden_h, expected_h)
-                        and torch.equal(next_hidden_c, expected_c)
+                    observed = [
+                        (
+                            decoder_input.clone(),
+                            next_hidden_h.clone(),
+                            next_hidden_c.clone(),
+                        )
+                    ]
+                    expected = [(expected_input, expected_h, expected_c)]
+                    # note (0xtoward): replay again from the graph's own h/c, so a state that
+                    # is wrong while the first output still matches fails the gate too.
+                    next_latents = torch.randn(
+                        batch_size,
+                        latent_dim,
+                        frames,
+                        device=device,
+                        generator=generator,
+                    )
+                    latents.copy_(next_latents)
+                    hidden_h.copy_(observed[0][1])
+                    hidden_c.copy_(observed[0][2])
+                    graph.replay()
+                    torch.cuda.synchronize()
+                    observed.append(
+                        (
+                            decoder_input.clone(),
+                            next_hidden_h.clone(),
+                            next_hidden_c.clone(),
+                        )
+                    )
+                    next_expected_input, (next_expected_h, next_expected_c) = (
+                        self.eager_decode(next_latents, (expected_h, expected_c))
+                    )
+                    expected.append(
+                        (next_expected_input, next_expected_h, next_expected_c)
+                    )
+                    exact = all(
+                        torch.equal(value, reference)
+                        for step_observed, step_expected in zip(
+                            observed, expected, strict=True
+                        )
+                        for value, reference in zip(
+                            step_observed, step_expected, strict=True
+                        )
                     )
                     if not exact:
-                        relative_error = (
-                            (decoder_input.float() - expected_input.float()).norm()
-                            / expected_input.float().norm().clamp_min(1e-12)
-                        ).item()
+                        errors = [
+                            relative_errors(step_observed, step_expected)
+                            for step_observed, step_expected in zip(
+                                observed, expected, strict=True
+                            )
+                        ]
                         logger.warning(
-                            f"Stream latent graph B{batch_size} T{frames} relative_l2={relative_error}"
+                            f"Stream latent graph B{batch_size} T{frames} relative_l2 "
+                            f"(input, h, c) per replay={errors}"
                         )
-                        if relative_error > 1e-4:
+                        if max(max(step) for step in errors) > PARITY_RELATIVE_L2:
                             raise RuntimeError(
-                                f"Stream latent graph B{batch_size} T{frames} failed parity gate"
+                                f"Stream latent graph B{batch_size} T{frames} failed parity gate: {errors}"
                             )
                         else:
                             pass
