@@ -29,6 +29,15 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
 )
+from sglang_omni.models.minicpm_o.components.token2wav import flow
+from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
+    UpsampleConformerEncoderV2,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
+from sglang_omni.models.minicpm_o.components.token2wav.flow import (
+    CausalConditionalCFM,
+    CausalMaskedDiffWithXvec,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.hift_layers import (
     SourceModuleHnNSF2,
 )
@@ -466,6 +475,58 @@ def test_mixed_reference_batch_matches_single_row_mels(
             ), f"row {row}"
     finally:
         model.close_reference_pool()
+
+
+def test_flow_token_buckets_keep_valid_mels(monkeypatch: pytest.MonkeyPatch) -> None:
+    torch.manual_seed(0)
+    mel_bins = 8
+    encoder = UpsampleConformerEncoderV2(
+        input_size=16,
+        output_size=16,
+        num_blocks=1,
+        num_up_blocks=1,
+        attention_heads=2,
+        linear_units=32,
+    )
+    estimator = DiT(
+        in_channels=4 * mel_bins,
+        out_channels=mel_bins,
+        depth=1,
+        num_heads=2,
+        head_dim=8,
+        hidden_size=16,
+    )
+    flow_model = CausalMaskedDiffWithXvec(
+        encoder,
+        CausalConditionalCFM(estimator),
+        input_size=16,
+        output_size=mel_bins,
+        spk_embed_dim=4,
+        vocab_size=32,
+    ).eval()
+    encoded_lengths: list[int] = []
+    encoder_forward = flow_model.encoder.forward
+
+    def record_encoded_length(
+        tokens: torch.Tensor, token_lengths: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        encoded_lengths.append(tokens.shape[1])
+        return encoder_forward(tokens, token_lengths)
+
+    monkeypatch.setattr(flow_model.encoder, "forward", record_encoded_length)
+    flow_inputs = (
+        torch.randint(0, 32, (2, 7)),
+        torch.tensor([7, 4]),
+        torch.randint(0, 32, (2, 3)),
+        torch.tensor([3, 2]),
+        torch.randn(2, 6, mel_bins),
+        torch.randn(2, 4),
+    )
+    bucketed = flow_model.inference(*flow_inputs, n_timesteps=2)
+    monkeypatch.setattr(flow, "FLOW_TOKEN_BUCKET", 1)
+    exact = flow_model.inference(*flow_inputs, n_timesteps=2)
+    assert encoded_lengths == [16, 10]
+    torch.testing.assert_close(bucketed, exact)
 
 
 @pytest.fixture(scope="module")

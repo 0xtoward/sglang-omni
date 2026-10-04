@@ -32,6 +32,8 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
 )
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT, DiTState
 
+FLOW_TOKEN_BUCKET = 16
+
 
 class CausalConditionalCFM(torch.nn.Module):
 
@@ -242,9 +244,14 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             ],
             batch_first=True,
         )
+        # note (0xtoward): whole buckets let batches of nearby lengths share conv and
+        # attention shapes, since cuDNN builds an execution plan for every new shape.
+        combined_tokens = F.pad(
+            combined_tokens, (0, -combined_tokens.shape[1] % FLOW_TOKEN_BUCKET)
+        )
         combined_token_lengths = prompt_token_lengths + token_lengths
         token_mask = (
-            (~make_pad_mask(combined_token_lengths))
+            (~make_pad_mask(combined_token_lengths, combined_tokens.shape[1]))
             .unsqueeze(-1)
             .to(speaker_embeddings)
         )
