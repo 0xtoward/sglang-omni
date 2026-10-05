@@ -117,6 +117,47 @@ def test_reset_keeps_the_seeds_of_deterministic_inference() -> None:
     assert state.seeds[rows].tolist() == [42, 42]
 
 
+def test_slot_state_follows_wrap_reuse_and_replay() -> None:
+    """A slot's window wraps past 16 tokens, is cleared for its next request, and is
+    rebuilt from the replayed history after a retract."""
+    state = TalkerSlotState.allocate(12, VOCAB, EOS_ID, torch.device("cpu"))
+    rows = torch.tensor([7])
+    sampling_info = SimpleNamespace(
+        sampling_seed=None,
+        temperatures=torch.ones(1, 1),
+        top_ps=torch.ones(1),
+        top_ks=torch.full((1,), VOCAB),
+        min_ps=torch.zeros(1),
+    )
+    suppress = torch.zeros(1, VOCAB, dtype=torch.bool)
+    first = make_request(0, 1.05, None)
+    state.reset(rows, [first], sampling_info, suppress)
+    tokens = [(step * 7) % (VOCAB - 1) for step in range(20)]
+    for token in tokens:
+        state.append(rows, torch.tensor([token]))
+    assert int(state.generated[7]) == 20
+    assert sorted(state.windows[7].tolist()) == sorted(tokens[-16:])
+
+    second = make_request(1, 1.0, None)
+    state.reset(rows, [second], sampling_info, suppress)
+    assert int(state.generated[7]) == 0
+    assert state.windows[7].tolist() == [VOCAB] * 16
+
+    first.data.req.output_ids = list(tokens)
+    state.reset(rows, [first], sampling_info, suppress)
+    assert int(state.generated[7]) == 20
+    # Token i sits at ring position i % 16: the four oldest slots hold tokens 16..19.
+    assert state.windows[7].tolist() == [
+        tokens[slot + 16 if slot < 4 else slot] for slot in range(16)
+    ]
+    logits = torch.ones(1, VOCAB)
+    state.apply(logits, rows)
+    penalized = torch.zeros(VOCAB, dtype=torch.bool)
+    penalized[tokens[4:]] = True
+    assert torch.equal(logits[0] < 1.0, penalized)
+    assert logits[0, EOS_ID] == 1.0
+
+
 @pytest.mark.accelerator
 def test_sample_graph_replays_the_eager_step() -> None:
     if not torch.cuda.is_available():
