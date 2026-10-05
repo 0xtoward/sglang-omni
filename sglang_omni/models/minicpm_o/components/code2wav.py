@@ -48,6 +48,7 @@ class MiniCPMOCode2Wav(nn.Module):
         prompt_cache_capacity: int,
         decode_stream_priority: int,
         enable_flow_block_compile: bool,
+        enable_stream_cuda_graph: bool = False,
     ) -> None:
         super().__init__()
         resolved_device = torch.device(device)
@@ -96,6 +97,8 @@ class MiniCPMOCode2Wav(nn.Module):
                 device=resolved_device,
                 dtype=torch_dtype,
                 n_timesteps=n_timesteps,
+                enable_stream_cuda_graph=enable_stream_cuda_graph
+                and resolved_device.type == "cuda",
             )
         self.token2wav.flow.decoder.estimator.enable_variable_length = (
             enable_flow_variable_length

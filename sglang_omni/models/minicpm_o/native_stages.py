@@ -250,10 +250,13 @@ def create_speech_scheduler(
         prompt_cache_capacity=max_open_sessions,
         decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,
         enable_flow_block_compile=False,
+        enable_stream_cuda_graph=True,
     )
     runtime = MiniCPMOVocoderRuntime(codec)
+    default_reference = Path(codec.default_prompt_wav).read_bytes()
+    runtime.warm_up(default_reference)
     return SessionScheduler(
-        SpeechHooks(runtime, Path(codec.default_prompt_wav).read_bytes()),
+        SpeechHooks(runtime, default_reference),
         max_open_sessions=max_open_sessions,
         max_concurrency=1,
         max_state_bytes=max_state_bytes,

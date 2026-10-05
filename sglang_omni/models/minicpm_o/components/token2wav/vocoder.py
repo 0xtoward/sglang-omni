@@ -19,6 +19,9 @@ import whisper
 import yaml
 from librosa.filters import mel as librosa_mel
 
+from sglang_omni.models.minicpm_o.components.token2wav.chunk_graph import (
+    ChunkCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
 )
@@ -34,6 +37,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
 
 # note (Junnan Li): stepaudio2 Token2wav keeps the prompt plus this many frames so positions stay in range.
 FLOW_CACHE_TAIL_FRAMES = 100
+CODEC_CHUNK_SIZE = 25
 SILENCE_TOKEN_ID = 4218
 MEL_CACHE_FRAMES = 8
 SAMPLES_PER_MEL_FRAME = 480
@@ -123,6 +127,7 @@ class Token2Wav(torch.nn.Module):
         device: torch.device,
         dtype: torch.dtype = torch.float32,
         n_timesteps: int = 10,
+        enable_stream_cuda_graph: bool = False,
     ) -> None:
         super().__init__()
         if n_timesteps <= 0:
@@ -186,6 +191,14 @@ class Token2Wav(torch.nn.Module):
         self.speech_window = torch.from_numpy(np.hamming(2 * self.source_cache_len)).to(
             device
         )
+        self.chunk_graphs: ChunkCudaGraphRunner | None = None
+        if enable_stream_cuda_graph:
+            self.chunk_graphs = ChunkCudaGraphRunner(
+                self.flow.decoder.forward_chunk, CODEC_CHUNK_SIZE * self.flow.up_rate
+            )
+            self.flow.decoder.forward_chunk = self.chunk_graphs
+        else:
+            pass
 
     @torch.inference_mode()
     def prepare_prompt(self, source: str | io.BytesIO) -> SpeakerPrompt:

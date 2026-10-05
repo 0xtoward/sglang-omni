@@ -13,6 +13,8 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
     MiniCPMOCode2Wav,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
+    CODEC_CHUNK_SIZE,
+    FLOW_CACHE_TAIL_FRAMES,
     SILENCE_TOKEN_ID,
     SpeakerPrompt,
     StreamCaches,
@@ -22,7 +24,7 @@ from sglang_omni.proto.session import ResourceUsage
 from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
 
 SILENCE_PREFIX_LENGTH = 3
-CODEC_CHUNK_SIZE = 25
+MINIMUM_FLUSH_TOKENS = 5
 
 
 def clone_caches(caches: StreamCaches) -> StreamCaches:
@@ -134,6 +136,34 @@ class MiniCPMOVocoderRuntime:
             pass
         return waveform
 
+    def warm_up(self, reference_audio: bytes) -> None:
+        """Capture one voice's chunk graphs by walking every cache length a turn can visit.
+
+        A turn's first window flushes with any 5 to 25 tokens and shifts the cache by that
+        many frames; two full chunks later the cache is trimmed back to its steady length.
+        The full-window turn goes first so its largest capture leaves pool blocks that every
+        later, shorter capture reuses.
+        """
+        if self.token2wav.chunk_graphs is None:
+            return
+        else:
+            pass
+        chunk_frames = CODEC_CHUNK_SIZE * self.token2wav.flow.up_rate
+        self.open_session("warm-up", reference_audio=reference_audio)
+        with self.token2wav.chunk_graphs.capturing():
+            for start_tokens in range(CODEC_CHUNK_SIZE, MINIMUM_FLUSH_TOKENS - 1, -1):
+                self.synthesize(
+                    "warm-up", [SILENCE_TOKEN_ID] * start_tokens, is_turn_start=True
+                )
+                for _ in range(FLOW_CACHE_TAIL_FRAMES // chunk_frames):
+                    self.synthesize(
+                        "warm-up",
+                        [SILENCE_TOKEN_ID] * CODEC_CHUNK_SIZE,
+                        is_turn_start=False,
+                    )
+                self.synthesize("warm-up", [], is_turn_start=False, end_of_turn=True)
+        self.close_session("warm-up")
+
     def close_session(self, session_id: str) -> None:
         speaker = self.sessions.pop(session_id).speaker
         speaker.session_ids.remove(session_id)
@@ -155,7 +185,7 @@ class MiniCPMOVocoderRuntime:
     ) -> np.ndarray | None:
         state.pending_codec_token_ids.extend(token_ids)
         pcm_chunks: list[bytes] = []
-        minimum_flush_tokens = state.pre_lookahead_tokens + 5
+        minimum_flush_tokens = state.pre_lookahead_tokens + MINIMUM_FLUSH_TOKENS
         window_tokens = CODEC_CHUNK_SIZE + state.pre_lookahead_tokens
 
         if force_flush:
