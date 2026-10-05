@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Protocol
@@ -641,6 +641,44 @@ def test_close_reference_pool_waits_for_running_preparation(
         assert len(preparation.result(timeout=THREAD_WAIT_SECONDS)) == 2
         shutdown.result(timeout=THREAD_WAIT_SECONDS)
     assert all(not thread.is_alive() for thread in preparation_threads)
+
+
+def test_close_reference_pool_keeps_a_submitting_batch_whole(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+    shutdowns: list[Future[None]] = []
+
+    def blocking_prepare(source: io.BytesIO) -> SpeakerPrompt:
+        assert release.wait(THREAD_WAIT_SECONDS)
+        return fake_speaker_prompt(source.getvalue())
+
+    fake_token2wav.prepare_prompt.side_effect = blocking_prepare
+    model = build_code2wav_model(reference_workers=1)
+    submit_reference = model.submit_reference
+
+    def close_after_the_first_submission(
+        reference_key: str, reference: str | bytes
+    ) -> Future[SpeakerPrompt]:
+        future = submit_reference(reference_key, reference)
+        if shutdowns:
+            release.set()
+        else:
+            shutdowns.append(closer.submit(model.close_reference_pool))
+            # The pool stays open while the batch submits its other references.
+            with pytest.raises(TimeoutError):
+                shutdowns[0].result(timeout=BLOCKED_CALL_PROBE_SECONDS)
+        return future
+
+    monkeypatch.setattr(model, "submit_reference", close_after_the_first_submission)
+    with ThreadPoolExecutor(max_workers=1) as closer:
+        prompts = model.prepare_references([b"a", b"b"])
+        shutdowns[0].result(timeout=THREAD_WAIT_SECONDS)
+    assert [prompt.prompt_tokens[0, 0].item() for prompt in prompts] == [97, 98]
+    with pytest.raises(RuntimeError):
+        model.prepare_references([b"c"])
 
 
 def test_stage_stop_rejects_new_reference_preparation(

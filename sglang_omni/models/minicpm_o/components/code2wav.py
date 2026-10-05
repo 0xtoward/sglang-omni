@@ -299,6 +299,11 @@ class MiniCPMOCode2Wav(nn.Module):
 
     def close_reference_pool(self) -> None:
         """Drain reference preparation and reject later submissions."""
+        # note (0xtoward): a batch submits its references under the lock, so closing
+        # under it keeps the batch whole; the drain waits outside the lock because
+        # every finished reference stores itself under it.
+        with self.reference_lock:
+            self.reference_executor.shutdown(wait=False)
         self.reference_executor.shutdown(wait=True)
 
     def flow_mel(
