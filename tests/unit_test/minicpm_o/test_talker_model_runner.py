@@ -96,6 +96,27 @@ def test_device_history_matches_host_penalty_and_min_new_tokens() -> None:
     assert sampling_info.sampling_seed.tolist() == expected_seeds
 
 
+def test_reset_keeps_the_seeds_of_deterministic_inference() -> None:
+    state = TalkerSlotState.allocate(12, VOCAB, EOS_ID, torch.device("cpu"))
+    requests = [make_request(row, 1.0, None) for row in range(2)]
+    rows = torch.tensor([3, 8])
+    # SGLang seeds unseeded rows with 42 under deterministic inference.
+    sampling_info = SimpleNamespace(
+        sampling_seed=torch.tensor([42, 42]),
+        temperatures=torch.ones(len(requests), 1),
+        top_ps=torch.ones(len(requests)),
+        top_ks=torch.full((len(requests),), VOCAB),
+        min_ps=torch.zeros(len(requests)),
+    )
+    state.reset(
+        rows,
+        requests,
+        sampling_info,
+        torch.zeros(len(requests), VOCAB, dtype=torch.bool),
+    )
+    assert state.seeds[rows].tolist() == [42, 42]
+
+
 @pytest.mark.accelerator
 def test_sample_graph_replays_the_eager_step() -> None:
     if not torch.cuda.is_available():

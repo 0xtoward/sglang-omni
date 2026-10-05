@@ -122,7 +122,11 @@ class TalkerSlotState:
         self.generated[rows] = generated.to(device)
         self.min_new_tokens[rows] = min_new_tokens.to(device)
         self.penalties[rows] = penalties.to(device)
-        self.seeds[rows] = seeds.to(device)
+        if sampling_info.sampling_seed is None:
+            self.seeds[rows] = seeds.to(device)
+        else:
+            # note (0xtoward): deterministic inference has already seeded every row.
+            self.seeds[rows] = sampling_info.sampling_seed[:count]
         self.temperatures[rows] = sampling_info.temperatures[:count].view(count, 1)
         self.top_ps[rows] = sampling_info.top_ps[:count].to(torch.float32)
         self.top_ks[rows] = sampling_info.top_ks[:count].to(torch.int32)
