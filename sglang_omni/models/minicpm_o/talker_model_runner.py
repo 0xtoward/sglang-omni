@@ -42,9 +42,10 @@ REP_PENALTY_WINDOW = 16
 
 @dataclass(kw_only=True)
 class TalkerSlotState:
-    """Per-slot decode history and sampling inputs, kept on the GPU for async decode.
+    """GPU-resident per-slot state for async decode.
 
-    Token i of a request sits at windows[slot, i % REP_PENALTY_WINDOW].
+    Token i of a request sits at windows[slot, i % REP_PENALTY_WINDOW]; slot `spare`
+    takes the padded rows of a sample graph.
     """
 
     windows: torch.Tensor
@@ -65,7 +66,6 @@ class TalkerSlotState:
     def allocate(
         cls, slots: int, vocab: int, eos_id: int, device: torch.device
     ) -> TalkerSlotState:
-        """Request slots 0..slots-1 plus a spare slot for padded graph rows."""
         rows = slots + 1
         return cls(
             windows=torch.full(
@@ -92,7 +92,6 @@ class TalkerSlotState:
         sampling_info: SamplingBatchInfo,
         suppress: torch.Tensor,
     ) -> None:
-        """Load the recent tokens and sampling inputs of newly prefilled requests."""
         count = len(requests)
         windows = torch.full((count, REP_PENALTY_WINDOW), self.vocab, dtype=torch.long)
         generated = torch.zeros(count, dtype=torch.long)
@@ -134,7 +133,6 @@ class TalkerSlotState:
         self.suppress[rows] = suppress
 
     def sampling_info(self, rows: torch.Tensor) -> SamplingBatchInfo:
-        """Seeded top-k/top-p sampling inputs of these slots."""
         return SamplingBatchInfo(
             temperatures=self.temperatures[rows],
             top_ps=self.top_ps[rows],
@@ -157,7 +155,6 @@ class TalkerSlotState:
         )
 
     def apply(self, logits: torch.Tensor, rows: torch.Tensor) -> None:
-        """Suppress, apply the window penalty and hold EOS until min_new_tokens."""
         logits.masked_fill_(self.suppress[rows], float("-inf"))
         windows = self.windows[rows]
         counts = torch.zeros(
@@ -192,8 +189,7 @@ class CapturedSampleStep:
 
 
 class TalkerSampleGraphs:
-    """A decode step's suppress, penalty, sampling and window append as one CUDA graph
-    per padded batch size; padded rows sample into the spare slot."""
+    """CUDA graphs of the device-side sampling step, one per padded batch size."""
 
     def __init__(self, state: TalkerSlotState, sampler: Sampler) -> None:
         self.state = state
@@ -251,8 +247,7 @@ class TalkerSampleGraphs:
         self, logits: torch.Tensor, rows: torch.Tensor, positions: torch.Tensor
     ) -> torch.Tensor:
         if not self.captured:
-            # note (0xtoward): every size is captured on the first step, so the
-            # synchronize and gc of a capture never land in the middle of serving.
+            # Capture all batch buckets before the steady path.
             size = 1
             while size < 2 * self.state.spare:
                 self.captured[size] = self.capture(size, logits, rows, positions)
@@ -274,9 +269,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
 
     slot_state: TalkerSlotState | None = None
     sample_graphs: TalkerSampleGraphs | None = None
-    # note (0xtoward): session mode samples on the host for every batch, so duplex
-    # units and the slots never share a scheduler with stale windows.
-    host_sampling: bool = False
+    use_device_sampling: bool = True
 
     def before_prefill(
         self,
@@ -350,7 +343,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
-        if self.host_sampling:
+        if not self.use_device_sampling:
             return super().sample_next_token_ids(
                 logits_output, forward_batch, schedule_batch, requests
             )
@@ -364,10 +357,15 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         rows = forward_batch.req_pool_indices[: len(requests)]
         sampling_info = forward_batch.sampling_info
         if self.slot_state is None:
+            eos_token_ids = requests[0].data.req.eos_token_ids
+            if len(eos_token_ids) != 1:
+                raise ValueError("the talker's slot state expects one codec EOS token")
+            else:
+                pass
             self.slot_state = TalkerSlotState.allocate(
                 self.tp_worker.model_runner.req_to_token_pool.req_to_token.shape[0],
                 logits.shape[1],
-                next(iter(requests[0].data.req.eos_token_ids)),
+                next(iter(eos_token_ids)),
                 logits.device,
             )
         else:
@@ -406,7 +404,6 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
     def suppress_mask(
         self, requests: list[SchedulerRequest], logits: torch.Tensor
     ) -> torch.Tensor:
-        """Each request's codec suppress tokens as a vocabulary mask."""
         probe = LogitsProcessorOutput(
             next_token_logits=torch.zeros_like(logits, dtype=torch.float32),
             hidden_states=None,
@@ -415,7 +412,6 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         return torch.isinf(probe.next_token_logits)
 
     def samples_in_graph(self, sampling_info: SamplingBatchInfo) -> bool:
-        """Whether the step can sample in a graph, which seeds every row."""
         return (
             current_platform.is_cuda()
             and not get_exec().graph.disable_cuda_graph

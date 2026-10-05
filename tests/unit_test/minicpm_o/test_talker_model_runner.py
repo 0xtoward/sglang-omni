@@ -118,8 +118,6 @@ def test_reset_keeps_the_seeds_of_deterministic_inference() -> None:
 
 
 def test_slot_state_follows_wrap_reuse_and_replay() -> None:
-    """A slot's window wraps past 16 tokens, is cleared for its next request, and is
-    rebuilt from the replayed history after a retract."""
     state = TalkerSlotState.allocate(12, VOCAB, EOS_ID, torch.device("cpu"))
     rows = torch.tensor([7])
     sampling_info = SimpleNamespace(
