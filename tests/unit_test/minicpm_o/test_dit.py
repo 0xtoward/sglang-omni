@@ -87,17 +87,24 @@ def test_packed_causal_conv_preserves_sequence_boundaries() -> None:
     torch.testing.assert_close(actual, expected)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_channels_last_causal_conv_matches_channel_first() -> None:
+@pytest.mark.parametrize("frame_count", [9, 16, 33])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_channels_last_causal_conv_matches_channel_first(
+    frame_count: int, dtype: torch.dtype
+) -> None:
     torch.manual_seed(0)
-    channel_first = CausalConvBlock(64, 64).to("cuda", torch.float16).eval()
+    channel_first = CausalConvBlock(64, 64).to("cuda", dtype).eval()
     channels_last = copy.deepcopy(channel_first)
     channels_last.use_channels_last()
-    frames = torch.randn(9, 64, device="cuda", dtype=torch.float16)
+    frames = torch.randn(frame_count, 64, device="cuda", dtype=dtype)
     causal_padding_frames = channel_first.kernel_size - 1
-    real_frame_positions = torch.arange(9, device="cuda") + causal_padding_frames
+    real_frame_positions = (
+        torch.arange(frame_count, device="cuda") + causal_padding_frames
+    )
     real_frame_mask = torch.zeros(
-        9 + causal_padding_frames, dtype=torch.bool, device="cuda"
+        frame_count + causal_padding_frames, dtype=torch.bool, device="cuda"
     )
     real_frame_mask[real_frame_positions] = True
     with torch.inference_mode():
