@@ -192,8 +192,7 @@ def build_sglang_thinker_request(
         vocab_size=vocab_size,
     )
     if known_tts_output_ids is not None:
-        # note (0xtoward): a private cache namespace keeps a cached prefix from
-        # skipping prompt rows whose hidden states the talker reads.
+        # Avoid prefix hits: the talker needs the hidden state of every text row.
         req.extra_key = f"minicpmo-known-tts:{uuid.uuid4().hex}"
     else:
         pass

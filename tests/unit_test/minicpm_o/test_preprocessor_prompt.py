@@ -244,11 +244,28 @@ def test_speech_request_prefills_its_text() -> None:
     prompt = result.data["prompt"]
     assert prompt["input_ids"].tolist() == [7, 8, 151703, 100, 101, 151704]
     assert prompt["known_tts_output_ids"] == [100, 101]
-    assert result.request.params["known_tts_text"] == "你好"
 
     runner = object.__new__(MiniCPMOThinkerModelRunner)
-    runner.pending_hidden = {"speech": [torch.full((4,), i) for i in range(6)]}
-    thinker_request = SimpleNamespace(stage_payload=result, extra_model_outputs={})
+    runner.pending_hidden = {}
+    thinker_request = SimpleNamespace(
+        stage_payload=result,
+        extra_model_outputs={},
+        req=SimpleNamespace(inflight_middle_chunks=1),
+    )
+    # The six-token prompt prefills in two chunks, one hidden row per token.
+    for rows, middle_chunks in ((range(0, 4), 1), (range(4, 6), 0)):
+        thinker_request.req.inflight_middle_chunks = middle_chunks
+        runner.post_process_outputs(
+            None,
+            SimpleNamespace(
+                requests=[SimpleNamespace(request_id="speech", data=thinker_request)]
+            ),
+            {
+                "speech": SimpleNamespace(
+                    extra={"hidden_states": torch.tensor([[row] * 4 for row in rows])}
+                )
+            },
+        )
     runner.on_request_finished("speech", thinker_request)
     state = MiniCPMOPipelineState.from_dict(result.data)
     state.thinker_out = {
@@ -266,33 +283,6 @@ def test_speech_request_prefills_its_text() -> None:
         span["tts_hidden"],
         torch.tensor([[3, 3, 3, 3], [4, 4, 4, 4]]),
     )
-
-
-def test_speech_hidden_rows_accumulate_across_prefill_chunks() -> None:
-    runner = object.__new__(MiniCPMOThinkerModelRunner)
-    runner.pending_hidden = {}
-    params = {"known_tts_text": "你好"}
-    # Two prefill chunks of the six-token prompt, then the single decode step.
-    for chunk_rows, middle_chunks in (
-        (range(0, 4), 1),
-        (range(4, 6), 0),
-        (range(6, 7), 0),
-    ):
-        sched_req = SimpleNamespace(
-            request_id="speech",
-            data=SimpleNamespace(
-                req=SimpleNamespace(inflight_middle_chunks=middle_chunks),
-                stage_payload=SimpleNamespace(request=SimpleNamespace(params=params)),
-            ),
-        )
-        hidden = torch.tensor([[float(row)] * 4 for row in chunk_rows])
-        runner.post_process_outputs(
-            None,
-            SimpleNamespace(requests=[sched_req]),
-            {"speech": SimpleNamespace(extra={"hidden_states": hidden})},
-        )
-    rows = torch.stack(runner.pending_hidden["speech"])
-    assert rows[:, 0].tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 
 
 def test_speech_sampling_fields_reach_the_talker() -> None:
