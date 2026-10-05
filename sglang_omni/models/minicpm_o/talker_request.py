@@ -123,8 +123,9 @@ def build_sglang_talker_request(
         # note (MayDomine): the runner applies a windowed penalty, not SGLang's penalty.
         # note (0xtoward): the runner also holds EOS until min_new_tokens on the GPU;
         # SGLang's penalizer would read host history and keep async decode off.
+        max_new_tokens = int(params.get("talker_max_new_tokens", 2048))
         sampling_params = SamplingParams(
-            max_new_tokens=int(params.get("talker_max_new_tokens", 2048)),
+            max_new_tokens=max_new_tokens,
             temperature=float(params.get("talker_temperature", 0.8)),
             top_p=float(params.get("talker_top_p", 0.85)),
             top_k=int(params.get("talker_top_k", 25)),
@@ -133,7 +134,10 @@ def build_sglang_talker_request(
             sampling_seed=resolve_sampling_seed(params),
         )
         rep_penalty = float(params.get("talker_repetition_penalty", 1.05))
-        min_new_tokens = int(params.get("talker_min_new_tokens", 50))
+        # note (0xtoward): a token budget below the minimum length caps the minimum.
+        min_new_tokens = min(
+            int(params.get("talker_min_new_tokens", 50)), max_new_tokens
+        )
     shim = CodecTokenizer(eos_token_id=int(codec_eos_id))
     sampling_params.normalize(shim)
     sampling_params.verify(codec_vocab_size)

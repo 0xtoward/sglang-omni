@@ -250,14 +250,17 @@ class TalkerSampleGraphs:
     def sample(
         self, logits: torch.Tensor, rows: torch.Tensor, positions: torch.Tensor
     ) -> torch.Tensor:
-        count = len(rows)
-        size = 1 << (count - 1).bit_length()
-        captured = self.captured.get(size)
-        if captured is None:
-            captured = self.capture(size, logits, rows, positions)
-            self.captured[size] = captured
+        if not self.captured:
+            # note (0xtoward): every size is captured on the first step, so the
+            # synchronize and gc of a capture never land in the middle of serving.
+            size = 1
+            while size < 2 * self.state.spare:
+                self.captured[size] = self.capture(size, logits, rows, positions)
+                size *= 2
         else:
             pass
+        count = len(rows)
+        captured = self.captured[1 << (count - 1).bit_length()]
         captured.logits[:count].copy_(logits)
         captured.rows[:count].copy_(rows)
         captured.rows[count:].fill_(self.state.spare)
@@ -271,6 +274,9 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
 
     slot_state: TalkerSlotState | None = None
     sample_graphs: TalkerSampleGraphs | None = None
+    # note (0xtoward): session mode samples on the host for every batch, so duplex
+    # units and the slots never share a scheduler with stale windows.
+    host_sampling: bool = False
 
     def before_prefill(
         self,
@@ -344,16 +350,16 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
-        if any(
-            isinstance(sched_req.data, TalkerUnitRequestData) for sched_req in requests
-        ):
-            # note (0xtoward): duplex units keep the host window over their session.
+        if self.host_sampling:
             return super().sample_next_token_ids(
                 logits_output, forward_batch, schedule_batch, requests
             )
         else:
             pass
-        assert not any(sched_req.data.return_logprob for sched_req in requests)
+        if any(sched_req.data.return_logprob for sched_req in requests):
+            raise ValueError("the talker's device sampler does not return logprobs")
+        else:
+            pass
         logits = logits_output.next_token_logits[: len(requests)]
         rows = forward_batch.req_pool_indices[: len(requests)]
         sampling_info = forward_batch.sampling_info

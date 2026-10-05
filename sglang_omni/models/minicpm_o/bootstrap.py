@@ -84,6 +84,7 @@ def create_talker_scheduler(
 
     output_proc = SGLangOutputProcessor()
     model_runner = MiniCPMOTalkerModelRunner(model_worker, output_proc)
+    model_runner.host_sampling = session_mode
 
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
     request_builder, result_adapter = make_talker_scheduler_adapters(
