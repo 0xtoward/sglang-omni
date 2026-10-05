@@ -44,6 +44,15 @@ else:
 # note (0xtoward): the read-aloud prompts of the SeedTTS benchmark that the TTS CI scores.
 TTS_READ_PROMPT_EN = "Please read the following text out loud in English: "
 TTS_READ_PROMPT_ZH = "请用中文朗读以下文本: "
+# note (0xtoward): speech sampling fields the talker reads as talker_<field>; the
+# talker already takes the request seed.
+TALKER_SPEECH_SAMPLING_FIELDS = (
+    "max_new_tokens",
+    "temperature",
+    "top_p",
+    "top_k",
+    "repetition_penalty",
+)
 
 IMAGE_PLACEHOLDER = "<image>./</image>"
 AUDIO_PLACEHOLDER = "<audio>./</audio>"
@@ -154,12 +163,24 @@ class MiniCPMOPreprocessor:
             # note (0xtoward): a speech request names the exact words, so the thinker
             # prefills them instead of generating them one token at a time.
             known_tts_text = inputs["text"] if isinstance(inputs, Mapping) else inputs
-            language = (metadata.get("tts_params") or {}).get("language")
+            tts_params = metadata.get("tts_params") or {}
             read_prompt = (
-                TTS_READ_PROMPT_ZH if language == "Chinese" else TTS_READ_PROMPT_EN
+                TTS_READ_PROMPT_ZH
+                if tts_params.get("language") == "Chinese"
+                else TTS_READ_PROMPT_EN
             )
             inputs = [{"role": "user", "content": f"{read_prompt}{known_tts_text}"}]
-            params = {**params, "known_tts_text": known_tts_text}
+            # note (0xtoward): the talker generates the speech, so the sampling fields
+            # the caller set apply to it and the rest keep the talker defaults.
+            explicit_fields = tts_params.get("explicit_generation_params") or []
+            talker_params = {
+                f"talker_{field}": value
+                for field, value in params.items()
+                if field in TALKER_SPEECH_SAMPLING_FIELDS
+                and field in explicit_fields
+                and value is not None
+            }
+            params = {**params, **talker_params, "known_tts_text": known_tts_text}
             payload.request.params = params
         else:
             pass
