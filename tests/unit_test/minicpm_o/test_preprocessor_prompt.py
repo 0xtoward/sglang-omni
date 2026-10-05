@@ -268,6 +268,33 @@ def test_speech_request_prefills_its_text() -> None:
     )
 
 
+def test_speech_hidden_rows_accumulate_across_prefill_chunks() -> None:
+    runner = object.__new__(MiniCPMOThinkerModelRunner)
+    runner.pending_hidden = {}
+    params = {"known_tts_text": "你好"}
+    # Two prefill chunks of the six-token prompt, then the single decode step.
+    for chunk_rows, middle_chunks in (
+        (range(0, 4), 1),
+        (range(4, 6), 0),
+        (range(6, 7), 0),
+    ):
+        sched_req = SimpleNamespace(
+            request_id="speech",
+            data=SimpleNamespace(
+                req=SimpleNamespace(inflight_middle_chunks=middle_chunks),
+                stage_payload=SimpleNamespace(request=SimpleNamespace(params=params)),
+            ),
+        )
+        hidden = torch.tensor([[float(row)] * 4 for row in chunk_rows])
+        runner.post_process_outputs(
+            None,
+            SimpleNamespace(requests=[sched_req]),
+            {"speech": SimpleNamespace(extra={"hidden_states": hidden})},
+        )
+    rows = torch.stack(runner.pending_hidden["speech"])
+    assert rows[:, 0].tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
 def test_speech_sampling_fields_reach_the_talker() -> None:
     preprocessor = object.__new__(MiniCPMOPreprocessor)
     preprocessor.tokenizer = SpeechTokenizer()
