@@ -138,15 +138,13 @@ def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
             max_new_tokens_per_unit=max_new_tokens,
         )
     )
-    token_id = duplex_sample(
-        logits,
-        state,
+    (token_id,) = duplex_sample(
+        logits.unsqueeze(0),
+        [(state, generation_step, False)],
         special_tokens=special,
         forbidden_token_index=build_forbidden_token_index(
             special, 128, torch.device("cpu")
         ),
-        generation_step=generation_step,
-        is_listen_forced=False,
     )
     assert token_id == (special.chunk_eos if closes else 42)
 

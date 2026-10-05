@@ -108,29 +108,33 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         logits = logits_output.next_token_logits
-        result = torch.empty(len(requests), dtype=torch.long, device=logits.device)
-        for index, request in enumerate(requests):
-            data = request.data
-            special_tokens = self.resolve_special_tokens(data)
-            if self.forbidden_token_index is None:
-                self.forbidden_token_index = build_forbidden_token_index(
-                    special_tokens, logits.shape[-1], logits.device
-                )
-            else:
-                pass
-            result[index] = duplex_sample(
-                logits[index],
-                data.thinker_state,
-                special_tokens=special_tokens,
-                forbidden_token_index=self.forbidden_token_index,
-                generation_step=data.generation_steps,
-                is_listen_forced=data.is_listen_forced,
+        special_tokens = self.resolve_special_tokens(requests[0].data)
+        if self.forbidden_token_index is None:
+            self.forbidden_token_index = build_forbidden_token_index(
+                special_tokens, logits.shape[-1], logits.device
             )
+        else:
+            pass
+        token_ids = duplex_sample(
+            logits,
+            [
+                (
+                    request.data.thinker_state,
+                    request.data.generation_steps,
+                    request.data.is_listen_forced,
+                )
+                for request in requests
+            ],
+            special_tokens=special_tokens,
+            forbidden_token_index=self.forbidden_token_index,
+        )
+        for request in requests:
+            data = request.data
             if data.is_listen_forced and data.generation_steps == 0:
                 data.thinker_state.force_listen_counter += 1
             else:
                 pass
-        return result
+        return torch.tensor(token_ids, dtype=torch.long, device=logits.device)
 
     # note (Junnan Li): FULL capture must match decode graphs and retain talker conditioning.
     def requested_capture_hidden_mode_prefill(
