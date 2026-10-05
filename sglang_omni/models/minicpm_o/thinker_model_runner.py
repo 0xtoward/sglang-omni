@@ -93,16 +93,15 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 continue
             else:
                 pass
-            known_tts_text = (sched_req.data.stage_payload.request.params or {}).get(
-                "known_tts_text"
-            )
-            if sched_req.data.req.inflight_middle_chunks > 0 and known_tts_text is None:
+            prompt = (sched_req.data.stage_payload.data or {}).get("prompt") or {}
+            known_tts = prompt.get("known_tts_output_ids") is not None
+            if sched_req.data.req.inflight_middle_chunks > 0 and not known_tts:
                 continue
             else:
                 pass
             seq = self.pending_hidden.setdefault(sched_req.request_id, [])
             hidden_rows = hidden.reshape(-1, hidden.shape[-1])
-            if known_tts_text is not None:
+            if known_tts:
                 seq.extend(hidden_rows.detach().clone().unbind(0))
             else:
                 # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
@@ -128,11 +127,11 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         else:
             pass
         payload = req_data.stage_payload
-        if (payload.request.params or {}).get("known_tts_text") is not None:
-            prompt = MiniCPMOPipelineState.from_dict(payload.data).prompt
-            # note (0xtoward): the talker reads only the rows of the speech text, the
-            # positions before the closing <|tts_eos|>.
-            seq = seq[-len(prompt["known_tts_output_ids"]) - 1 : -1]
+        prompt = MiniCPMOPipelineState.from_dict(payload.data).prompt or {}
+        known_tts_output_ids = prompt.get("known_tts_output_ids")
+        if known_tts_output_ids is not None:
+            # Keep only the text rows, excluding <|tts_eos|>.
+            seq = seq[-len(known_tts_output_ids) - 1 : -1]
         else:
             pass
         stacked = torch.stack(seq).to("cpu")
