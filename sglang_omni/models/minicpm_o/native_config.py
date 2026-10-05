@@ -35,7 +35,6 @@ def stages() -> list[StageConfig]:
             gpu_memory_fraction=0.52,
             factory_path=f"{PKG}.create_thinker_scheduler",
             next="talker",
-            engine=EngineArgs(disable_cuda_graph=True),
         ),
         EngineStageConfig(
             name="talker",
@@ -44,7 +43,6 @@ def stages() -> list[StageConfig]:
             gpu_memory_fraction=0.15,
             factory_path="sglang_omni.models.minicpm_o.stages.create_sglang_session_talker_executor_from_config",
             next="speech",
-            engine=EngineArgs(disable_cuda_graph=True),
         ),
         StageConfig(
             name="speech",
