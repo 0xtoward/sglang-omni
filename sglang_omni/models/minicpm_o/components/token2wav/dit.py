@@ -248,6 +248,12 @@ class CausalConvBlock(nn.Module):
     def use_channels_last(self) -> None:
         """Store both conv weights channels last for the stateless (B, T, C) path."""
         for convolution in (self.block[1], self.block[6]):
+            if not isinstance(convolution, CausalConv1d):
+                raise TypeError(
+                    "the channels-last path expects block[1] and block[6] to be CausalConv1d"
+                )
+            else:
+                pass
             convolution.weight.data = channels_last_weight(convolution)
         self.is_channels_last = True
 
