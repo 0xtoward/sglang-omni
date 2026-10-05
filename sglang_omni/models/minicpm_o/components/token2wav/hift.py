@@ -53,7 +53,6 @@ def default_stream_for_cufft(
 
 
 class ConvRNNF0Predictor(nn.Module):
-
     def __init__(
         self, num_class: int = 1, in_channels: int = 80, cond_channels: int = 512
     ) -> None:
@@ -92,7 +91,6 @@ class ConvRNNF0Predictor(nn.Module):
 
 
 class HiFTGenerator(nn.Module):
-
     def __init__(
         self,
         in_channels: int = 80,
@@ -158,6 +156,7 @@ class HiFTGenerator(nn.Module):
         self.source_downs = nn.ModuleList()
         self.source_resblocks = nn.ModuleList()
         downsample_rates = (1,) + upsample_rates[::-1][:-1]
+        # Python ints stay constants under Dynamo's symbolic lengths.
         downsample_cum_rates = np.cumprod(downsample_rates).tolist()
         for i, (u, k, d) in enumerate(
             zip(

@@ -174,15 +174,13 @@ class MiniCPMOCode2Wav(nn.Module):
             pass
         if enable_hift_torch_compile:
             hift = self.token2wav.hift
-            # note (0xtoward): the STFT and iSTFT around the body stay eager because
-            # Inductor has no complex-number codegen.
+            # Keep STFT and iSTFT eager; compile the real-valued body.
             hift.decode_body = torch.compile(
                 hift.decode_body, dynamic=True, fullgraph=True
             )
             mel_bins = self.token2wav.flow.output_size
             mel_frames = FLOW_WARMUP_TOKENS * self.token2wav.flow.up_rate
-            # note (0xtoward): one and two rows trace both batch-size specializations;
-            # outside inference mode, like the mel vocode passes, so the guards match.
+            # Warm both batch-size specializations the way vocode calls them.
             with self.device_context:
                 for batch_size in (1, 2):
                     hift(
