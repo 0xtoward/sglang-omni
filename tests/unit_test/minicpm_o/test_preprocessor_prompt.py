@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import io
 import wave
+from types import SimpleNamespace
 
 import numpy as np
 import numpy.typing as npt
 import pytest
 import torch
 from PIL import Image
+from sglang.srt.mem_cache.chunk_cache import ChunkCache
+from sglang.srt.mem_cache.common import maybe_cache_unfinished_req
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.minicpm_o.components import preprocessor as preprocessor_mod
@@ -258,7 +261,7 @@ def test_speech_request_prefills_its_text() -> None:
     )
 
 
-def test_known_tts_text_keeps_its_prefill_out_of_prefix_cache() -> None:
+def test_speech_prefill_advances_by_chunk_in_its_own_cache_namespace() -> None:
     state = MiniCPMOPipelineState(
         prompt={
             "prompt_text": "",
@@ -267,21 +270,27 @@ def test_known_tts_text_keeps_its_prefill_out_of_prefix_cache() -> None:
             "known_tts_output_ids": [100, 101],
         }
     )
-    first = build_sglang_thinker_request(
-        state,
-        params={},
-        tokenizer=SpeechTokenizer(),
-        vocab_size=151808,
-        request_id="first",
-    ).req
-    second = build_sglang_thinker_request(
-        state,
-        params={},
-        tokenizer=SpeechTokenizer(),
-        vocab_size=151808,
-        request_id="second",
-    ).req
-
+    first, second = (
+        build_sglang_thinker_request(
+            state,
+            params={},
+            tokenizer=SpeechTokenizer(),
+            vocab_size=151808,
+            request_id="speech",
+        ).req
+        for _ in range(2)
+    )
     assert first.extra_key != second.extra_key
-    assert first.skip_radix_cache_insert
-    assert second.skip_radix_cache_insert
+
+    # SGLang stashes a finished chunk so that the next chunk starts after it.
+    chunk_cache = ChunkCache(
+        SimpleNamespace(
+            req_to_token_pool=SimpleNamespace(req_to_token=torch.arange(4).view(1, 4)),
+            token_to_kv_pool_allocator=None,
+            page_size=1,
+        )
+    )
+    first.kv.req_pool_idx = 0
+    first.set_extend_range(0, 2)
+    maybe_cache_unfinished_req(first, chunk_cache, chunked=True)
+    assert first.prefix_indices.tolist() == [0, 1]

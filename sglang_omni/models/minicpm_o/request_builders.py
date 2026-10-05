@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -185,9 +186,9 @@ def build_sglang_thinker_request(
         vocab_size=vocab_size,
     )
     if known_tts_output_ids is not None:
-        # The Talker needs every prompt hidden row, including cached prefixes.
-        req.extra_key = f"minicpmo-known-tts:{req.rid}"
-        req.skip_radix_cache_insert = True
+        # note (0xtoward): a private cache namespace keeps a cached prefix from
+        # skipping prompt rows whose hidden states the talker reads.
+        req.extra_key = f"minicpmo-known-tts:{uuid.uuid4().hex}"
     else:
         pass
     req.tokenizer = tokenizer
