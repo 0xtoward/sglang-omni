@@ -36,7 +36,6 @@ FLOW_TOKEN_BUCKET = 16
 
 
 class CausalConditionalCFM(torch.nn.Module):
-
     def __init__(self, estimator: DiT, inference_cfg_rate: float = 0.7) -> None:
         super().__init__()
         self.estimator = estimator
@@ -186,6 +185,10 @@ class CausalConditionalCFM(torch.nn.Module):
 
 
 class CausalMaskedDiffWithXvec(torch.nn.Module):
+    # note (0xtoward): whole buckets let batches of nearby lengths share conv and
+    # attention shapes, since cuDNN builds an execution plan for every new shape;
+    # the vocoder sets FLOW_TOKEN_BUCKET on CUDA and other backends pad nothing.
+    token_bucket: int = 1
 
     def __init__(
         self,
@@ -244,10 +247,8 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             ],
             batch_first=True,
         )
-        # note (0xtoward): whole buckets let batches of nearby lengths share conv and
-        # attention shapes, since cuDNN builds an execution plan for every new shape.
         combined_tokens = F.pad(
-            combined_tokens, (0, -combined_tokens.shape[1] % FLOW_TOKEN_BUCKET)
+            combined_tokens, (0, -combined_tokens.shape[1] % self.token_bucket)
         )
         combined_token_lengths = prompt_token_lengths + token_lengths
         token_mask = (
@@ -281,8 +282,7 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             predicted_mel[
                 i,
                 :,
-                prompt_length
-                * self.up_rate : (prompt_length + token_length)
+                prompt_length * self.up_rate : (prompt_length + token_length)
                 * self.up_rate,
             ]
             for i, (prompt_length, token_length) in enumerate(

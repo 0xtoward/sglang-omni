@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
+from sglang_omni.models.minicpm_o.components.token2wav.flow import FLOW_TOKEN_BUCKET
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
     SpeakerPrompt,
     Token2Wav,
@@ -100,6 +101,10 @@ class MiniCPMOCode2Wav(nn.Module):
         self.token2wav.flow.decoder.estimator.enable_variable_length = (
             enable_flow_variable_length
         )
+        if self.token2wav.device.type == "cuda":
+            self.token2wav.flow.token_bucket = FLOW_TOKEN_BUCKET
+        else:
+            pass
         if enable_flow_block_compile and self.token2wav.device.type == "cuda":
             for flow_block in self.token2wav.flow.decoder.estimator.blocks:
                 flow_block.forward_packed = torch.compile(

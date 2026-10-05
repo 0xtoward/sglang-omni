@@ -529,8 +529,9 @@ def test_flow_token_buckets_keep_valid_mels(monkeypatch: pytest.MonkeyPatch) -> 
         torch.randn(2, 6, mel_bins),
         torch.randn(2, 4),
     )
+    flow_model.token_bucket = flow.FLOW_TOKEN_BUCKET
     bucketed = flow_model.inference(*flow_inputs, n_timesteps=2)
-    monkeypatch.setattr(flow, "FLOW_TOKEN_BUCKET", 1)
+    flow_model.token_bucket = 1
     exact = flow_model.inference(*flow_inputs, n_timesteps=2)
     assert encoded_lengths == [16, 10]
     torch.testing.assert_close(bucketed, exact)
