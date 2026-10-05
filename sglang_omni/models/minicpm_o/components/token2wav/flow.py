@@ -185,9 +185,7 @@ class CausalConditionalCFM(torch.nn.Module):
 
 
 class CausalMaskedDiffWithXvec(torch.nn.Module):
-    # note (0xtoward): whole buckets let batches of nearby lengths share conv and
-    # attention shapes, since cuDNN builds an execution plan for every new shape;
-    # the vocoder sets FLOW_TOKEN_BUCKET on CUDA and other backends pad nothing.
+    # 1 keeps exact lengths; Code2Wav sets a shape bucket on CUDA.
     token_bucket: int = 1
 
     def __init__(
@@ -247,9 +245,8 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             ],
             batch_first=True,
         )
-        combined_tokens = F.pad(
-            combined_tokens, (0, -combined_tokens.shape[1] % self.token_bucket)
-        )
+        pad = -combined_tokens.shape[1] % self.token_bucket
+        combined_tokens = F.pad(combined_tokens, (0, pad))
         combined_token_lengths = prompt_token_lengths + token_lengths
         token_mask = (
             (~make_pad_mask(combined_token_lengths, combined_tokens.shape[1]))
