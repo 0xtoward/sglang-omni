@@ -104,13 +104,13 @@ class TalkerAdapter(ARSessionAdapter):
             boundary_tokens=(self.model.audio_bos_token_id,),
             normalize_projected_hidden=self.model.normalize_projected_hidden,
         )
+        min_new_tokens = (
+            0
+            if state.is_turn_start or payload.data["end_of_turn"]
+            else TALKER_TOKENS_PER_UNIT
+        )
         sampling_params = SamplingParams(
             max_new_tokens=TALKER_TOKENS_PER_UNIT,
-            min_new_tokens=(
-                0
-                if state.is_turn_start or payload.data["end_of_turn"]
-                else TALKER_TOKENS_PER_UNIT
-            ),
             temperature=payload.request.params["talker_temperature"],
             top_p=1.0,
             top_k=-1,
@@ -137,7 +137,8 @@ class TalkerAdapter(ARSessionAdapter):
             ],
             max_new_tokens=TALKER_TOKENS_PER_UNIT,
             talker_model_inputs={
-                "rep_penalty": payload.request.params["talker_repetition_penalty"]
+                "rep_penalty": payload.request.params["talker_repetition_penalty"],
+                "min_new_tokens": min_new_tokens,
             },
         )
 
