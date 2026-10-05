@@ -10,6 +10,7 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
 from sglang_omni.scheduling.types import (
     RequestOutput,
@@ -176,6 +177,14 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
             return
+        else:
+            pass
+        payload = req_data.stage_payload
+        if (payload.request.params or {}).get("known_tts_text") is not None:
+            prompt = MiniCPMOPipelineState.from_dict(payload.data).prompt
+            # note (0xtoward): the talker reads only the rows of the speech text, the
+            # positions before the closing <|tts_eos|>.
+            seq = seq[-len(prompt["known_tts_output_ids"]) - 1 : -1]
         else:
             pass
         stacked = torch.stack(seq).to("cpu")

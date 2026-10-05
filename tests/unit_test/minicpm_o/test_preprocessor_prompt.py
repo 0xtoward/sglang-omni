@@ -29,6 +29,7 @@ from sglang_omni.models.minicpm_o.talker_request import (
     build_sglang_talker_request,
     build_talker_request,
 )
+from sglang_omni.models.minicpm_o.thinker_model_runner import MiniCPMOThinkerModelRunner
 from sglang_omni.proto import OmniRequest, StagePayload
 
 # The generation suffix from MiniCPM-o-4_5's tokenizer template.
@@ -245,13 +246,16 @@ def test_speech_request_prefills_its_text() -> None:
     assert prompt["known_tts_output_ids"] == [100, 101]
     assert result.request.params["known_tts_text"] == "你好"
 
+    runner = object.__new__(MiniCPMOThinkerModelRunner)
+    runner.pending_hidden = {"speech": [torch.full((4,), i) for i in range(6)]}
+    thinker_request = SimpleNamespace(stage_payload=result, extra_model_outputs={})
+    runner.on_request_finished("speech", thinker_request)
     state = MiniCPMOPipelineState.from_dict(result.data)
     state.thinker_out = {
         "output_ids": [999],
-        "extra_model_outputs": {
-            "hidden_states_seq": [torch.full((4,), i) for i in range(6)]
-        },
+        "extra_model_outputs": thinker_request.extra_model_outputs,
     }
+    assert len(thinker_request.extra_model_outputs["hidden_states_seq"]) == 2
     span = build_talker_request(
         state,
         tts_bos_token_id=151703,

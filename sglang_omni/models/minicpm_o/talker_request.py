@@ -65,7 +65,8 @@ def build_talker_request(
     end = segment_eos[0] if segment_eos else len(full_sequence)
 
     # note (MayDomine): the first captured hidden state is the last prompt position.
-    hidden_base = 0 if known_tts_output_ids is not None else prompt_len - 1
+    # note (0xtoward): a speech request captures the rows of its text span only.
+    hidden_base = start if known_tts_output_ids is not None else prompt_len - 1
     if start < hidden_base:
         raise ValueError(
             f"tts span start {start} precedes first captured hidden position "
