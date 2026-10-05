@@ -496,6 +496,13 @@ def test_flow_token_buckets_keep_valid_mels(monkeypatch: pytest.MonkeyPatch) -> 
         head_dim=8,
         hidden_size=16,
     )
+    # note (0xtoward): the estimator starts with zeroed gates and output layer, which
+    # would make every mel ignore the encoder output under test.
+    for parameter in estimator.parameters():
+        if not parameter.any():
+            torch.nn.init.normal_(parameter, std=0.1)
+        else:
+            pass
     flow_model = CausalMaskedDiffWithXvec(
         encoder,
         CausalConditionalCFM(estimator),
