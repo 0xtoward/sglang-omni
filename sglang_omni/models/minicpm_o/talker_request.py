@@ -124,10 +124,14 @@ def build_sglang_talker_request(
         sampling_params = SamplingParams(max_new_tokens=1, temperature=0.0)
         rep_penalty = 1.0
     else:
+        max_new_tokens = int(params.get("talker_max_new_tokens", 2048))
         # note (MayDomine): the runner applies a windowed penalty, not SGLang's penalty.
         sampling_params = SamplingParams(
-            max_new_tokens=int(params.get("talker_max_new_tokens", 2048)),
-            min_new_tokens=int(params.get("talker_min_new_tokens", 50)),
+            max_new_tokens=max_new_tokens,
+            # note (0xtoward): a token budget below the minimum length caps the minimum.
+            min_new_tokens=min(
+                int(params.get("talker_min_new_tokens", 50)), max_new_tokens
+            ),
             temperature=float(params.get("talker_temperature", 0.8)),
             top_p=float(params.get("talker_top_p", 0.85)),
             top_k=int(params.get("talker_top_k", 25)),

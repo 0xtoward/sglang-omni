@@ -25,7 +25,10 @@ from sglang_omni.models.minicpm_o.components.preprocessor import (
 )
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_sglang_thinker_request
-from sglang_omni.models.minicpm_o.talker_request import build_talker_request
+from sglang_omni.models.minicpm_o.talker_request import (
+    build_sglang_talker_request,
+    build_talker_request,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 
 # The generation suffix from MiniCPM-o-4_5's tokenizer template.
@@ -259,6 +262,53 @@ def test_speech_request_prefills_its_text() -> None:
         span["tts_hidden"],
         torch.tensor([[3, 3, 3, 3], [4, 4, 4, 4]]),
     )
+
+
+def test_speech_sampling_fields_reach_the_talker() -> None:
+    preprocessor = object.__new__(MiniCPMOPreprocessor)
+    preprocessor.tokenizer = SpeechTokenizer()
+    preprocessor.speech_enabled = True
+    payload = StagePayload(
+        request_id="speech",
+        request=OmniRequest(
+            inputs="你好",
+            params={"max_new_tokens": 30, "temperature": 0.3, "top_k": 30},
+            metadata={
+                "task": "tts",
+                "output_modalities": ["audio"],
+                "tts_params": {
+                    "language": "Chinese",
+                    "explicit_generation_params": ["max_new_tokens", "temperature"],
+                },
+            },
+        ),
+        data=None,
+    )
+
+    result = asyncio.run(preprocessor(payload))
+    state = MiniCPMOPipelineState.from_dict(result.data)
+    state.thinker_out = {
+        "output_ids": [999],
+        "extra_model_outputs": {"hidden_states_seq": [torch.zeros(4)] * 6},
+    }
+    talker = SimpleNamespace(
+        build_condition_embeddings=lambda token_ids, hidden: torch.zeros(
+            len(token_ids) + 2, 8
+        )
+    )
+    sampling_params = build_sglang_talker_request(
+        state,
+        model=talker,
+        codec_vocab_size=64,
+        codec_eos_id=63,
+        tts_bos_token_id=151703,
+        tts_eos_token_id=151704,
+        params=result.request.params,
+    ).req.sampling_params
+    assert sampling_params.max_new_tokens == 30
+    assert sampling_params.min_new_tokens == 30
+    assert sampling_params.temperature == pytest.approx(0.3)
+    assert sampling_params.top_k == 25
 
 
 def test_speech_prefill_advances_by_chunk_in_its_own_cache_namespace() -> None:
