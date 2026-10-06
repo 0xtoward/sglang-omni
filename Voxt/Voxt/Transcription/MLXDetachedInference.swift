@@ -183,6 +183,29 @@ extension MLXTranscriber {
         )
     }
 
+    /// Qwen3-ASR decodes on the local Omni server with the chunking, budget and
+    /// stop rules its MLXAudio model used.
+    nonisolated static func runOmniInferenceDetached(
+        runtime: OmniASRRuntime,
+        audioSamples: [Float],
+        inferenceConfiguration: ResolvedInferenceConfiguration,
+        targetSampleRate: Int
+    ) async throws -> MLXDetachedInferenceResult {
+        try Task.checkCancellation()
+        let parameters = inferenceConfiguration.generationParameters
+        let result = try await runtime.transcribeQwenFinal(
+            samples: audioSamples,
+            sampleRate: targetSampleRate,
+            language: inferenceConfiguration.languageHint,
+            context: inferenceConfiguration.qwenContextBias,
+            maxTokens: parameters.maxTokens,
+            chunkDurationSeconds: parameters.chunkDuration,
+            minChunkDurationSeconds: parameters.minChunkDuration
+        )
+        // Qwen3-ASR chunk segments have chunk timing, which Voxt discards.
+        return MLXDetachedInferenceResult(rawText: result.text, senseVoiceMetadata: nil, structuredSegments: [])
+    }
+
     private nonisolated static func longFormSpeechSegmentConfig(
         chunkMaximumDurationSeconds: Double,
         vadThreshold: Float,

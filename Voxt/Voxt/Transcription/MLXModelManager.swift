@@ -40,8 +40,13 @@ class MLXModelManager: ObservableObject {
     private var localSizeTextByRepo: [String: String] = [:]
     private var modelRepo: String
     private var hubBaseURL: URL
-    private var loadedModel: (any STTGenerationModel)? {
+    private let omniLedger = OmniRuntimeLedger()
+    private var loadedModel: LoadedASRModel? {
         didSet {
+            // Any path that drops or replaces an Omni runtime retires its server.
+            if let previous = oldValue?.omniRuntime, previous !== loadedModel?.omniRuntime {
+                omniLedger.release(previous)
+            }
             // Observe the state transition so model switching/deletion cannot bypass
             // the delayed cleanup that was originally wired only to idle timeout.
             guard ModelUnloadReclamationNotificationPolicy.shouldNotify(
@@ -192,6 +197,7 @@ class MLXModelManager: ObservableObject {
             loadedModel = nil
             loadedRepo = nil
         }
+        await omniLedger.waitForRetirements()
         do {
             try await ModelDiskOperations.remove(directories)
             await Task.detached(priority: .utility) {
@@ -589,13 +595,23 @@ class MLXModelManager: ObservableObject {
         invalidatePendingModelLoad(reason: "application-terminating")
     }
 
-    func loadModel() async throws -> any STTGenerationModel {
+    func loadModel() async throws -> LoadedASRModel {
         guard !isShuttingDownForApplicationTermination else { throw CancellationError() }
         guard !deletingRepos.contains(modelRepo) else { throw CancellationError() }
         cancelIdleUnloadTask()
         if let model = loadedModel, loadedRepo == modelRepo {
-            VoxtLog.modelInfo("MLX Audio model reuse existing instance. repo=\(modelRepo)", verbose: true)
-            return model
+            if let runtime = model.omniRuntime, await !runtime.isServing {
+                // The server died or was killed: start a new one rather than fail
+                // every request until the idle unload drops this runtime.
+                if loadedModel?.omniRuntime === runtime {
+                    VoxtLog.modelWarning("Omni ASR server is no longer serving; starting a new one. repo=\(modelRepo)")
+                    loadedModel = nil
+                    loadedRepo = nil
+                }
+            } else {
+                VoxtLog.modelInfo("MLX Audio model reuse existing instance. repo=\(modelRepo)", verbose: true)
+                return model
+            }
         }
 
         let repo = modelRepo
@@ -607,11 +623,12 @@ class MLXModelManager: ObservableObject {
         do {
             let modelBox = try await modelLoadCoordinator.value(for: repo) {
                 let model = try await manager.loadSTTModel(for: repo)
-                return MLXLoadedModelBox(model: model)
+                return MLXLoadedModelBox(loaded: model)
             }
             try Task.checkCancellation()
             guard modelRepo == repo, storageRevision == revision else { throw CancellationError() }
-            loadedModel = modelBox.model
+            loadedModel = modelBox.loaded
+            omniLedger.adopt(modelBox.loaded.omniRuntime)
             loadedRepo = repo
             setState(.ready, for: repo)
             let model = try readyModel(for: repo)
@@ -619,6 +636,11 @@ class MLXModelManager: ObservableObject {
             VoxtLog.modelInfo("MLX Audio model load completed. repo=\(repo), elapsedMs=\(elapsedMs)")
             return model
         } catch {
+            if !modelLoadCoordinator.hasPendingLoad, !modelLoadCoordinator.hasOutstandingLoad {
+                // No load will adopt a server started by a load that finished for
+                // nobody (its waiters left, or the repo changed); stop it now.
+                omniLedger.releaseUnadopted()
+            }
             guard revision == storageRevision else { throw CancellationError() }
             let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
             if error is CancellationError || Task.isCancelled {
@@ -691,6 +713,7 @@ class MLXModelManager: ObservableObject {
 
         loadedModel = nil
         loadedRepo = nil
+        await omniLedger.retireAll()
         Memory.clearCache()
         VoxtLog.modelInfo("MLX Audio model released for application termination.", verbose: true)
     }
@@ -714,6 +737,9 @@ class MLXModelManager: ObservableObject {
     private func invalidatePendingModelLoad(reason: String) -> [SharedModelLoadTask] {
         let tasks = modelLoadCoordinator.cancelAll()
         guard !tasks.isEmpty else { return [] }
+        // Servers these loads are starting are stopped now, so a following
+        // load never waits behind, or overlaps, a model nobody will use.
+        omniLedger.releaseUnadopted()
         VoxtLog.modelInfo("MLX Audio pending model load invalidated. reason=\(reason)", verbose: true)
         return tasks
     }
@@ -768,7 +794,7 @@ class MLXModelManager: ObservableObject {
         installationCache.request(repo) { request.scan() }
     }
 
-    private func readyModel(for repo: String) throws -> any STTGenerationModel {
+    private func readyModel(for repo: String) throws -> LoadedASRModel {
         guard let model = loadedModel, loadedRepo == repo else {
             throw NSError(
                 domain: "Voxt.MLXModelManager",
@@ -779,9 +805,9 @@ class MLXModelManager: ObservableObject {
         return model
     }
 
-    private func loadSTTModel(for repo: String) async throws -> any STTGenerationModel {
+    private func loadSTTModel(for repo: String) async throws -> LoadedASRModel {
         if let modelLoadingOverride {
-            return try await modelLoadingOverride(repo).model
+            return try await modelLoadingOverride(repo).loaded
         }
         try Task.checkCancellation()
         let lower = repo.lowercased()
@@ -813,6 +839,29 @@ class MLXModelManager: ObservableObject {
             )
         }
         try Task.checkCancellation()
+        if let kind = OmniASRBackend.modelKind(for: repo),
+           let configuration = OmniASRBackend.configuration(derivedRoot: derivedRootURL()) {
+            // One server at a time: earlier runtimes stop before this one starts.
+            await omniLedger.waitForRetirements()
+            try Task.checkCancellation()
+            let runtime = OmniASRRuntime(kind: kind, modelDirectory: sourceModelDir, configuration: configuration)
+            omniLedger.track(runtime)
+            do {
+                let ledger = omniLedger
+                _ = try await withTaskCancellationHandler {
+                    try await runtime.prepare()
+                } onCancel: {
+                    // Every waiter left: stop the launch instead of finishing it.
+                    Task { @MainActor in ledger.release(runtime) }
+                }
+                try Task.checkCancellation()
+            } catch {
+                omniLedger.release(runtime)
+                throw error
+            }
+            VoxtLog.modelInfo("Omni ASR server ready. repo=\(repo), kind=\(kind.rawValue)")
+            return .omni(runtime)
+        }
         let modelDir = try await writableLoadDirectoryIfNeeded(
             for: repo,
             sourceDirectory: sourceModelDir,
@@ -826,7 +875,7 @@ class MLXModelManager: ObservableObject {
         } onCancel: {
             modelLoadTask.cancel()
         }
-        return loaded.model
+        return loaded.loaded
     }
 
     private func writeCacheDirectory(for repo: String) -> URL? {

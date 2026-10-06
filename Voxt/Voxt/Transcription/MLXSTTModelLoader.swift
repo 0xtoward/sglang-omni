@@ -4,7 +4,15 @@ import MLXAudioCore
 import MLXAudioSTT
 
 struct MLXLoadedModelBox: @unchecked Sendable {
-    nonisolated(unsafe) let model: any STTGenerationModel
+    let loaded: LoadedASRModel
+
+    nonisolated init(loaded: LoadedASRModel) {
+        self.loaded = loaded
+    }
+
+    nonisolated init(model: any STTGenerationModel) {
+        self.loaded = .mlx(model)
+    }
 }
 
 nonisolated enum MLXSTTModelLoader {

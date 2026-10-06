@@ -974,7 +974,11 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
 
     func makeMeetingNativeStreamingConfiguration() async throws -> MLXMeetingNativeStreamingConfiguration {
         let liveMode = MLXModelManager.liveMode(for: modelManager.currentModelRepo)
-        let loadedModel = try await modelManager.loadModel()
+        let loaded = try await modelManager.loadModel()
+        if let runtime = loaded.omniRuntime {
+            return try await makeOmniMeetingStreamingConfiguration(runtime: runtime, liveMode: liveMode)
+        }
+        guard let loadedModel = loaded.mlxModel else { throw CancellationError() }
 
         switch liveMode {
         case .nativeQwenLive:
@@ -1073,6 +1077,28 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         }
     }
 
+    private func makeOmniMeetingStreamingConfiguration(
+        runtime: OmniASRRuntime,
+        liveMode: MLXLiveMode
+    ) async throws -> MLXMeetingNativeStreamingConfiguration {
+        switch liveMode {
+        case .nativeQwenLive:
+            let language = resolvedNativeQwenLiveLanguage()
+            return MLXMeetingNativeStreamingConfiguration(
+                session: try await OmniNativeStreamingSession.qwen(runtime: runtime, language: language),
+                liveMode: liveMode,
+                qwenUsesAutomaticLanguageProtocol: language == nil,
+                mossVisibleOutputMode: nil
+            )
+        default:
+            throw NSError(
+                domain: "Voxt.Meeting.NativeMLX",
+                code: -5,
+                userInfo: [NSLocalizedDescriptionKey: "The selected model is not eligible for the visible local meeting streaming path."]
+            )
+        }
+    }
+
     private func startNativeLiveSession(revision: Int) {
         liveSessionSetupTasks.cancelAll()
         let expectedMode = activeLiveMode
@@ -1084,10 +1110,23 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             var transferredModelUse = false
             defer { if !transferredModelUse { manager.endActiveUse() } }
             do {
-                let model = try await manager.loadModel()
+                let loaded = try await manager.loadModel()
                 guard !Task.isCancelled, revision == self.sessionRevision,
                       self.isRecording, self.activeLiveMode == expectedMode else { return }
                 let releaseModel: @MainActor () -> Void = { manager.endActiveUse() }
+                if let runtime = loaded.omniRuntime {
+                    guard try await self.installOmniLiveSession(
+                        runtime: runtime,
+                        mode: expectedMode,
+                        revision: revision,
+                        releaseModel: releaseModel
+                    ) else { return }
+                    transferredModelUse = true
+                    self.isModelInitializing = false
+                    VoxtLog.asr("Omni live session ready. repo=\(manager.currentModelRepo), mode=\(String(describing: expectedMode)), elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))", verbose: true)
+                    return
+                }
+                guard let model = loaded.mlxModel else { return }
                 defer {
                     if !transferredModelUse {
                         VoxtLog.asrWarning("MLX native live requested for incompatible model. repo=\(manager.currentModelRepo), mode=\(String(describing: expectedMode))")
@@ -1116,6 +1155,31 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
                 VoxtLog.asrWarning("MLX native live setup failed. repo=\(manager.currentModelRepo), mode=\(String(describing: expectedMode)), error=\(error.localizedDescription)")
             }
         }
+    }
+
+    /// Returns false when the mode has no Omni live session for this checkpoint.
+    private func installOmniLiveSession(
+        runtime: OmniASRRuntime,
+        mode: MLXLiveMode,
+        revision: Int,
+        releaseModel: @escaping @MainActor () -> Void
+    ) async throws -> Bool {
+        let session: OmniNativeStreamingSession
+        switch mode {
+        case .nativeQwenLive:
+            let language = resolvedNativeQwenLiveLanguage()
+            session = try await OmniNativeStreamingSession.qwen(runtime: runtime, language: language)
+            guard revision == sessionRevision, isRecording, activeLiveMode == mode else {
+                session.cancel()
+                return false
+            }
+            releaseNativeLiveSession(cancelSession: true)
+            nativeQwenLiveUsesAutomaticLanguageProtocol = language == nil
+        default:
+            return false
+        }
+        installNativeLiveSession(session, revision: revision, releaseModel: releaseModel)
+        return true
     }
 
     private func installNativeQwenLiveSession(_ model: Qwen3ASRModel, revision: Int, releaseModel: @escaping @MainActor () -> Void) {
@@ -1618,11 +1682,32 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
     }
 
     private func runStreamingInference(
-        model: any STTGenerationModel,
+        model loadedModel: LoadedASRModel,
         audioSamples: [Float],
         inferenceConfiguration: ResolvedInferenceConfiguration
     ) async throws -> MLXDetachedInferenceResult {
         try Task.checkCancellation()
+        let model: any STTGenerationModel
+        switch loadedModel {
+        case .omni(let runtime):
+            // The Omni branch starts before any MLXArray exists on the client.
+            let targetSampleRate = targetSampleRate
+            let inferenceTask = Task.detached(priority: inferenceTaskPriority) {
+                try await Self.runOmniInferenceDetached(
+                    runtime: runtime,
+                    audioSamples: audioSamples,
+                    inferenceConfiguration: inferenceConfiguration,
+                    targetSampleRate: targetSampleRate
+                )
+            }
+            return try await withTaskCancellationHandler {
+                try await inferenceTask.value
+            } onCancel: {
+                inferenceTask.cancel()
+            }
+        case .mlx(let mlxModel):
+            model = mlxModel
+        }
         let longFormVADModel = try await resolvedLongFormVADModelIfNeeded(
             model: model,
             audioSamples: audioSamples,
