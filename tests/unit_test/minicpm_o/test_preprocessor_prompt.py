@@ -20,8 +20,10 @@ from sglang_omni.models.minicpm_o.components.preprocessor import (
     ASR_PROMPT_ZH,
     AUDIO_PLACEHOLDER,
     IMAGE_PLACEHOLDER,
+    TTS_READ_PROMPT_EN,
     TTS_READ_PROMPT_ZH,
     MiniCPMOPreprocessor,
+    tts_read_prompt,
 )
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_sglang_thinker_request
@@ -221,6 +223,22 @@ class SpeechTokenizer:
         assert text == "你好"
         assert not add_special_tokens
         return [100, 101]
+
+
+@pytest.mark.parametrize(
+    ("text", "language", "prompt"),
+    [
+        ("你好", None, TTS_READ_PROMPT_ZH),
+        ("你好", "Auto", TTS_READ_PROMPT_ZH),
+        ("hello", None, TTS_READ_PROMPT_EN),
+        ("hello", "Chinese", TTS_READ_PROMPT_ZH),
+        ("你好", "English", TTS_READ_PROMPT_EN),
+    ],
+)
+def test_speech_read_prompt_follows_the_language_then_the_text(
+    text: str, language: str | None, prompt: str
+) -> None:
+    assert tts_read_prompt(text, language) == prompt
 
 
 def test_speech_request_prefills_its_text() -> None:

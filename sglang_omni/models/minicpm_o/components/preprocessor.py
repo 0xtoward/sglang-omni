@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
@@ -60,6 +61,18 @@ ASR_PROMPT_ZH = "请仔细听这段音频片段，并将其内容逐字记录。
 ASR_PROMPT_EN = (
     "Please listen to the audio snippet carefully and transcribe the content."
 )
+
+
+def is_chinese(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text))
+
+
+def tts_read_prompt(text: str, language: str | None) -> str:
+    if language in (None, "Auto"):
+        language = "Chinese" if is_chinese(text) else "English"
+    else:
+        pass
+    return TTS_READ_PROMPT_ZH if language == "Chinese" else TTS_READ_PROMPT_EN
 
 
 def first_batch_item(value: object) -> object:
@@ -160,11 +173,7 @@ class MiniCPMOPreprocessor:
         if metadata.get("task") == "tts":
             known_tts_text = inputs["text"] if isinstance(inputs, Mapping) else inputs
             tts_params = metadata.get("tts_params") or {}
-            read_prompt = (
-                TTS_READ_PROMPT_ZH
-                if tts_params.get("language") == "Chinese"
-                else TTS_READ_PROMPT_EN
-            )
+            read_prompt = tts_read_prompt(known_tts_text, tts_params.get("language"))
             inputs = [{"role": "user", "content": f"{read_prompt}{known_tts_text}"}]
             explicit_fields = tts_params.get("explicit_generation_params") or []
             talker_params = {
