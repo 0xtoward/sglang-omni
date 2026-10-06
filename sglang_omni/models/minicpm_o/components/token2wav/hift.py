@@ -156,7 +156,7 @@ class HiFTGenerator(nn.Module):
         self.source_downs = nn.ModuleList()
         self.source_resblocks = nn.ModuleList()
         downsample_rates = (1,) + upsample_rates[::-1][:-1]
-        # Python ints stay constants under Dynamo's symbolic lengths.
+        # note (0xtoward): Python ints stay constants under Dynamo's symbolic lengths.
         downsample_cum_rates = np.cumprod(downsample_rates).tolist()
         for i, (u, k, d) in enumerate(
             zip(

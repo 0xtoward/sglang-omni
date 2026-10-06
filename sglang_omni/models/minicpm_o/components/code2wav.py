@@ -174,19 +174,29 @@ class MiniCPMOCode2Wav(nn.Module):
             pass
         if enable_hift_torch_compile:
             hift = self.token2wav.hift
-            # Keep STFT and iSTFT eager; compile the real-valued body.
+            # note (0xtoward): STFT and iSTFT stay eager; the real-valued body compiles.
             hift.decode_body = torch.compile(
                 hift.decode_body, dynamic=True, fullgraph=True
             )
             mel_bins = self.token2wav.flow.output_size
             mel_frames = FLOW_WARMUP_TOKENS * self.token2wav.flow.up_rate
-            # Warm both batch-size specializations the way vocode calls them.
-            with self.device_context:
+            stft_frames = (
+                mel_frames * int(hift.f0_upsamp.scale_factor)
+            ) // hift.istft_params["hop_len"] + 1
+            # note (0xtoward): warm the compiled body for batch 1 and batch >= 2 with
+            # the shapes decode feeds it, without running the F0 and source path.
+            with self.device_context, torch.inference_mode():
                 for batch_size in (1, 2):
-                    hift(
-                        speech_feat=torch.zeros(
+                    hift.decode_body(
+                        torch.zeros(
                             batch_size, mel_bins, mel_frames, device=resolved_device
-                        )
+                        ),
+                        torch.zeros(
+                            batch_size,
+                            hift.istft_params["n_fft"] + 2,
+                            stft_frames,
+                            device=resolved_device,
+                        ),
                     )
         else:
             pass
