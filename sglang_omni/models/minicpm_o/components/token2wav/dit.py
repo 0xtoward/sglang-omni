@@ -246,7 +246,7 @@ class CausalConvBlock(nn.Module):
         self.is_channels_last = False
 
     def use_channels_last(self) -> None:
-        """Store both conv weights channels last for the stateless (B, T, C) path."""
+        """Store both conv weights channels last; every (B, T, C) path then convolves without transposes."""
         for convolution in (self.block[1], self.block[6]):
             if not isinstance(convolution, CausalConv1d):
                 raise TypeError(
@@ -258,16 +258,30 @@ class CausalConvBlock(nn.Module):
         self.is_channels_last = True
 
     def channels_last_convolution(
-        self, hidden_states: torch.Tensor, convolution: CausalConv1d
-    ) -> torch.Tensor:
-        """Causal conv of (B, T, C) frames without a channel-first transpose."""
+        self,
+        hidden_states: torch.Tensor,
+        convolution: CausalConv1d,
+        state: ConvState | None = None,
+    ) -> tuple[torch.Tensor, ConvState | None]:
+        """Causal conv of (B, T, C) frames without a channel-first transpose.
+
+        The streaming history keeps its (B, C, frames) layout; only its two frames
+        are transposed into and out of the channels-last context.
+        """
         history_length = (convolution.kernel_size[0] - 1) * convolution.dilation[0]
-        return channels_last_conv1d(
-            F.pad(hidden_states, (0, 0, history_length, 0)),
-            convolution,
-            convolution.weight,
-            hidden_states.shape[1],
+        if state is not None and state.history is not None:
+            context = torch.cat((state.history.transpose(1, 2), hidden_states), dim=1)
+        else:
+            context = F.pad(hidden_states, (0, 0, history_length, 0))
+        next_state = (
+            ConvState(history=context[:, -history_length:].transpose(1, 2).clone())
+            if state is not None
+            else None
         )
+        output = channels_last_conv1d(
+            context, convolution, convolution.weight, hidden_states.shape[1]
+        )
+        return output, next_state
 
     def forward(
         self,
@@ -279,11 +293,18 @@ class CausalConvBlock(nn.Module):
             x = x * mask
         else:
             pass
-        if state is None and self.is_channels_last:
-            x = self.channels_last_convolution(x, self.block[1])
+        if self.is_channels_last:
+            first, second = (
+                (state.first, state.second) if state is not None else (None, None)
+            )
+            x, first = self.channels_last_convolution(x, self.block[1], first)
             x = self.block[4](self.block[3](x))
-            x = self.channels_last_convolution(x, self.block[6])
-            next_state = None
+            x, second = self.channels_last_convolution(x, self.block[6], second)
+            next_state = (
+                ConvBlockState(first=first, second=second)
+                if state is not None
+                else None
+            )
         else:
             previous = iter(
                 (state.first, state.second) if state is not None else (None, None)
@@ -319,9 +340,10 @@ class CausalConvBlock(nn.Module):
             frames: torch.Tensor, convolution: CausalConv1d
         ) -> torch.Tensor:
             if self.is_channels_last:
-                return self.channels_last_convolution(
+                convolved, _ = self.channels_last_convolution(
                     frames.unsqueeze(0), convolution
-                ).squeeze(0)
+                )
+                return convolved.squeeze(0)
             else:
                 channel_first = frames.transpose(0, 1).unsqueeze(0)
                 convolved, _ = convolution(channel_first)

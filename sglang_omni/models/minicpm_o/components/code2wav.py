@@ -111,6 +111,12 @@ class MiniCPMOCode2Wav(nn.Module):
                 )
         else:
             pass
+        if is_channels_last_conv_device(resolved_device):
+            with self.device_context:
+                for block in self.token2wav.flow.decoder.estimator.blocks:
+                    block.conv.use_channels_last()
+        else:
+            pass
         with self.device_context:
             device_module = torch.get_device_module(self.token2wav.device)
             self.decode_stream: torch.Stream = device_module.Stream(
@@ -118,11 +124,6 @@ class MiniCPMOCode2Wav(nn.Module):
             )
             # note (zhaochenyang20): weights are published on the load stream.
             self.decode_stream.wait_stream(device_module.current_stream())
-        if is_channels_last_conv_device(resolved_device):
-            for block in self.token2wav.flow.decoder.estimator.blocks:
-                block.conv.use_channels_last()
-        else:
-            pass
 
         if prompt_wav is None:
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")

@@ -11,6 +11,7 @@ import torch
 
 from sglang_omni.models.minicpm_o.components.token2wav.dit import (
     CausalConvBlock,
+    ConvBlockState,
     DiT,
     TimestepEmbedder,
 )
@@ -115,6 +116,16 @@ def test_channels_last_causal_conv_matches_channel_first(
         torch.testing.assert_close(
             channels_last.forward_packed(frames, real_frame_positions, real_frame_mask),
             channel_first.forward_packed(frames, real_frame_positions, real_frame_mask),
+        )
+        # The streaming path carries a two-frame history between chunks.
+        state_first, state_last = ConvBlockState(), ConvBlockState()
+        for chunk in frames.unsqueeze(0).split(4, dim=1):
+            expected, state_first = channel_first(chunk, state=state_first)
+            actual, state_last = channels_last(chunk, state=state_last)
+            torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(state_last.first.history, state_first.first.history)
+        torch.testing.assert_close(
+            state_last.second.history, state_first.second.history
         )
 
 
