@@ -32,7 +32,8 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
 )
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT, DiTState
 
-FLOW_TOKEN_BUCKET = 16
+# note (0xtoward): 8 tokens = 16 mel frames, the step of the dense DiT graph ladder (#2313).
+FLOW_TOKEN_BUCKET = 8
 
 
 class CausalConditionalCFM(torch.nn.Module):
@@ -279,7 +280,8 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             predicted_mel[
                 i,
                 :,
-                prompt_length * self.up_rate : (prompt_length + token_length)
+                prompt_length
+                * self.up_rate : (prompt_length + token_length)
                 * self.up_rate,
             ]
             for i, (prompt_length, token_length) in enumerate(
