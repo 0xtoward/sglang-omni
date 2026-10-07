@@ -184,20 +184,25 @@ class MiniCPMOCode2Wav(nn.Module):
                 mel_frames * int(hift.f0_upsamp.scale_factor)
             ) // hift.istft_params["hop_len"] + 1
             # note (0xtoward): warm the compiled body for batch 1 and batch >= 2 with
-            # the shapes decode feeds it, without running the F0 and source path.
-            with self.device_context, torch.inference_mode():
+            # the shapes decode feeds it, without running the F0 and source path. The
+            # mel is made outside inference mode like the one vocode passes, and the
+            # source spectrum inside it like the one HiFT computes, so serving meets
+            # the same guards.
+            with self.device_context:
                 for batch_size in (1, 2):
-                    hift.decode_body(
-                        torch.zeros(
-                            batch_size, mel_bins, mel_frames, device=resolved_device
-                        ),
-                        torch.zeros(
-                            batch_size,
-                            hift.istft_params["n_fft"] + 2,
-                            stft_frames,
-                            device=resolved_device,
-                        ),
+                    mel = torch.zeros(
+                        batch_size, mel_bins, mel_frames, device=resolved_device
                     )
+                    with torch.inference_mode():
+                        hift.decode_body(
+                            mel,
+                            torch.zeros(
+                                batch_size,
+                                hift.istft_params["n_fft"] + 2,
+                                stft_frames,
+                                device=resolved_device,
+                            ),
+                        )
         else:
             pass
 
