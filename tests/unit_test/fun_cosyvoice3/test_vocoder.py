@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import ClassVar
 
+import msgpack
 import numpy as np
 import pytest
 import torch
@@ -452,13 +453,19 @@ def test_cosyvoice3_token2wav_chunk_slices_mel_and_hift_delta() -> None:
     assert tail.shape[-1] == 6 * 480
 
 
-def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
+@pytest.mark.parametrize("strided", [False, True])
+def test_cosyvoice3_vocoder_prepare_and_store_audio_payload(strided: bool) -> None:
+    """Completion preserves audio and reference features over MessagePack."""
     vocoder = stages.CosyVoice3Vocoder(BatchCapableFakeFlow(), FakeHiFT())
+    reference_features = torch.arange(640, dtype=torch.float32).reshape(1, 8, 80)
+    if strided:
+        reference_features = reference_features[:, ::2, :]
     state = FunCosyVoice3State(
         text="hello",
         audio_codes=torch.tensor([[1, 2], [3, 4]]),
         flow_prompt_speech_token=torch.tensor([[5]], dtype=torch.int32),
         flow_embedding=torch.ones(1, 192),
+        flow_prompt_speech_feat=reference_features,
     )
     payload = make_payload(state)
 
@@ -474,6 +481,19 @@ def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
     assert stored.data["sample_rate"] == 24000
     assert stored.data["modality"] == "audio"
     assert "audio_codes" not in stored.data
+    completion = msgpack.unpackb(
+        msgpack.packb(stored.data, use_bin_type=True), raw=False
+    )
+    decoded_state = FunCosyVoice3State.from_dict(completion)
+    torch.testing.assert_close(
+        decoded_state.flow_prompt_speech_feat, reference_features, rtol=0, atol=0
+    )
+    result = Client.default_result_builder(stored.request_id, completion)
+    np.testing.assert_array_equal(
+        result.audio_data, np.array([0.1, 0.2], dtype=np.float32)
+    )
+    assert result.sample_rate == 24000
+    assert result.modality == "audio"
 
 
 def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:
@@ -484,19 +504,32 @@ def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:
         vocoder.prepare_item(payload)
 
 
-def test_mlx_vocoder_audio_payload_survives_state_storage() -> None:
+@pytest.mark.parametrize("strided", [False, True])
+def test_mlx_vocoder_audio_payload_survives_state_storage(strided: bool) -> None:
+    """The MLX completion adapter also serializes reference features and usage."""
+    reference_features = torch.arange(640, dtype=torch.float32).reshape(1, 8, 80)
+    if strided:
+        reference_features = reference_features[:, ::2, :]
     state = FunCosyVoice3State(
         text="hello",
         audio_codes=torch.tensor([[1], [2]]),
         audio_samples=[9.0],
         prompt_tokens=3,
         completion_tokens=2,
+        flow_prompt_speech_feat=reference_features,
     )
     waveform = np.array([[0.1, -0.2]], dtype=np.float32)
 
     mlx_vocoder = object.__new__(stages.CosyVoice3MlxVocoderAdapter)
     stored = mlx_vocoder.store_result(make_payload(state), state, waveform, 24000)
-    result = Client.default_result_builder(stored.request_id, stored.data)
+    completion = msgpack.unpackb(
+        msgpack.packb(stored.data, use_bin_type=True), raw=False
+    )
+    decoded_state = FunCosyVoice3State.from_dict(completion)
+    torch.testing.assert_close(
+        decoded_state.flow_prompt_speech_feat, reference_features, rtol=0, atol=0
+    )
+    result = Client.default_result_builder(stored.request_id, completion)
 
     np.testing.assert_array_equal(result.audio_data, waveform.reshape(-1))
     assert result.sample_rate == 24000

@@ -70,7 +70,6 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as load_pipeline_state
-from sglang_omni.scheduling.pipeline_state import store_state as store_pipeline_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
@@ -2226,7 +2225,7 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
         state.sample_rate = int(sample_rate)
         state.audio_codes = None
 
-        payload = store_pipeline_state(payload, state)
+        payload.data = state.to_terminal_dict()
         payload.data.update(audio_payload)
         payload.data["sample_rate"] = state.sample_rate
         payload.data["modality"] = "audio"
@@ -2359,7 +2358,7 @@ class CosyVoice3MlxVocoderAdapter(
         state.audio_samples = None
         state.sample_rate = int(sample_rate)
         state.audio_codes = None
-        payload = store_pipeline_state(payload, state)
+        payload.data = state.to_terminal_dict()
         payload.data.update(audio_waveform_payload(wav, source_hint="Fun-CosyVoice3"))
         payload.data["sample_rate"] = state.sample_rate
         payload.data["modality"] = "audio"
