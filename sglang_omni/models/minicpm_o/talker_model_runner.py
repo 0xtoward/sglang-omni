@@ -307,7 +307,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         else:
             pass
         try:
-            return TalkerSampleGraphs(
+            graphs = TalkerSampleGraphs(
                 self.slot_state,
                 self.tp_worker.model_runner.sampler,
                 [int(batch_size) for batch_size in decode_graphs.capture_bs],
@@ -320,6 +320,10 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             # note (0xtoward): outside the handler, so its traceback holds no capture tensor.
             torch.cuda.empty_cache()
             return None
+        logger.info(
+            f"MiniCPM-o talker captured sampling graphs for batch sizes {graphs.batch_sizes}"
+        )
+        return graphs
 
     def before_prefill(
         self,
