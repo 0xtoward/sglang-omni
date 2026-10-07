@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -13,6 +14,7 @@ from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 
 from sglang_omni.model_runner.base import (
     ModelRunner,
+    current_sglang_sampling_backend,
     rank_shared_unseeded_sampling_seed,
 )
 from sglang_omni.model_runner.prefill_inputs import (
@@ -20,6 +22,7 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
 )
 from sglang_omni.models.minicpm_o.talker_session import TalkerUnitRequestData
+from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK, resolve_row_seed
 from sglang_omni.scheduling.sglang_backend.request_data import (
     SGLangARRequestData,
@@ -32,6 +35,8 @@ if TYPE_CHECKING:
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 else:
     pass
+
+logger = logging.getLogger(__name__)
 
 # note (MayDomine): the checkpoint penalizes only the most recent 16 codec tokens.
 REP_PENALTY_WINDOW = 16
@@ -269,23 +274,52 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
     sample_graphs: TalkerSampleGraphs | None = None
 
     @torch.no_grad()
-    def enable_device_sampling(self, sample_graph_batch_sizes: list[int]) -> None:
-        """Keep the decode step on the GPU; capture its sampling graphs before serving."""
+    def enable_device_sampling(self) -> None:
+        """Keep the decode step on the GPU, with sampling graphs where they are supported.
+
+        Each capability falls back on its own: without the graphs the decode step still
+        samples on the device, and without the slot state the runner samples on the host.
+        """
         self.slot_state = TalkerSlotState.allocate(
             self.tp_worker.model_runner.req_to_token_pool.req_to_token.shape[0],
             self.model.num_audio_tokens,
             self.model.codec_eos_id,
             self.device,
         )
-        if sample_graph_batch_sizes:
-            self.sample_graphs = TalkerSampleGraphs(
-                self.slot_state,
-                self.tp_worker.model_runner.sampler,
-                sample_graph_batch_sizes,
-                self.model.head_code.weight.dtype,
+        self.sample_graphs = self.capture_sample_graphs()
+
+    def capture_sample_graphs(self) -> TalkerSampleGraphs | None:
+        """The sampling graphs of this deployment, or None to sample eagerly."""
+        decode_graphs = self.tp_worker.model_runner.decode_cuda_graph_runner
+        if not current_platform.is_cuda():
+            reason = f"{self.device.type} has no sampling graph"
+        elif current_sglang_sampling_backend() != "pytorch":
+            reason = "the sampling graph needs the pytorch sampling backend"
+        elif decode_graphs is None:
+            reason = (
+                "the decode CUDA graphs this deployment would share were not captured"
             )
         else:
+            reason = None
+        if reason is not None:
+            logger.info(f"MiniCPM-o talker samples eagerly: {reason}")
+            return None
+        else:
             pass
+        try:
+            return TalkerSampleGraphs(
+                self.slot_state,
+                self.tp_worker.model_runner.sampler,
+                [int(batch_size) for batch_size in decode_graphs.capture_bs],
+                self.model.head_code.weight.dtype,
+            )
+        except Exception:
+            logger.exception(
+                "MiniCPM-o talker sampling graph capture failed; sampling eagerly"
+            )
+            # note (0xtoward): outside the handler, so its traceback holds no capture tensor.
+            torch.cuda.empty_cache()
+            return None
 
     def before_prefill(
         self,

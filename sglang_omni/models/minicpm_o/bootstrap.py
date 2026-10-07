@@ -35,7 +35,6 @@ def create_talker_scheduler(
         make_talker_scheduler_adapters,
     )
     from sglang_omni.models.minicpm_o.talker_session import TalkerAdapter
-    from sglang_omni.platforms import current_platform
     from sglang_omni.scheduling.bootstrap import (
         create_sglang_infrastructure,
         init_sglang_cuda_graphs,
@@ -86,17 +85,10 @@ def create_talker_scheduler(
     output_proc = SGLangOutputProcessor()
     model_runner = MiniCPMOTalkerModelRunner(model_worker, output_proc)
     if session_mode:
+        # note (0xtoward): a session's units replay host history, so it keeps the host sampler.
         pass
-    elif (
-        want_cuda_graph
-        and current_platform.is_cuda()
-        and resolved_view(server_args).sampling_backend == "pytorch"
-    ):
-        model_runner.enable_device_sampling(
-            list(model_worker.model_runner.decode_cuda_graph_runner.capture_bs)
-        )
     else:
-        model_runner.enable_device_sampling([])
+        model_runner.enable_device_sampling()
 
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
     request_builder, result_adapter = make_talker_scheduler_adapters(

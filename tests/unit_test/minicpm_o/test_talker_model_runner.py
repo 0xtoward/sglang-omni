@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from sglang_omni.model_runner.base import rank_shared_unseeded_sampling_seed
+from sglang_omni.models.minicpm_o import talker_model_runner
 from sglang_omni.models.minicpm_o.talker_model_runner import (
     MiniCPMOTalkerModelRunner,
     TalkerSampleGraphs,
@@ -48,6 +49,7 @@ def test_device_history_matches_host_penalty_and_min_new_tokens() -> None:
     runner.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(
             req_to_token_pool=SimpleNamespace(req_to_token=torch.zeros(12, 1)),
+            decode_cuda_graph_runner=None,
             sample=lambda logits_output, forward_batch: (
                 logits_output.next_token_logits.argmax(dim=-1)
             ),
@@ -56,7 +58,9 @@ def test_device_history_matches_host_penalty_and_min_new_tokens() -> None:
     runner.model = SimpleNamespace(num_audio_tokens=VOCAB, codec_eos_id=EOS_ID)
     runner.device = torch.device("cpu")
     runner.apply_codec_suppress_tokens = suppress_one_token
-    runner.enable_device_sampling([])
+    runner.enable_device_sampling()
+    # Without decode graphs to share, the step still samples on the device.
+    assert runner.slot_state is not None and runner.sample_graphs is None
     sampling_info = SimpleNamespace(
         sampling_seed=None,
         need_min_p_sampling=False,
@@ -96,6 +100,35 @@ def test_device_history_matches_host_penalty_and_min_new_tokens() -> None:
         for row in range(4)
     ]
     assert sampling_info.sampling_seed.tolist() == expected_seeds
+
+
+def test_a_failed_sampling_graph_capture_falls_back_to_eager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse_capture(*args: object) -> None:
+        raise RuntimeError("no capture here")
+
+    monkeypatch.setattr(talker_model_runner, "TalkerSampleGraphs", refuse_capture)
+    monkeypatch.setattr(talker_model_runner.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        talker_model_runner, "current_sglang_sampling_backend", lambda: "pytorch"
+    )
+    runner = MiniCPMOTalkerModelRunner.__new__(MiniCPMOTalkerModelRunner)
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            req_to_token_pool=SimpleNamespace(req_to_token=torch.zeros(12, 1)),
+            decode_cuda_graph_runner=SimpleNamespace(capture_bs=[1, 2]),
+            sampler=None,
+        )
+    )
+    runner.model = SimpleNamespace(
+        num_audio_tokens=VOCAB,
+        codec_eos_id=EOS_ID,
+        head_code=SimpleNamespace(weight=torch.zeros(1, dtype=torch.float32)),
+    )
+    runner.device = torch.device("cpu")
+    runner.enable_device_sampling()
+    assert runner.slot_state is not None and runner.sample_graphs is None
 
 
 def test_reset_keeps_the_seeds_of_deterministic_inference() -> None:
