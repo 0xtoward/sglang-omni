@@ -322,8 +322,6 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             logger.exception(
                 "MiniCPM-o talker sampling graph capture failed; sampling eagerly"
             )
-            # note (0xtoward): outside the handler, so its traceback holds no capture tensor.
-            torch.get_device_module(self.device).empty_cache()
             return None
         logger.info(
             f"MiniCPM-o talker captured sampling graphs for batch sizes {graphs.batch_sizes}"
