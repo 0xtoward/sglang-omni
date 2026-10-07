@@ -10,6 +10,7 @@ import torch
 
 from sglang_omni.model_runner.base import rank_shared_unseeded_sampling_seed
 from sglang_omni.models.minicpm_o import talker_model_runner
+from sglang_omni.platforms import current_platform
 from sglang_omni.models.minicpm_o.talker_model_runner import (
     MiniCPMOTalkerModelRunner,
     TalkerSampleGraphs,
@@ -219,8 +220,11 @@ def test_sample_graph_replays_the_eager_step() -> None:
         state.seeds.copy_(torch.arange(state.seeds.shape[0]) * 13)
         state.temperatures.fill_(0.8)
         state.suppress[:, 3] = True
-    graphs = TalkerSampleGraphs(states[0], seeded_sampler, [1, 2, 4, 8], torch.float32)
-    eager = TalkerSampleGraphs(states[1], seeded_sampler, [1], torch.float32)
+    backend = current_platform.get_device_graph_backend(device)
+    graphs = TalkerSampleGraphs(
+        states[0], seeded_sampler, [1, 2, 4, 8], torch.float32, backend
+    )
+    eager = TalkerSampleGraphs(states[1], seeded_sampler, [1], torch.float32, backend)
     # Batches above the largest decode graph size sample eagerly.
     assert graphs.fits(8) and not graphs.fits(9)
     for rows in ([5, 0, 11], [2, 7, 9, 4, 1], [6], [8, 10, 3]):
