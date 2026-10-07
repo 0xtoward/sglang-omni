@@ -159,6 +159,7 @@ class StageWorkerProcessSpec:
     # launcher passes its own root level so --log-level reaches every stage.
     log_level: int = logging.INFO
     cpu_threads: int | None = None
+    cpu_affinity: frozenset[int] | None = None
 
 
 def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -205,6 +206,17 @@ def patched_spawn_env(
                 env_default_updates[key] = value
             else:
                 pass
+    default_threads = env_default_updates.get("OMP_NUM_THREADS", "")
+    if (
+        spec.cpu_affinity is not None
+        and default_threads.isdigit()
+        and int(default_threads) > len(spec.cpu_affinity)
+    ):
+        # note (Richard Wang): a default sized for the whole host would put more
+        # threads than CPUs on a bound process. Explicit values still win.
+        env_default_updates["OMP_NUM_THREADS"] = str(len(spec.cpu_affinity))
+    else:
+        pass
 
     worker_process_env = get_worker_process_env(spec)
     compat_env_defaults = get_gpu_compat_env_defaults(
@@ -504,6 +516,17 @@ def stage_process_main(
     else:
         pass
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
+    if spec.cpu_affinity is not None:
+        # note (Richard Wang): bind before the stages start their thread pools,
+        # since a thread keeps the affinity it was created with.
+        os.sched_setaffinity(0, spec.cpu_affinity)
+        log.info(
+            "Process %s bound to %d CPUs near its GPUs",
+            spec.process_name,
+            len(spec.cpu_affinity),
+        )
+    else:
+        pass
 
     try:
         for stage_spec in spec.stage_specs:

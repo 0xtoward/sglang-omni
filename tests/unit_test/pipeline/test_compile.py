@@ -16,9 +16,33 @@ from sglang_omni.pipeline.mp_runner import (
     resolve_same_process_targets,
 )
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
+from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
+
+
+@pytest.mark.parametrize(("process_count", "threads"), [(1, 72), (8, 18)])
+def test_cpu_thread_plan_caps_threads_at_the_bound_cpus(
+    monkeypatch: pytest.MonkeyPatch, process_count: int, threads: int
+) -> None:
+    near = frozenset(range(72))
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.mp_runner.effective_cpu_count", Mock(return_value=144)
+    )
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.mp_runner.gpu_local_affinity", lambda _ids: near
+    )
+    specs = [
+        StageWorkerProcessSpec(f"p{i}", [StageLaunchConfig(f"s{i}", gpu_id=0)])
+        for i in range(process_count)
+    ]
+
+    apply_cpu_thread_plan([Mock(process_specs=specs)])
+
+    assert {(spec.cpu_threads, spec.cpu_affinity) for spec in specs} == {
+        (threads, near)
+    }
 
 
 def test_cpu_thread_plan_counts_final_workers(

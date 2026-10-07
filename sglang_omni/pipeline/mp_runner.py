@@ -46,9 +46,10 @@ from sglang_omni.pipeline.stage_workers import (
     StageGroup,
     StageLaunchConfig,
     StageWorkerProcessSpec,
+    stage_gpu_ids,
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
-from sglang_omni.utils.cpu import effective_cpu_count
+from sglang_omni.utils.cpu import effective_cpu_count, gpu_local_affinity
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
@@ -298,12 +299,20 @@ def apply_cpu_thread_plan(groups: list[StageGroup]) -> dict[str, int]:
     threads_per_process = max(1, cpu_budget // process_count)
     plan = {}
     for spec in process_specs:
-        spec.cpu_threads = threads_per_process
-        plan[spec.process_name] = threads_per_process
+        # note (Richard Wang): a process bound near its GPUs gets at most one
+        # thread per bound CPU, so a share of the whole host cannot oversubscribe.
+        spec.cpu_affinity = gpu_local_affinity(stage_gpu_ids(spec.stage_specs))
+        spec.cpu_threads = (
+            threads_per_process
+            if spec.cpu_affinity is None
+            else min(threads_per_process, len(spec.cpu_affinity))
+        )
+        plan[spec.process_name] = spec.cpu_threads
 
     allocations = {
         spec.process_name: {
             "fallback_threads": spec.cpu_threads,
+            "cpus": len(spec.cpu_affinity) if spec.cpu_affinity else None,
             "stages": [stage.stage_name for stage in spec.stage_specs],
         }
         for spec in process_specs

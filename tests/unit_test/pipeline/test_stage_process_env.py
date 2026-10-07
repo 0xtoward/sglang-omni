@@ -104,6 +104,43 @@ def test_spawn_env_cpu_plan_preserves_configured_omp(
     assert "SGLANG_OMNI_OMP_FROM_CPU_PLAN" not in os.environ
 
 
+@pytest.mark.parametrize(
+    ("extra_env", "expected"), [(None, "72"), ({"OMP_NUM_THREADS": "144"}, "144")]
+)
+def test_spawn_env_caps_a_default_pool_at_the_bound_cpus(
+    monkeypatch: pytest.MonkeyPatch, extra_env: dict[str, str] | None, expected: str
+) -> None:
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    spec = worker_spec(
+        StageLaunchConfig(
+            stage_name="preprocess", env_defaults={"OMP_NUM_THREADS": "144"}
+        )
+    )
+    spec.cpu_affinity = frozenset(range(72))
+
+    with patched_spawn_env(spec, extra_env=extra_env):
+        assert os.environ["OMP_NUM_THREADS"] == expected
+
+
+def test_stage_process_binds_to_its_planned_cpus(monkeypatch) -> None:
+    bound = []
+    monkeypatch.setattr(
+        stage_workers.os, "sched_setaffinity", lambda pid, cpus: bound.append(cpus)
+    )
+
+    def stop(*_args):
+        raise RuntimeError("stop after binding")
+
+    monkeypatch.setattr(stage_workers, "prepare_accelerator_environment", stop)
+    spec = worker_spec(StageLaunchConfig(stage_name="preprocess"))
+    spec.cpu_affinity = frozenset({1, 2})
+
+    with pytest.raises(SystemExit):
+        stage_workers.stage_process_main(spec, None)
+
+    assert bound == [frozenset({1, 2})]
+
+
 def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:
     env = cuda_platform.get_stage_process_env(
         tp_spec(gpu_id=1), {"CUDA_VISIBLE_DEVICES": "3,4"}
