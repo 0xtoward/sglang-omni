@@ -109,7 +109,11 @@ def test_a_failed_sampling_graph_capture_falls_back_to_eager(
         raise RuntimeError("no capture here")
 
     monkeypatch.setattr(talker_model_runner, "TalkerSampleGraphs", refuse_capture)
-    monkeypatch.setattr(talker_model_runner.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        talker_model_runner.current_platform,
+        "get_device_graph_backend",
+        lambda device: SimpleNamespace(),
+    )
     monkeypatch.setattr(
         talker_model_runner, "current_sglang_sampling_backend", lambda: "pytorch"
     )

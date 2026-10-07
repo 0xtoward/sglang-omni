@@ -23,6 +23,7 @@ from sglang_omni.model_runner.prefill_inputs import (
 )
 from sglang_omni.models.minicpm_o.talker_session import TalkerUnitRequestData
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK, resolve_row_seed
 from sglang_omni.scheduling.sglang_backend.request_data import (
     SGLangARRequestData,
@@ -194,6 +195,7 @@ class TalkerSampleGraphs:
         sampler: Sampler,
         batch_sizes: list[int],
         logits_dtype: torch.dtype,
+        backend: DeviceGraphBackend,
     ) -> None:
         self.state = state
         self.sampler = sampler
@@ -212,28 +214,29 @@ class TalkerSampleGraphs:
         self.next_token_ids = torch.zeros(
             largest_batch_size, dtype=torch.int32, device=device
         )
-        self.graphs: dict[int, torch.cuda.CUDAGraph] = {}
-        pool = torch.cuda.graph_pool_handle()
-        stream = torch.cuda.Stream(device=device)
+        self.graphs: dict[int, ReplayableGraph] = {}
+        device_module = torch.get_device_module(device)
+        pool = backend.graph_pool_handle()
+        stream = device_module.Stream(device=device)
         # note (0xtoward): largest first on one stream, so smaller graphs reuse its pool.
         for batch_size in reversed(self.batch_sizes):
             logits = self.logits[:batch_size]
             rows = self.rows[:batch_size]
             positions = self.positions[:batch_size]
-            stream.wait_stream(torch.cuda.current_stream(device))
-            with torch.cuda.stream(stream):
+            stream.wait_stream(device_module.current_stream(device))
+            with device_module.stream(stream):
                 # note (0xtoward): warm-ups on the spare slot settle lazy sampler state.
                 for _ in range(2):
                     self.step(logits, rows, positions)
-            graph = torch.cuda.CUDAGraph()
-            # note (0xtoward): code2wav runs on other threads of this process.
-            with torch.cuda.graph(
-                graph, pool=pool, stream=stream, capture_error_mode="thread_local"
-            ):
+            # note (0xtoward): code2wav runs on other threads of this process, so a
+            # capture failure there must not abort this one.
+            with backend.capture(
+                pool=pool, stream=stream, thread_local_errors=True
+            ) as graph:
                 self.next_token_ids[:batch_size].copy_(
                     self.step(logits, rows, positions)
                 )
-            torch.cuda.current_stream(device).wait_stream(stream)
+            device_module.current_stream(device).wait_stream(stream)
             self.graphs[batch_size] = graph
 
     def step(
@@ -291,8 +294,9 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
     def capture_sample_graphs(self) -> TalkerSampleGraphs | None:
         """The sampling graphs of this deployment, or None to sample eagerly."""
         decode_graphs = self.tp_worker.model_runner.decode_cuda_graph_runner
-        if not current_platform.is_cuda():
-            reason = f"{self.device.type} has no sampling graph"
+        backend = current_platform.get_device_graph_backend(self.device)
+        if backend is None:
+            reason = f"{self.device.type} records no model-owned graph"
         elif current_sglang_sampling_backend() != "pytorch":
             reason = "the sampling graph needs the pytorch sampling backend"
         elif decode_graphs is None:
@@ -312,13 +316,14 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
                 self.tp_worker.model_runner.sampler,
                 [int(batch_size) for batch_size in decode_graphs.capture_bs],
                 self.model.head_code.weight.dtype,
+                backend,
             )
         except Exception:
             logger.exception(
                 "MiniCPM-o talker sampling graph capture failed; sampling eagerly"
             )
             # note (0xtoward): outside the handler, so its traceback holds no capture tensor.
-            torch.cuda.empty_cache()
+            torch.get_device_module(self.device).empty_cache()
             return None
         logger.info(
             f"MiniCPM-o talker captured sampling graphs for batch sizes {graphs.batch_sizes}"
