@@ -41,7 +41,7 @@ def build_sglang_voxtral_request(
     *,
     model: "VoxtralSGLangTTSModel",
     voice_embeddings: dict[str, torch.Tensor],
-    voice_cache_keys: dict[str | None, str] | None = None,
+    voice_cache_keys: dict[str | None, str],
 ) -> VoxtralSGLangRequestData:
     from sglang.srt.sampling.sampling_params import SamplingParams
 
@@ -50,10 +50,7 @@ def build_sglang_voxtral_request(
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
     voice = state.voice or "cheerful_female"
     voice_embedding = voice_embeddings.get(voice)
-    if voice_cache_keys is None:
-        cache_key = prompt_cache_key("voxtral_tts", voice_embedding)
-    else:
-        cache_key = voice_cache_keys.get(voice, voice_cache_keys[None])
+    cache_key = voice_cache_keys.get(voice, voice_cache_keys[None])
 
     eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
     sampling_params = SamplingParams(

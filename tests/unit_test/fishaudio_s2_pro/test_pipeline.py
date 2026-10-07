@@ -1535,11 +1535,10 @@ def tiny_fish_omni_config(*, with_audio_decoder: bool = True):
     )
 
 
-@pytest.mark.parametrize("with_reference", [False, True])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_fish_retract_replays_decode_inputs_at_absolute_positions(
+def build_fish_replay_case(
     monkeypatch: pytest.MonkeyPatch, with_reference: bool, dtype: torch.dtype
-) -> None:
+) -> SimpleNamespace:
+    """A tiny Fish runner holding four committed frames and their decode-side state."""
     model = object.__new__(S2ProSGLangTextModel)
     torch.nn.Module.__init__(model)
     model.vocab_size = 640
@@ -1591,12 +1590,34 @@ def test_fish_retract_replays_decode_inputs_at_absolute_positions(
             im_end_token_id=99,
             rep_history_len=3,
         )
+    return SimpleNamespace(
+        runner=runner,
+        model=model,
+        data=data,
+        request=request,
+        reference_mask=reference_mask,
+        reference_codes=reference_codes,
+        generated_codes=generated_codes,
+        full_ids=torch.cat([prompt_ids, generated_codes[:, 0]]),
+    )
 
-    full_ids = torch.cat([prompt_ids, generated_codes[:, 0]])
+
+@pytest.mark.parametrize("with_reference", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_fish_retract_replays_decode_inputs_at_absolute_positions(
+    monkeypatch: pytest.MonkeyPatch, with_reference: bool, dtype: torch.dtype
+) -> None:
+    case = build_fish_replay_case(monkeypatch, with_reference, dtype)
+    model, data, generated_codes, full_ids = (
+        case.model,
+        case.data,
+        case.generated_codes,
+        case.full_ids,
+    )
     model.vq_mask.zero_()
     if with_reference:
-        model.vq_mask[:4].copy_(reference_mask)
-        model.vq_codes[1:3].copy_(reference_codes.T)
+        model.vq_mask[:4].copy_(case.reference_mask)
+        model.vq_codes[1:3].copy_(case.reference_codes.T)
     model.vq_mask[4:].fill_(True)
     model.vq_codes[4:].copy_(generated_codes[:, 1:])
     expected = (
@@ -1627,7 +1648,9 @@ def test_fish_retract_replays_decode_inputs_at_absolute_positions(
             forward_batch = SimpleNamespace(
                 input_ids=torch.cat([plain_ids, full_ids[start:end]])
             )
-            runner.before_prefill(forward_batch, None, [plain_request, request])
+            case.runner.before_prefill(
+                forward_batch, None, [plain_request, case.request]
+            )
             torch.testing.assert_close(
                 forward_batch.input_embeds,
                 torch.cat([model.embed_tokens(plain_ids), expected[start:end]]),
@@ -1637,25 +1660,40 @@ def test_fish_retract_replays_decode_inputs_at_absolute_positions(
     assert data.semantic_history_count == len(generated_codes)
     torch.testing.assert_close(data.last_codebook_values, generated_codes[-1, 1:])
 
+
+def test_fish_middle_prefill_chunk_does_not_commit_codes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = build_fish_replay_case(monkeypatch, False, torch.float32)
+    data, generated_codes = case.data, case.generated_codes
+    history = data.semantic_history_tokens.clone()
+
     data.req.inflight_middle_chunks = 1
     collect_s2pro_step_outputs(
         SimpleNamespace(next_token_ids=None),
-        [request],
+        [case.request],
         output_codes=torch.tensor([[207, 7, 13]]),
         output_semantic_ids=torch.tensor([207]),
         im_end_token_id=99,
         rep_history_len=3,
     )
+
     assert len(data.output_codes) == len(generated_codes)
     assert data.semantic_history_count == len(generated_codes)
     torch.testing.assert_close(data.semantic_history_tokens, history)
     torch.testing.assert_close(data.last_codebook_values, generated_codes[-1, 1:])
 
-    data.output_codes[0][0, 0] += 1
-    data.req.extend_range = SimpleNamespace(start=4, end=5, length=1)
+
+def test_fish_reprefill_rejects_mismatched_replay_token_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = build_fish_replay_case(monkeypatch, False, torch.float32)
+    case.data.output_codes[0][0, 0] += 1
+    case.data.req.extend_range = SimpleNamespace(start=4, end=5, length=1)
+
     with pytest.raises(AssertionError, match="do not match replay token IDs"):
-        runner.build_prefill_input_embeds(
-            SimpleNamespace(input_ids=full_ids[4:5]), [request]
+        case.runner.build_prefill_input_embeds(
+            SimpleNamespace(input_ids=case.full_ids[4:5]), [case.request]
         )
 
 

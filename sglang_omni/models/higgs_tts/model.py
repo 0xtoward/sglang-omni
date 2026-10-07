@@ -290,6 +290,8 @@ class HiggsTTSModel(nn.Module):
         end_positions = (codes[num_codebooks:, 0] == EOC_ID).nonzero().flatten()
         done = False
         if len(end_positions):
+            # note (0xtoward): after cb0 emits EOC the sampler runs num_codebooks - 2
+            # more steps; subtract the steps already committed past that EOC row.
             remaining = (
                 num_codebooks - 2 - (count - num_codebooks - int(end_positions[0]) - 1)
             )

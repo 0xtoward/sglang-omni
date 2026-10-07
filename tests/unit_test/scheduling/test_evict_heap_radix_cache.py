@@ -176,6 +176,8 @@ def test_reset_then_reuse():
 def test_shared_prompt_switches_to_private_chunked_replay(
     page_size: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Two requests share a prompt, decode, retract, replay in two chunks under private keys,
+    retract again, and the allocator ends where it started."""
     allocator = PagedTokenToKVPoolAllocator(
         size=64,
         page_size=page_size,

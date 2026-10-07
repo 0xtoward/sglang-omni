@@ -41,7 +41,9 @@ class VoxtralTTSModelRunner(ModelRunner):
         self.pending_audio_embeds: torch.Tensor | None = None
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
-        # note (0xtoward): Feedback is committed at resolve, too late for lookahead.
+        # note (0xtoward): Voxtral does not run the async loop today; feedback is
+        # committed at resolve, so lookahead must stay off if it ever does.
+        del batch
         return False
 
     def before_prefill(
@@ -133,12 +135,9 @@ class VoxtralTTSModelRunner(ModelRunner):
             if end > prompt_len:
                 start = max(prefix_len, prompt_len)
                 history_end = end - prompt_len
-                if history_end > len(data.generated_input_embeds):
-                    raise RuntimeError(
-                        "Voxtral re-prefill is missing generated feedback"
-                    )
-                else:
-                    pass
+                assert history_end <= len(
+                    data.generated_input_embeds
+                ), "Voxtral re-prefill is missing generated feedback"
                 history = torch.stack(
                     data.generated_input_embeds[start - prompt_len : history_end]
                 ).to(device=input_embeds.device, dtype=input_embeds.dtype)

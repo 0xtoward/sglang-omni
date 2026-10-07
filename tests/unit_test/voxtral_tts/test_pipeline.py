@@ -15,7 +15,6 @@ from sglang_omni.models.voxtral_tts import request_builders
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline import stages
-from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral_request
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_waveform_payload
@@ -136,14 +135,10 @@ def test_voxtral_radix_cache_is_namespaced_by_voice_embedding(
             data=state.to_dict(),
         )
 
-    cheerful = build_sglang_voxtral_request(
-        make_payload("r1", "cheerful_female"),
-        model=model,
-        voice_embeddings=voice_embeddings,
-    )
     request_builder, _ = request_builders.make_voxtral_scheduler_adapters(
         model=model, voice_embeddings=voice_embeddings
     )
+    cheerful = request_builder(make_payload("r1", "cheerful_female"))
 
     def unexpected_hash(model_name: str, embedding: torch.Tensor | None) -> str:
         pytest.fail("Request admission must reuse the precomputed voice fingerprint")
@@ -502,7 +497,7 @@ def test_voxtral_reprefill_without_generated_feedback_fails_loudly() -> None:
     )
     batch = SimpleNamespace(input_ids=torch.tensor([1, 24, 3, 10, 20]))
 
-    with pytest.raises(RuntimeError, match="missing generated feedback"):
+    with pytest.raises(AssertionError, match="missing generated feedback"):
         runner.build_prefill_input_embeds(batch, [SimpleNamespace(data=data)])
 
 

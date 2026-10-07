@@ -225,7 +225,11 @@ def build_sglang_zonos2_request(
         sampling_params=sp,
         eos_token_ids={RADIX_HASH_SPACE},
         vocab_size=RADIX_HASH_SPACE + 1,
-        extra_key=state.speaker_fingerprint,
+        extra_key=(
+            "zonos2:prompt:v1"
+            if state.speaker_fingerprint is None
+            else f"zonos2:prompt:v1:{state.speaker_fingerprint}"
+        ),
     )
     req._omni_prompt_only_radix = True  # noqa: leading-underscore
     req.use_private_radix_on_retract = True

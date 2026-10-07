@@ -72,4 +72,4 @@ def prompt_cache_key(model_name: str, *tensors: torch.Tensor | None) -> str:
             tensor = tensor.detach().cpu().contiguous()
             digest.update(f"{tensor.dtype}:{tuple(tensor.shape)};".encode())
             digest.update(tensor.reshape(-1).view(torch.uint8).numpy().tobytes())
-    return f"{model_name}:{digest.hexdigest()}"
+    return f"{model_name}:prompt:v1:{digest.hexdigest()}"
