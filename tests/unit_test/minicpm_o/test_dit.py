@@ -123,9 +123,12 @@ def test_channels_last_causal_conv_matches_channel_first(
             expected, state_first = channel_first(chunk, state=state_first)
             actual, state_last = channels_last(chunk, state=state_last)
             torch.testing.assert_close(actual, expected)
-        torch.testing.assert_close(state_last.first.history, state_first.first.history)
+        # The history also keeps the channel-first path's contiguous layout.
         torch.testing.assert_close(
-            state_last.second.history, state_first.second.history
+            state_last.first.history, state_first.first.history, check_stride=True
+        )
+        torch.testing.assert_close(
+            state_last.second.history, state_first.second.history, check_stride=True
         )
 
 

@@ -274,7 +274,11 @@ class CausalConvBlock(nn.Module):
         else:
             context = F.pad(hidden_states, (0, 0, history_length, 0))
         next_state = (
-            ConvState(history=context[:, -history_length:].transpose(1, 2).clone())
+            ConvState(
+                history=context[:, -history_length:]
+                .transpose(1, 2)
+                .clone(memory_format=torch.contiguous_format)
+            )
             if state is not None
             else None
         )
