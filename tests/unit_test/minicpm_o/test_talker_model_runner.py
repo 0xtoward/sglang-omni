@@ -53,8 +53,10 @@ def test_device_history_matches_host_penalty_and_min_new_tokens() -> None:
             ),
         )
     )
+    runner.model = SimpleNamespace(num_audio_tokens=VOCAB, codec_eos_id=EOS_ID)
+    runner.device = torch.device("cpu")
     runner.apply_codec_suppress_tokens = suppress_one_token
-    runner.samples_in_graph = lambda sampling_info: False
+    runner.enable_device_sampling([])
     sampling_info = SimpleNamespace(
         sampling_seed=None,
         need_min_p_sampling=False,
@@ -180,8 +182,10 @@ def test_sample_graph_replays_the_eager_step() -> None:
         state.seeds.copy_(torch.arange(state.seeds.shape[0]) * 13)
         state.temperatures.fill_(0.8)
         state.suppress[:, 3] = True
-    graphs = TalkerSampleGraphs(states[0], seeded_sampler)
-    eager = TalkerSampleGraphs(states[1], seeded_sampler)
+    graphs = TalkerSampleGraphs(states[0], seeded_sampler, [1, 2, 4, 8], torch.float32)
+    eager = TalkerSampleGraphs(states[1], seeded_sampler, [1], torch.float32)
+    # Batches above the largest decode graph size sample eagerly.
+    assert graphs.fits(8) and not graphs.fits(9)
     for rows in ([5, 0, 11], [2, 7, 9, 4, 1], [6], [8, 10, 3]):
         rows = torch.tensor(rows, device=device)
         logits = torch.randn(len(rows), VOCAB, device=device) * 3

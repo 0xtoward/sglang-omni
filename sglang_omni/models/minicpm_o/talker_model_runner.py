@@ -9,12 +9,10 @@ from typing import TYPE_CHECKING
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.sampler import Sampler
-from sglang.srt.runtime_context import get_exec
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 
 from sglang_omni.model_runner.base import (
     ModelRunner,
-    current_sglang_sampling_backend,
     rank_shared_unseeded_sampling_seed,
 )
 from sglang_omni.model_runner.prefill_inputs import (
@@ -22,7 +20,6 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
 )
 from sglang_omni.models.minicpm_o.talker_session import TalkerUnitRequestData
-from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK, resolve_row_seed
 from sglang_omni.scheduling.sglang_backend.request_data import (
     SGLangARRequestData,
@@ -179,23 +176,60 @@ class TalkerSlotState:
         self.generated[rows] = generated + 1
 
 
-@dataclass(kw_only=True)
-class CapturedSampleStep:
-    graph: torch.cuda.CUDAGraph
-    logits: torch.Tensor
-    rows: torch.Tensor
-    positions: torch.Tensor
-    next_token_ids: torch.Tensor
-
-
 class TalkerSampleGraphs:
-    """CUDA graphs of the device-side sampling step, one per padded batch size."""
+    """CUDA graphs of the device-side sampling step, one per decode graph batch size.
 
-    def __init__(self, state: TalkerSlotState, sampler: Sampler) -> None:
+    Every size is captured at construction, before serving; the padded rows of a
+    replay sample on the spare slot.
+    """
+
+    def __init__(
+        self,
+        state: TalkerSlotState,
+        sampler: Sampler,
+        batch_sizes: list[int],
+        logits_dtype: torch.dtype,
+    ) -> None:
         self.state = state
         self.sampler = sampler
-        self.captured: dict[int, CapturedSampleStep] = {}
-        self.pool = torch.cuda.graph_pool_handle()
+        self.batch_sizes = sorted(set(batch_sizes))
+        largest_batch_size = self.batch_sizes[-1]
+        device = state.seeds.device
+        self.logits = torch.zeros(
+            largest_batch_size, state.vocab, dtype=logits_dtype, device=device
+        )
+        self.rows = torch.full(
+            (largest_batch_size,), state.spare, dtype=torch.long, device=device
+        )
+        self.positions = torch.zeros(
+            largest_batch_size, dtype=torch.long, device=device
+        )
+        self.next_token_ids = torch.zeros(
+            largest_batch_size, dtype=torch.int32, device=device
+        )
+        self.graphs: dict[int, torch.cuda.CUDAGraph] = {}
+        pool = torch.cuda.graph_pool_handle()
+        stream = torch.cuda.Stream(device=device)
+        # note (0xtoward): largest first on one stream, so smaller graphs reuse its pool.
+        for batch_size in reversed(self.batch_sizes):
+            logits = self.logits[:batch_size]
+            rows = self.rows[:batch_size]
+            positions = self.positions[:batch_size]
+            stream.wait_stream(torch.cuda.current_stream(device))
+            with torch.cuda.stream(stream):
+                # note (0xtoward): warm-ups on the spare slot settle lazy sampler state.
+                for _ in range(2):
+                    self.step(logits, rows, positions)
+            graph = torch.cuda.CUDAGraph()
+            # note (0xtoward): code2wav runs on other threads of this process.
+            with torch.cuda.graph(
+                graph, pool=pool, stream=stream, capture_error_mode="thread_local"
+            ):
+                self.next_token_ids[:batch_size].copy_(
+                    self.step(logits, rows, positions)
+                )
+            torch.cuda.current_stream(device).wait_stream(stream)
+            self.graphs[batch_size] = graph
 
     def step(
         self, logits: torch.Tensor, rows: torch.Tensor, positions: torch.Tensor
@@ -212,56 +246,20 @@ class TalkerSampleGraphs:
         self.state.append(rows, next_token_ids)
         return next_token_ids
 
-    def capture(
-        self,
-        size: int,
-        logits: torch.Tensor,
-        rows: torch.Tensor,
-        positions: torch.Tensor,
-    ) -> CapturedSampleStep:
-        inputs = CapturedSampleStep(
-            graph=torch.cuda.CUDAGraph(),
-            logits=torch.zeros(
-                size, logits.shape[1], dtype=logits.dtype, device=logits.device
-            ),
-            rows=torch.full(
-                (size,), self.state.spare, dtype=rows.dtype, device=rows.device
-            ),
-            positions=torch.zeros(size, dtype=positions.dtype, device=positions.device),
-            next_token_ids=torch.zeros(size, dtype=torch.int32, device=logits.device),
-        )
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            # note (0xtoward): warm-ups on the spare slot settle lazy sampler state.
-            for _ in range(2):
-                self.step(inputs.logits, inputs.rows, inputs.positions)
-        torch.cuda.current_stream().wait_stream(stream)
-        with torch.cuda.graph(inputs.graph, pool=self.pool, stream=stream):
-            inputs.next_token_ids.copy_(
-                self.step(inputs.logits, inputs.rows, inputs.positions)
-            )
-        return inputs
+    def fits(self, batch_size: int) -> bool:
+        return batch_size <= self.batch_sizes[-1]
 
     def sample(
         self, logits: torch.Tensor, rows: torch.Tensor, positions: torch.Tensor
     ) -> torch.Tensor:
-        if not self.captured:
-            # Capture all batch buckets before the steady path.
-            size = 1
-            while size < 2 * self.state.spare:
-                self.captured[size] = self.capture(size, logits, rows, positions)
-                size *= 2
-        else:
-            pass
         count = len(rows)
-        captured = self.captured[1 << (count - 1).bit_length()]
-        captured.logits[:count].copy_(logits)
-        captured.rows[:count].copy_(rows)
-        captured.rows[count:].fill_(self.state.spare)
-        captured.positions[:count].copy_(positions)
-        captured.graph.replay()
-        return captured.next_token_ids[:count].clone()
+        batch_size = next(size for size in self.batch_sizes if size >= count)
+        self.logits[:count].copy_(logits)
+        self.rows[:count].copy_(rows)
+        self.rows[count:batch_size].fill_(self.state.spare)
+        self.positions[:count].copy_(positions)
+        self.graphs[batch_size].replay()
+        return self.next_token_ids[:count].clone()
 
 
 class MiniCPMOTalkerModelRunner(ModelRunner):
@@ -269,7 +267,25 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
 
     slot_state: TalkerSlotState | None = None
     sample_graphs: TalkerSampleGraphs | None = None
-    use_device_sampling: bool = True
+
+    @torch.no_grad()
+    def enable_device_sampling(self, sample_graph_batch_sizes: list[int]) -> None:
+        """Keep the decode step on the GPU; capture its sampling graphs before serving."""
+        self.slot_state = TalkerSlotState.allocate(
+            self.tp_worker.model_runner.req_to_token_pool.req_to_token.shape[0],
+            self.model.num_audio_tokens,
+            self.model.codec_eos_id,
+            self.device,
+        )
+        if sample_graph_batch_sizes:
+            self.sample_graphs = TalkerSampleGraphs(
+                self.slot_state,
+                self.tp_worker.model_runner.sampler,
+                sample_graph_batch_sizes,
+                self.model.head_code.weight.dtype,
+            )
+        else:
+            pass
 
     def before_prefill(
         self,
@@ -343,7 +359,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch | None,
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
-        if not self.use_device_sampling:
+        if self.slot_state is None:
             return super().sample_next_token_ids(
                 logits_output, forward_batch, schedule_batch, requests
             )
@@ -356,31 +372,11 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         logits = logits_output.next_token_logits[: len(requests)]
         rows = forward_batch.req_pool_indices[: len(requests)]
         sampling_info = forward_batch.sampling_info
-        if self.slot_state is None:
-            eos_token_ids = requests[0].data.req.eos_token_ids
-            if len(eos_token_ids) != 1:
-                raise ValueError("the talker's slot state expects one codec EOS token")
-            else:
-                pass
-            self.slot_state = TalkerSlotState.allocate(
-                self.tp_worker.model_runner.req_to_token_pool.req_to_token.shape[0],
-                logits.shape[1],
-                next(iter(eos_token_ids)),
-                logits.device,
-            )
-        else:
-            pass
         if forward_batch.forward_mode.is_extend():
             self.slot_state.reset(
                 rows, requests, sampling_info, self.suppress_mask(requests, logits)
             )
-        elif self.samples_in_graph(sampling_info):
-            if self.sample_graphs is None:
-                self.sample_graphs = TalkerSampleGraphs(
-                    self.slot_state, self.tp_worker.model_runner.sampler
-                )
-            else:
-                pass
+        elif self.samples_in_graph(len(requests), sampling_info):
             return self.sample_graphs.sample(
                 logits, rows, forward_batch.positions[: len(requests)]
             )
@@ -411,11 +407,12 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         self.apply_codec_suppress_tokens(probe, requests)
         return torch.isinf(probe.next_token_logits)
 
-    def samples_in_graph(self, sampling_info: SamplingBatchInfo) -> bool:
+    def samples_in_graph(
+        self, batch_size: int, sampling_info: SamplingBatchInfo
+    ) -> bool:
         return (
-            current_platform.is_cuda()
-            and not get_exec().graph.disable_cuda_graph
-            and current_sglang_sampling_backend() == "pytorch"
+            self.sample_graphs is not None
+            and self.sample_graphs.fits(batch_size)
             and not (
                 sampling_info.need_min_p_sampling
                 or sampling_info.grammars
