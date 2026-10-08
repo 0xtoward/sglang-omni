@@ -27,38 +27,48 @@ def build_forbidden_token_index(
     return torch.tensor(forbidden_token_ids, dtype=torch.long, device=device)
 
 
+def to_device(values: list, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    """Copy host values to the device without waiting for the work already queued there."""
+    host_values = torch.tensor(values, dtype=dtype)
+    if device.type == "cuda":
+        return host_values.pin_memory().to(device, non_blocking=True)
+    else:
+        return host_values.to(device)
+
+
 def filter_top_k_top_p(
-    logits: torch.Tensor, *, top_k: Sequence[int], top_p: Sequence[float]
+    logits: torch.Tensor,
+    *,
+    top_k: torch.Tensor,
+    top_p: torch.Tensor,
+    max_top_k: int,
+    has_top_p: bool,
 ) -> torch.Tensor:
-    """Apply each row's top-k and top-p to a rows x vocab tensor; values outside (0, vocab) or (0, 1) leave the row alone."""
+    """Apply each row's top-k and top-p; values outside (0, vocab) or (0, 1) leave the row alone.
+
+    max_top_k and has_top_p are host-side summaries of top_k and top_p, so disabled filters launch nothing.
+    """
     vocab_size = logits.shape[-1]
     filtered_logits = logits.clone()
-    active_k = [k for k in top_k if 0 < k < vocab_size]
-    if active_k:
-        kept = torch.tensor(
-            [k if 0 < k < vocab_size else 1 for k in top_k], device=logits.device
-        )
-        thresholds = torch.topk(filtered_logits, max(active_k), dim=-1).values.gather(
+    if max_top_k > 0:
+        enabled = (top_k > 0) & (top_k < vocab_size)
+        kept = torch.where(enabled, top_k, 1)
+        thresholds = torch.topk(filtered_logits, max_top_k, dim=-1).values.gather(
             1, (kept - 1).unsqueeze(1)
         )
-        enabled = torch.tensor(
-            [0 < k < vocab_size for k in top_k], device=logits.device
-        ).unsqueeze(1)
         filtered_logits.masked_fill_(
-            enabled & (filtered_logits < thresholds), -torch.inf
+            enabled.unsqueeze(1) & (filtered_logits < thresholds), -torch.inf
         )
     else:
         pass
-    if any(0.0 < p < 1.0 for p in top_p):
+    if has_top_p:
         sorted_logits, sorted_indices = torch.sort(
             filtered_logits, descending=True, dim=-1
         )
         cumulative_probabilities = torch.cumsum(
             F.softmax(sorted_logits, dim=-1), dim=-1
         )
-        limits = torch.tensor(
-            [p if 0.0 < p < 1.0 else torch.inf for p in top_p], device=logits.device
-        )
+        limits = torch.where((top_p > 0.0) & (top_p < 1.0), top_p, torch.inf)
         should_remove = cumulative_probabilities > limits.unsqueeze(1)
         should_remove[:, 1:] = should_remove[:, :-1].clone()
         should_remove[:, 0] = False
@@ -77,7 +87,7 @@ def duplex_sample(
     special_tokens: MiniCPMOSpecialTokenIds,
     forbidden_token_index: torch.Tensor,
 ) -> list[int]:
-    """Apply the two-stage unit sampler to every row of a batch with two device reads."""
+    """Apply the two-stage unit sampler to every row of a batch with one device read."""
     token_ids: list[int] = [-1] * len(units)
     active: list[int] = []
     for index, (state, generation_step, is_listen_forced) in enumerate(units):
@@ -91,69 +101,82 @@ def duplex_sample(
         return token_ids
     else:
         pass
-    rows = logits.index_select(0, torch.tensor(active, device=logits.device)).float()
-    # note (Junnan Li): The first sample must use the unscaled model distribution.
-    first_picks = torch.stack(
-        (rows.argmax(dim=-1), torch.multinomial(F.softmax(rows, dim=-1), 1)[:, 0])
-    ).tolist()
-    second: list[int] = []
-    for position, index in enumerate(active):
-        greedy = units[index][0].sampling.greedy
-        if first_picks[0 if greedy else 1][position] == special_tokens.chunk_eos:
-            token_ids[index] = special_tokens.chunk_eos
-        else:
-            second.append(position)
-    if not second:
-        return token_ids
-    else:
-        pass
-    rows = rows[second]
-    states = [units[active[position]][0] for position in second]
-    rows[:, forbidden_token_index] = -torch.inf
-    # note (Junnan Li): Matches the checkpoint sampler, which ignores the logit sign.
-    repeated = [
-        (row, token_id)
+    states = [units[index][0] for index in active]
+    vocab_size = logits.shape[-1]
+    count = len(active)
+    penalized = [
+        (row, token_id, state.sampling.repetition_penalty)
         for row, state in enumerate(states)
         if state.sampling.repetition_penalty != 1.0
         for token_id in set(
             state.generated_history[-state.sampling.repetition_window_size :]
         )
     ]
-    if repeated:
-        repeated_index = torch.tensor(repeated, device=rows.device)
-        penalties = torch.tensor(
-            [states[row].sampling.repetition_penalty for row, _ in repeated],
-            device=rows.device,
-        )
-        rows[repeated_index[:, 0], repeated_index[:, 1]] /= penalties
+    top_k = [state.sampling.top_k for state in states]
+    top_p = [state.sampling.top_p for state in states]
+    # note (0xtoward): one copy per dtype carries every row's settings, so the device never waits on a host read.
+    integers = to_device(
+        active
+        + top_k
+        + [row for row, _, _ in penalized]
+        + [token_id for _, token_id, _ in penalized],
+        torch.long,
+        logits.device,
+    )
+    floats = to_device(
+        [float(state.sampling.greedy) for state in states]
+        + [
+            float(state.sampling.greedy or state.sampling.temperature <= 0)
+            for state in states
+        ]
+        + [
+            state.sampling.temperature if state.sampling.temperature > 0 else 1.0
+            for state in states
+        ]
+        + [state.sampling.listen_prob_scale for state in states]
+        + top_p
+        + [penalty for _, _, penalty in penalized],
+        torch.float32,
+        logits.device,
+    )
+    rows = logits.index_select(0, integers[:count]).float()
+    # note (Junnan Li): The first sample must use the unscaled model distribution.
+    first_picks = torch.where(
+        floats[:count] > 0,
+        rows.argmax(dim=-1),
+        torch.multinomial(F.softmax(rows, dim=-1), 1)[:, 0],
+    )
+    rows[:, forbidden_token_index] = -torch.inf
+    if penalized:
+        pairs = len(penalized)
+        penalty_rows = integers[2 * count : 2 * count + pairs]
+        penalty_tokens = integers[2 * count + pairs :]
+        # note (Junnan Li): Matches the checkpoint sampler, which ignores the logit sign.
+        rows[penalty_rows, penalty_tokens] /= floats[5 * count :]
     else:
         pass
-    settings = torch.tensor(
-        [
-            (
-                state.sampling.listen_prob_scale,
-                state.sampling.temperature if state.sampling.temperature > 0 else 1.0,
-            )
-            for state in states
-        ],
-        device=rows.device,
-    )
-    rows[:, special_tokens.listen] *= settings[:, 0]
+    rows[:, special_tokens.listen] *= floats[3 * count : 4 * count]
     filtered_logits = filter_top_k_top_p(
-        rows / settings[:, 1].unsqueeze(1),
-        top_k=[state.sampling.top_k for state in states],
-        top_p=[state.sampling.top_p for state in states],
+        rows / floats[2 * count : 3 * count].unsqueeze(1),
+        top_k=integers[count : 2 * count],
+        top_p=floats[4 * count : 5 * count],
+        max_top_k=max((k for k in top_k if 0 < k < vocab_size), default=0),
+        has_top_p=any(0.0 < p < 1.0 for p in top_p),
     )
-    second_picks = torch.stack(
-        (
-            rows.argmax(dim=-1),
-            torch.multinomial(F.softmax(filtered_logits, dim=-1), 1)[:, 0],
-        )
-    ).tolist()
-    for row, (position, state) in enumerate(zip(second, states, strict=True)):
+    second_picks = torch.where(
+        floats[count : 2 * count] > 0,
+        rows.argmax(dim=-1),
+        torch.multinomial(F.softmax(filtered_logits, dim=-1), 1)[:, 0],
+    )
+    picks = torch.stack((first_picks, second_picks)).tolist()
+    for position, (index, state) in enumerate(zip(active, states, strict=True)):
+        if picks[0][position] == special_tokens.chunk_eos:
+            token_ids[index] = special_tokens.chunk_eos
+            continue
+        else:
+            pass
+        candidate_token_id = picks[1][position]
         sampling = state.sampling
-        greedy = sampling.greedy or sampling.temperature <= 0
-        candidate_token_id = second_picks[0 if greedy else 1][row]
         # note (Junnan Li): History retains controls before the mid-turn listen rewrite.
         history = state.generated_history
         history.append(candidate_token_id)
@@ -168,5 +191,5 @@ def duplex_sample(
             state.is_turn_ended = False
         else:
             pass
-        token_ids[active[position]] = candidate_token_id
+        token_ids[index] = candidate_token_id
     return token_ids

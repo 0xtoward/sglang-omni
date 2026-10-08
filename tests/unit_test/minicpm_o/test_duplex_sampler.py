@@ -109,23 +109,49 @@ def test_random_rows_sample_inside_their_top_k_and_top_p(special) -> None:
     units = [(narrow, 1, False), (state(), 1, False), (wide, 1, False)]
     picked = sample(logits.clone(), units, special)
     allowed = logits.clone()
-    allowed[
-        :, build_forbidden_token_index(special, VOCAB, torch.device("cpu"))
-    ] = -torch.inf
+    allowed[:, build_forbidden_token_index(special, VOCAB, torch.device("cpu"))] = (
+        -torch.inf
+    )
     assert picked[0] == int(allowed[0].argmax())
     assert picked[1] == int(allowed[1].argmax())
     assert allowed[2, picked[2]] > -torch.inf
 
 
+def filter_rows(logits, settings):
+    top_k = [k for k, _ in settings]
+    top_p = [p for _, p in settings]
+    return filter_top_k_top_p(
+        logits,
+        top_k=torch.tensor(top_k),
+        top_p=torch.tensor(top_p),
+        max_top_k=max((k for k in top_k if 0 < k < VOCAB), default=0),
+        has_top_p=any(0.0 < p < 1.0 for p in top_p),
+    )
+
+
 def test_filter_top_k_top_p_matches_single_row_filtering() -> None:
     torch.manual_seed(1)
     logits = torch.randn(3, VOCAB)
-    filtered = filter_top_k_top_p(logits, top_k=[5, -1, 20], top_p=[1.0, 0.5, 0.9])
-    for row, (top_k, top_p) in enumerate([(5, 1.0), (-1, 0.5), (20, 0.9)]):
-        expected = filter_top_k_top_p(
-            logits[row : row + 1], top_k=[top_k], top_p=[top_p]
-        )[0]
+    settings = [(5, 1.0), (-1, 0.5), (20, 0.9)]
+    filtered = filter_rows(logits, settings)
+    for row, (top_k, top_p) in enumerate(settings):
+        expected = filter_rows(logits[row : row + 1], [(top_k, top_p)])[0]
         torch.testing.assert_close(filtered[row], expected)
         kept = int((filtered[row] > -torch.inf).sum())
         assert kept <= (top_k if top_k > 0 else VOCAB)
         assert kept >= 1
+
+
+def test_rows_ending_the_chunk_keep_their_history(special) -> None:
+    logits = torch.full((2, VOCAB), -10.0)
+    logits[0, special.chunk_eos] = 5.0
+    logits[1, 42] = 5.0
+    ended = state(repetition_penalty=1.5)
+    ended.generated_history.extend([30, 31])
+    speaking = state(repetition_penalty=1.5)
+    assert sample(logits, [(ended, 1, False), (speaking, 1, False)], special) == [
+        special.chunk_eos,
+        42,
+    ]
+    assert ended.generated_history == [30, 31]
+    assert speaking.generated_history == [42]
