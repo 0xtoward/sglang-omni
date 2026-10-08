@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import inspect
-from contextlib import nullcontext
+import sys
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from sglang_omni.platforms.device_graph import (
     NpuDeviceGraphBackend,
     XpuDeviceGraphBackend,
 )
+from sglang_omni.utils.startup import startup_phase
 from tests.unit_test.fixtures.accelerator import require_device_streams
 
 
@@ -257,3 +259,61 @@ def test_captures_in_either_mode_leave_later_captures_working(
 
     for output in outputs:
         assert float(output) == pytest.approx(8.0, abs=1e-4)
+
+
+@pytest.mark.parametrize(
+    "backend, graph_attr, module_name",
+    [
+        (CudaDeviceGraphBackend(), "CUDAGraph", "cuda"),
+        (NpuDeviceGraphBackend(), "NPUGraph", "npu"),
+        (XpuDeviceGraphBackend(), "XPUGraph", "xpu"),
+    ],
+)
+def test_startup_timing_stays_outside_device_capture(
+    backend,
+    graph_attr: str,
+    module_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capturing = False
+    timed_phases: list[str] = []
+
+    @contextmanager
+    def graph_context(**kwargs):
+        nonlocal capturing
+        capturing = True
+        try:
+            yield
+        finally:
+            capturing = False
+
+    @contextmanager
+    def timer(name: str, *, log_only: bool):
+        assert not capturing
+        assert log_only
+        timed_phases.append(name)
+        try:
+            yield
+        finally:
+            assert not capturing
+
+    module = recording_module(graph_attr)
+    module.graph = graph_context
+    monkeypatch.setattr(torch, module_name, module, raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.observability.startup_func_log_and_timer",
+        SimpleNamespace(startup_timer=timer),
+    )
+    failure = ValueError("capture failed")
+    with pytest.raises(ValueError) as caught:
+        with startup_phase("factory.build", stage="codec"):
+            with backend.capture():
+                assert capturing
+                raise failure
+    assert caught.value is failure
+    assert len(timed_phases) == 2
+    assert timed_phases[1].startswith("omni.graph.capture ")
+    with backend.capture():
+        assert capturing
+    assert len(timed_phases) == 2

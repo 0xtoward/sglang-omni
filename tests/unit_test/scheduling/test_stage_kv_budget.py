@@ -9,9 +9,12 @@ instead of being silently dropped.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pytest
 
+import sglang_omni.pipeline.stage_workers as stage_workers
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_scheduler
 from sglang_omni.scheduling.stage_kv_budget import (
     consume_stage_kv_cache_bytes,
@@ -159,3 +162,64 @@ def test_total_reserve_cap_respects_opt_out_and_absence(monkeypatch):
     stage_workers.apply_total_reserve_cap(undeclared, 0, LOG)
 
     assert calls == []
+
+
+@pytest.mark.parametrize("factory_fails", [False, True])
+def test_startup_lock_wait_excludes_factory_and_releases_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    factory_fails: bool,
+) -> None:
+    events: list[str] = []
+    locked = False
+
+    @contextmanager
+    def phase(name: str, **labels) -> Iterator[None]:
+        events.append(f"begin:{name}")
+        try:
+            yield
+        finally:
+            events.append(f"end:{name}")
+
+    @contextmanager
+    def startup_lock(device: int) -> Iterator[str]:
+        nonlocal locked
+        locked = True
+        events.append("lock:acquired")
+        try:
+            yield "test-lock"
+        finally:
+            locked = False
+            events.append("lock:released")
+
+    def factory():
+        assert locked
+        events.append("factory")
+        if factory_fails:
+            raise ValueError("factory failed")
+        else:
+            return scheduler
+
+    scheduler = construct_scheduler(make_spec("make_scheduler"), None, LOG)
+    monkeypatch.setattr(stage_workers, "startup_phase", phase)
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", startup_lock)
+    monkeypatch.setattr(stage_workers, "import_string", lambda name: factory)
+    spec = StageLaunchConfig(stage_name="codec", factory="test.factory")
+    if factory_fails:
+        with pytest.raises(ValueError, match="factory failed"):
+            construct_scheduler(spec, 0, LOG)
+    else:
+        assert construct_scheduler(spec, 0, LOG) is scheduler
+    assert not locked
+    assert events == [
+        "begin:scheduler.initialize",
+        "begin:factory.import",
+        "end:factory.import",
+        "begin:gpu_lock.wait",
+        "lock:acquired",
+        "end:gpu_lock.wait",
+        "begin:factory.build",
+        "factory",
+        "end:factory.build",
+        "lock:released",
+        "end:scheduler.initialize",
+    ]

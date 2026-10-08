@@ -12,7 +12,7 @@ import queue
 import sys
 import time
 from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from multiprocessing.process import BaseProcess
 from multiprocessing.queues import Queue
@@ -36,6 +36,7 @@ from sglang_omni.pipeline.tp_control import (
 from sglang_omni.platforms import current_platform, get_platform_spec
 from sglang_omni.proto import AbortMessage, AdminResultMessage
 from sglang_omni.scheduling.message import StageScheduler
+from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -44,6 +45,7 @@ from sglang_omni.utils.gpu_memory import gpu_startup_lock
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
 from sglang_omni.utils.logging import configure_dependency_loggers
+from sglang_omni.utils.startup import startup_phase
 
 logger = logging.getLogger(__name__)
 
@@ -984,41 +986,50 @@ def construct_scheduler(
 ) -> StageScheduler:
     """Build a scheduler, serializing GPU factory work per visible device."""
 
-    from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
+    with startup_phase(
+        "scheduler.initialize",
+        stage=spec.stage_name,
+        tp_rank=spec.tp_rank,
+        gpu_id=gpu_id,
+    ):
+        apply_total_reserve_cap(spec, gpu_id, log)
+        with startup_phase("factory.import"):
+            factory = import_string(spec.factory)
+            factory_args = apply_typed_stage_kwargs(
+                factory,
+                spec.factory_kwargs,
+                spec.typed_kwargs,
+                stage_name=spec.stage_name,
+            )
+            kv_cache_bytes = spec.kv_cache_bytes
+            factory_args = resolve_factory_signature_args(
+                factory,
+                factory_args,
+                defaults=spec.factory_arg_defaults,
+                require_gpu_id=spec.require_factory_gpu_id,
+                stage_name=spec.stage_name,
+            )
 
-    apply_total_reserve_cap(spec, gpu_id, log)
-    factory = import_string(spec.factory)
-    factory_args = apply_typed_stage_kwargs(
-        factory,
-        spec.factory_kwargs,
-        spec.typed_kwargs,
-        stage_name=spec.stage_name,
-    )
-    kv_cache_bytes = spec.kv_cache_bytes
-    factory_args = resolve_factory_signature_args(
-        factory,
-        factory_args,
-        defaults=spec.factory_arg_defaults,
-        require_gpu_id=spec.require_factory_gpu_id,
-        stage_name=spec.stage_name,
-    )
+        def invoke_factory() -> StageScheduler:
+            with startup_phase("factory.build", report_compilation=True):
+                if kv_cache_bytes is None:
+                    return factory(**factory_args)
+                else:
+                    with stage_kv_cache_budget(spec.stage_name, kv_cache_bytes):
+                        return factory(**factory_args)
 
-    def _invoke() -> StageScheduler:
-        if kv_cache_bytes is None:
-            return factory(**factory_args)
+        if gpu_id is None:
+            return invoke_factory()
         else:
             pass
-        with stage_kv_cache_budget(spec.stage_name, kv_cache_bytes):
-            return factory(**factory_args)
 
-    if gpu_id is None:
-        return _invoke()
-    else:
-        pass
-
-    with gpu_startup_lock(int(gpu_id)) as lock_path:
-        log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
-        return _invoke()
+        with ExitStack() as stack:
+            with startup_phase("gpu_lock.wait"):
+                lock_path = stack.enter_context(gpu_startup_lock(int(gpu_id)))
+            log.info(
+                f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}"
+            )
+            return invoke_factory()
 
 
 def prepare_accelerator_environment(
