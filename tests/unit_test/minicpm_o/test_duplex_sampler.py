@@ -155,3 +155,23 @@ def test_rows_ending_the_chunk_keep_their_history(special) -> None:
     ]
     assert ended.generated_history == [30, 31]
     assert speaking.generated_history == [42]
+
+
+def test_rows_with_top_k_sample_among_their_top_candidates(special) -> None:
+    torch.manual_seed(2)
+    logits = torch.randn(4, VOCAB)
+    # Control tokens never win, so every pick comes from the second stage unchanged.
+    logits[:, 100:116] = -50.0
+    rows = [
+        state(greedy=False, temperature=0.9, top_k=k, top_p=p)
+        for k, p in ((3, 1.0), (5, 0.6), (1, 0.8), (20, 0.95))
+    ]
+    for trial in range(20):
+        picked = sample(logits.clone(), [(row, 1, False) for row in rows], special)
+        allowed = logits.clone()
+        allowed[:, build_forbidden_token_index(special, VOCAB, torch.device("cpu"))] = (
+            -torch.inf
+        )
+        for row, (token_id, settings) in enumerate(zip(picked, rows)):
+            top = torch.topk(allowed[row], settings.sampling.top_k).indices.tolist()
+            assert token_id in top

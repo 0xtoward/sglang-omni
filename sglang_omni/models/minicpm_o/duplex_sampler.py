@@ -156,17 +156,47 @@ def duplex_sample(
     else:
         pass
     rows[:, special_tokens.listen] *= floats[3 * count : 4 * count]
-    filtered_logits = filter_top_k_top_p(
-        rows / floats[2 * count : 3 * count].unsqueeze(1),
-        top_k=integers[count : 2 * count],
-        top_p=floats[4 * count : 5 * count],
-        max_top_k=max((k for k in top_k if 0 < k < vocab_size), default=0),
-        has_top_p=any(0.0 < p < 1.0 for p in top_p),
-    )
+    temperatures = floats[2 * count : 3 * count].unsqueeze(1)
+    row_top_k = integers[count : 2 * count]
+    row_top_p = floats[4 * count : 5 * count]
+    max_top_k = max((k for k in top_k if 0 < k < vocab_size), default=0)
+    has_top_p = any(0.0 < p < 1.0 for p in top_p)
+    if max_top_k > 0 and all(0 < k < vocab_size for k in top_k):
+        # note (0xtoward): every row keeps at most its top-k, so top-p and the draw only need the top-k candidates.
+        candidate_logits, candidate_ids = torch.topk(
+            rows / temperatures, max_top_k, dim=-1
+        )
+        ranks = torch.arange(max_top_k, device=rows.device)
+        candidate_logits = candidate_logits.masked_fill(
+            ranks.unsqueeze(0) >= row_top_k.unsqueeze(1), -torch.inf
+        )
+        if has_top_p:
+            cumulative_probabilities = torch.cumsum(
+                F.softmax(candidate_logits, dim=-1), dim=-1
+            )
+            limits = torch.where(
+                (row_top_p > 0.0) & (row_top_p < 1.0), row_top_p, torch.inf
+            )
+            should_remove = cumulative_probabilities > limits.unsqueeze(1)
+            should_remove[:, 1:] = should_remove[:, :-1].clone()
+            should_remove[:, 0] = False
+            candidate_logits = candidate_logits.masked_fill(should_remove, -torch.inf)
+        else:
+            pass
+        sampled = candidate_ids.gather(
+            1, torch.multinomial(F.softmax(candidate_logits, dim=-1), 1)
+        )[:, 0]
+    else:
+        filtered_logits = filter_top_k_top_p(
+            rows / temperatures,
+            top_k=row_top_k,
+            top_p=row_top_p,
+            max_top_k=max_top_k,
+            has_top_p=has_top_p,
+        )
+        sampled = torch.multinomial(F.softmax(filtered_logits, dim=-1), 1)[:, 0]
     second_picks = torch.where(
-        floats[count : 2 * count] > 0,
-        rows.argmax(dim=-1),
-        torch.multinomial(F.softmax(filtered_logits, dim=-1), 1)[:, 0],
+        floats[count : 2 * count] > 0, rows.argmax(dim=-1), sampled
     )
     picks = torch.stack((first_picks, second_picks)).tolist()
     for position, (index, state) in enumerate(zip(active, states, strict=True)):
