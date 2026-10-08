@@ -1,0 +1,177 @@
+# SPDX-License-Identifier: Apache-2.0
+"""The batched duplex sampler keeps every session's rules while sampling all rows at once."""
+
+from __future__ import annotations
+
+from unittest.mock import Mock
+
+import pytest
+import torch
+
+from sglang_omni.models.minicpm_o.duplex_sampler import (
+    build_forbidden_token_index,
+    duplex_sample,
+    filter_top_k_top_p,
+)
+from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
+from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
+from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
+from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
+
+VOCAB = 128
+
+
+@pytest.fixture
+def special():
+    tokenizer = Mock(unk_token_id=0, bad_token_ids=[7, 8, 94])
+    tokenizer.convert_tokens_to_ids.side_effect = dict(
+        zip(REQUIRED_SPECIAL_TOKENS, range(100, 116))
+    ).__getitem__
+    return ThinkerAdapter(tokenizer, VOCAB).special
+
+
+def state(**overrides) -> MiniCPMOThinkerSessionState:
+    settings = {"greedy": True, "repetition_penalty": 1.0, **overrides}
+    return MiniCPMOThinkerSessionState(sampling=MiniCPMODuplexSampling(**settings))
+
+
+def sample(logits, units, special):
+    return duplex_sample(
+        logits,
+        units,
+        special_tokens=special,
+        forbidden_token_index=build_forbidden_token_index(
+            special, VOCAB, torch.device("cpu")
+        ),
+    )
+
+
+def test_batch_rows_follow_their_own_session_rules(special) -> None:
+    logits = torch.full((4, VOCAB), -10.0)
+    logits[0, 42] = 5.0
+    logits[1, special.chunk_eos] = 5.0
+    logits[1, 43] = 4.0
+    logits[2, 44] = 5.0
+    logits[3, 45] = 5.0
+    budget_spent = state(max_new_tokens_per_unit=3)
+    units = [
+        (state(), 1, False),
+        (state(), 1, False),
+        (state(), 0, True),
+        (budget_spent, 2, False),
+    ]
+    assert sample(logits, units, special) == [
+        42,
+        special.chunk_eos,
+        special.listen,
+        special.chunk_eos,
+    ]
+
+
+def test_forbidden_penalised_and_scaled_tokens_lose_to_competitors(special) -> None:
+    logits = torch.full((3, VOCAB), -10.0)
+    logits[0, 7] = 5.0
+    logits[0, 42] = 4.0
+    logits[1, 50] = 5.0
+    logits[1, 51] = 4.9
+    logits[2, special.listen] = 5.0
+    logits[2, 60] = 4.0
+    repeated = state(repetition_penalty=1.5)
+    repeated.generated_history.extend([50, 50])
+    quiet = state(listen_prob_scale=0.5)
+    units = [(state(), 1, False), (repeated, 1, False), (quiet, 1, False)]
+    assert sample(logits, units, special) == [42, 51, 60]
+    assert repeated.generated_history[-1] == 51
+
+
+def test_listen_mid_turn_becomes_tts_bos_and_turn_eos_ends_the_turn(special) -> None:
+    logits = torch.full((2, VOCAB), -10.0)
+    logits[0, special.listen] = 5.0
+    logits[1, special.turn_eos] = 5.0
+    speaking = state()
+    speaking.is_turn_ended = False
+    ending = state()
+    ending.is_turn_ended = False
+    assert sample(logits, [(speaking, 1, False), (ending, 1, False)], special) == [
+        special.tts_bos,
+        special.turn_eos,
+    ]
+    assert not speaking.is_turn_ended
+    assert ending.is_turn_ended
+
+
+def test_random_rows_sample_inside_their_top_k_and_top_p(special) -> None:
+    torch.manual_seed(0)
+    logits = torch.randn(3, VOCAB)
+    logits[:, 7] = 50.0
+    narrow = state(greedy=False, temperature=0.7, top_k=1, top_p=0.8)
+    wide = state(greedy=False, temperature=1.0, top_k=-1, top_p=1.0)
+    units = [(narrow, 1, False), (state(), 1, False), (wide, 1, False)]
+    picked = sample(logits.clone(), units, special)
+    allowed = logits.clone()
+    allowed[:, build_forbidden_token_index(special, VOCAB, torch.device("cpu"))] = (
+        -torch.inf
+    )
+    assert picked[0] == int(allowed[0].argmax())
+    assert picked[1] == int(allowed[1].argmax())
+    assert allowed[2, picked[2]] > -torch.inf
+
+
+def filter_rows(logits, settings):
+    top_k = [k for k, _ in settings]
+    top_p = [p for _, p in settings]
+    return filter_top_k_top_p(
+        logits,
+        top_k=torch.tensor(top_k),
+        top_p=torch.tensor(top_p),
+        max_top_k=max((k for k in top_k if 0 < k < VOCAB), default=0),
+        has_top_p=any(0.0 < p < 1.0 for p in top_p),
+    )
+
+
+def test_filter_top_k_top_p_matches_single_row_filtering() -> None:
+    torch.manual_seed(1)
+    logits = torch.randn(3, VOCAB)
+    settings = [(5, 1.0), (-1, 0.5), (20, 0.9)]
+    filtered = filter_rows(logits, settings)
+    for row, (top_k, top_p) in enumerate(settings):
+        expected = filter_rows(logits[row : row + 1], [(top_k, top_p)])[0]
+        torch.testing.assert_close(filtered[row], expected)
+        kept = int((filtered[row] > -torch.inf).sum())
+        assert kept <= (top_k if top_k > 0 else VOCAB)
+        assert kept >= 1
+
+
+def test_rows_ending_the_chunk_keep_their_history(special) -> None:
+    logits = torch.full((2, VOCAB), -10.0)
+    logits[0, special.chunk_eos] = 5.0
+    logits[1, 42] = 5.0
+    ended = state(repetition_penalty=1.5)
+    ended.generated_history.extend([30, 31])
+    speaking = state(repetition_penalty=1.5)
+    assert sample(logits, [(ended, 1, False), (speaking, 1, False)], special) == [
+        special.chunk_eos,
+        42,
+    ]
+    assert ended.generated_history == [30, 31]
+    assert speaking.generated_history == [42]
+
+
+def test_rows_with_top_k_sample_among_their_top_candidates(special) -> None:
+    torch.manual_seed(2)
+    logits = torch.randn(4, VOCAB)
+    # Control tokens never win, so every pick comes from the second stage unchanged.
+    logits[:, 100:116] = -50.0
+    rows = [
+        state(greedy=False, temperature=0.9, top_k=k, top_p=p)
+        for k, p in ((3, 1.0), (5, 0.6), (1, 0.8), (20, 0.95))
+    ]
+    for trial in range(20):
+        picked = sample(logits.clone(), [(row, 1, False) for row in rows], special)
+        allowed = logits.clone()
+        allowed[:, build_forbidden_token_index(special, VOCAB, torch.device("cpu"))] = (
+            -torch.inf
+        )
+        for row, (token_id, settings) in enumerate(zip(picked, rows)):
+            top = torch.topk(allowed[row], settings.sampling.top_k).indices.tolist()
+            assert token_id in top
