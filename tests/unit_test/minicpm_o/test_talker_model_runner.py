@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MiniCPM-o talker sampling on per-slot device history against the host window and SGLang's sampler."""
+"""MiniCPM-o talker sampling, offline and per duplex unit, on per-slot device history against the host window and SGLang's sampler."""
 
 from __future__ import annotations
 
@@ -20,6 +20,13 @@ from sglang_omni.models.minicpm_o.talker_model_runner import (
     MiniCPMOTalkerModelRunner,
     TalkerSlotState,
 )
+from sglang_omni.models.minicpm_o.talker_session import (
+    TALKER_TOKENS_PER_UNIT,
+    TalkerAdapter,
+)
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.scheduling.types import SchedulerRequest
 from tests.unit_test.fixtures.accelerator import require_cuda
 
 VOCAB_SIZE = 64
@@ -28,6 +35,11 @@ MIN_NEW_TOKENS = 5
 SEED = 7
 SLOT_COUNT = 12
 SUPPRESSED_ROW_AND_TOKEN = (1, 3)
+TEXT_VOCAB_SIZE = 16
+AUDIO_BOS_TOKEN_ID = TEXT_VOCAB_SIZE - 1
+HIDDEN_SIZE = 8
+UNIT_DURATION_MS = 1000.0
+DUPLEX_TALKER_PARAMS = {"talker_temperature": 0.8, "talker_repetition_penalty": 1.05}
 
 
 def make_talker_request(
@@ -263,6 +275,118 @@ def test_a_reused_slot_penalizes_only_its_own_request_window() -> None:
     state.reset(rows, [first], sampling_info, no_suppression)
     penalized, is_eos_open = read_penalized_tokens_and_eos()
     assert torch.equal(penalized, last_window) and is_eos_open
+
+
+def make_duplex_talker_model() -> SimpleNamespace:
+    return SimpleNamespace(
+        codec_eos_id=CODEC_EOS_ID,
+        num_audio_tokens=VOCAB_SIZE,
+        audio_bos_token_id=AUDIO_BOS_TOKEN_ID,
+        emb_text=torch.nn.Embedding(TEXT_VOCAB_SIZE, HIDDEN_SIZE),
+        projector_semantic=torch.nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE),
+        normalize_projected_hidden=True,
+    )
+
+
+def build_session_unit(
+    adapter: TalkerAdapter,
+    session_identity: SessionIdentity,
+    sequence: int,
+    is_end_of_turn: bool,
+) -> SchedulerRequest:
+    payload = StagePayload(
+        request_id=f"{session_identity.id}-unit-{sequence}",
+        request=OmniRequest(inputs=None, params=dict(DUPLEX_TALKER_PARAMS)),
+        data={
+            "talker_conditions": [(sequence, torch.randn(HIDDEN_SIZE), is_end_of_turn)],
+            "is_listen": False,
+            "end_of_turn": is_end_of_turn,
+        },
+    )
+    chunk = TimedChunk(
+        modality="audio",
+        t_start_ms=sequence * UNIT_DURATION_MS,
+        duration_ms=UNIT_DURATION_MS,
+        seq=sequence,
+        payload=None,
+    )
+    adapter.prepare_unit(session_identity, chunk, payload)
+    return SchedulerRequest(
+        request_id=payload.request_id,
+        data=adapter.build(session_identity, chunk, payload),
+    )
+
+
+def test_device_slots_end_a_duplex_unit_early_only_at_a_turn_start_or_end() -> None:
+    torch.manual_seed(0)
+    eos_logit = float("inf")
+    adapter = TalkerAdapter(make_duplex_talker_model())
+    mid_turn, turn_start, turn_end = (
+        SessionIdentity(id=name) for name in ("mid-turn", "turn-start", "turn-end")
+    )
+    for session_identity in (mid_turn, turn_start, turn_end):
+        adapter.open(session_identity, OmniRequest(inputs=None))
+    for session_identity in (mid_turn, turn_end):
+        first_unit = build_session_unit(
+            adapter, session_identity, 0, is_end_of_turn=False
+        )
+        adapter.result(session_identity, first_unit.data)
+    requests = [
+        build_session_unit(adapter, mid_turn, 1, is_end_of_turn=False),
+        build_session_unit(adapter, turn_start, 0, is_end_of_turn=False),
+        build_session_unit(adapter, turn_end, 1, is_end_of_turn=True),
+    ]
+    rows = torch.tensor([5, 0, 11])
+    runner = build_device_sampling_runner(
+        SimpleNamespace(
+            req_to_token_pool=SimpleNamespace(req_to_token=torch.zeros(SLOT_COUNT, 1)),
+            decode_cuda_graph_runner=None,
+            sample=lambda logits_output, forward_batch: (
+                logits_output.next_token_logits.argmax(dim=-1)
+            ),
+        ),
+        torch.device("cpu"),
+    )
+
+    active = list(range(len(requests)))
+    step = 0
+    while active:
+        batch_requests = [requests[index] for index in active]
+        logits = torch.randn(len(active), VOCAB_SIZE)
+        logits[:, CODEC_EOS_ID] = eos_logit
+        forward_batch = SimpleNamespace(
+            req_pool_indices=rows[active],
+            forward_mode=SimpleNamespace(is_extend=lambda first=step == 0: first),
+            sampling_info=build_batch_sampling_info(
+                [request.data.req.sampling_params for request in batch_requests],
+                torch.device("cpu"),
+            ),
+        )
+        next_token_ids = runner.sample_next_token_ids(
+            LogitsProcessorOutput(next_token_logits=logits, hidden_states=None),
+            forward_batch,
+            None,
+            batch_requests,
+        )
+        for request, token_id in zip(
+            batch_requests, next_token_ids.tolist(), strict=True
+        ):
+            request.data.req.output_ids.append(token_id)
+        active = [
+            index
+            for index in active
+            if requests[index].data.req.output_ids[-1] != CODEC_EOS_ID
+            and len(requests[index].data.req.output_ids) < TALKER_TOKENS_PER_UNIT
+        ]
+        step += 1
+
+    mid_turn_tokens, turn_start_tokens, turn_end_tokens = (
+        list(request.data.req.output_ids) for request in requests
+    )
+    assert len(mid_turn_tokens) == TALKER_TOKENS_PER_UNIT, "a mid-turn unit is full"
+    assert CODEC_EOS_ID not in mid_turn_tokens, "a mid-turn unit never samples EOS"
+    assert turn_start_tokens == [CODEC_EOS_ID], "a turn's first unit may end at once"
+    assert turn_end_tokens == [CODEC_EOS_ID], "a turn's last unit may end at once"
 
 
 @pytest.mark.accelerator
