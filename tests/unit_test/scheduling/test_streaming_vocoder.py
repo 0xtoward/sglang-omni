@@ -11,6 +11,8 @@ coalesced stepping, and subclass-named error propagation.
 from __future__ import annotations
 
 import queue
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import EllipsisType, SimpleNamespace
 from typing import Any
@@ -751,3 +753,49 @@ def test_stream_chunk_rejects_non_bool_stream_flag() -> None:
     scheduler = FakeStreamingVocoder(threshold=10)
     with pytest.raises(RuntimeError, match=r"bool metadata\['stream'\]"):
         scheduler.ingest_stream_item("r", item([1], {"stream": "yes"}))
+
+
+@pytest.mark.parametrize("warmup_fails", [False, True])
+def test_start_times_warmup_and_preserves_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    warmup_fails: bool,
+) -> None:
+    events: list[str] = []
+    scheduler = FakeStreamingVocoder()
+
+    @contextmanager
+    def phase(name: str, *, report_compilation: bool, stage: str) -> Iterator[None]:
+        assert name == "scheduler.warmup"
+        assert report_compilation
+        assert stage == "codec"
+        events.append("warmup:begin")
+        try:
+            yield
+        finally:
+            events.append("warmup:end")
+
+    def warmup() -> None:
+        events.append("warmup")
+        if warmup_fails:
+            raise ValueError("warmup failed")
+        else:
+            pass
+
+    monkeypatch.setattr(streaming_vocoder, "startup_phase", phase)
+    monkeypatch.setattr(streaming_vocoder, "get_active_stage", lambda: "codec")
+    monkeypatch.setattr(scheduler, "on_serving_start", warmup)
+    monkeypatch.setattr(
+        scheduler, "shutdown_stream_states", lambda: events.append("cleanup")
+    )
+    monkeypatch.setattr(
+        streaming_vocoder.StreamingSimpleScheduler,
+        "start",
+        lambda self: events.append("serve"),
+    )
+    if warmup_fails:
+        with pytest.raises(ValueError, match="warmup failed"):
+            scheduler.start()
+        assert events == ["warmup:begin", "warmup", "warmup:end", "cleanup"]
+    else:
+        scheduler.start()
+        assert events == ["warmup:begin", "warmup", "warmup:end", "serve", "cleanup"]
