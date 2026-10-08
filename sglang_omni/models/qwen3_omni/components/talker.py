@@ -37,6 +37,7 @@ from sglang_omni.sampling.seed import (
 )
 from sglang_omni.utils.predictor_layers import (
     add_rmsnorm_rounded,
+    codebook_step,
     resolve_fused_predictor_layers,
     supports_exact_add_rmsnorm,
 )
@@ -1708,13 +1709,26 @@ class Qwen3OmniTalker(nn.Module):
 
             for layer_idx in range(num_groups - 1):
                 logits, _ = self.code_predictor.lm_head[layer_idx](last_hidden)
-                next_code = self.sample_code_predictor_token(logits)
-                pos_codes[:, layer_idx + 1].copy_(next_code[:, 0])
-
-                new_embed = self.code_predictor.model.codec_embedding[layer_idx](
-                    next_code
-                ).to(dtype=predictor_input.dtype)
-                pos_summed.add_(new_embed[:, 0, :])
+                codebook_embedding = self.code_predictor.model.codec_embedding[
+                    layer_idx
+                ]
+                # note (ratish): the codebook step runs where the fused layers do, on CUDA
+                # with Triton; the checkpoint's bf16 tables are 2048 by 1024, the
+                # power-of-two widths it needs.
+                if self.predictor_fused_layers is not None:
+                    new_embed = codebook_step(
+                        logits[:, -1, :],
+                        codebook_embedding.weight,
+                        pos_codes[:, layer_idx + 1],
+                        pos_summed,
+                    )
+                else:
+                    next_code = self.sample_code_predictor_token(logits)
+                    pos_codes[:, layer_idx + 1].copy_(next_code[:, 0])
+                    new_embed = codebook_embedding(next_code).to(
+                        dtype=predictor_input.dtype
+                    )
+                    pos_summed.add_(new_embed[:, 0, :])
                 if layer_idx < num_groups - 2:
                     last_hidden = self.predictor_forward_tokens(
                         token_embeds=new_embed,
