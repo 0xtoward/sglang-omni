@@ -10,12 +10,12 @@ import torch
 
 from sglang_omni.model_runner.base import rank_shared_unseeded_sampling_seed
 from sglang_omni.models.minicpm_o import talker_model_runner
-from sglang_omni.platforms import current_platform
 from sglang_omni.models.minicpm_o.talker_model_runner import (
     MiniCPMOTalkerModelRunner,
     TalkerSampleGraphs,
     TalkerSlotState,
 )
+from sglang_omni.platforms import current_platform
 
 VOCAB = 64
 EOS_ID = VOCAB - 1
