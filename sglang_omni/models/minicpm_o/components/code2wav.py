@@ -29,6 +29,8 @@ OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
 SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
 FLOW_WARMUP_TOKENS = 32
+# note (0xtoward): Conformer attention allocates dense, quadratic intermediates before DiT.
+FLOW_BATCH_TOKEN_SQUARE_BUDGET = 16 * 512 * 512
 
 
 class MiniCPMOCode2Wav(nn.Module):
@@ -406,9 +408,40 @@ class MiniCPMOCode2Wav(nn.Module):
             pass
 
         speaker_prompts = self.prepare_references(references)
+        combined_lengths = [
+            len(tokens) + prompt.prompt_tokens.shape[1]
+            for tokens, prompt in zip(token_sequences, speaker_prompts, strict=True)
+        ]
         device_module = torch.get_device_module(self.token2wav.device)
         with device_module.stream(self.decode_stream):
-            return self.decode_waveforms(token_sequences, speaker_prompts)
+            if (
+                len(token_sequences) * max(combined_lengths) ** 2
+                <= FLOW_BATCH_TOKEN_SQUARE_BUDGET
+            ):
+                return self.decode_waveforms(token_sequences, speaker_prompts)
+            else:
+                pass
+
+            groups: list[list[int]] = []
+            for index in sorted(
+                range(len(combined_lengths)), key=combined_lengths.__getitem__
+            ):
+                if (
+                    groups
+                    and (len(groups[-1]) + 1) * combined_lengths[index] ** 2
+                    <= FLOW_BATCH_TOKEN_SQUARE_BUDGET
+                ):
+                    groups[-1].append(index)
+                else:
+                    groups.append([index])
+            waveforms: dict[int, np.ndarray] = {}
+            for group in groups:
+                decoded = self.decode_waveforms(
+                    [token_sequences[index] for index in group],
+                    [speaker_prompts[index] for index in group],
+                )
+                waveforms.update(zip(group, decoded, strict=True))
+            return [waveforms[index] for index in range(len(token_sequences))]
 
     def decode_waveforms(
         self,
