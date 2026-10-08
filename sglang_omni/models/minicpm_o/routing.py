@@ -117,6 +117,35 @@ def resolve_thinker_wait_sources(
     ]
 
 
+def resolve_speech_preprocessing_next_stages(
+    request_id: str, output: StagePayload
+) -> list[str]:
+    stages = resolve_preprocessing_next_stages(request_id, output)
+    if (
+        should_generate_audio_output(output)
+        and code2wav_reference_audio(output) is not None
+    ):
+        stages.append("reference")
+    else:
+        pass
+    return stages
+
+
+def project_preprocessing_to_reference(payload: StagePayload) -> StagePayload:
+    return payload_with_state(payload, MiniCPMOPipelineState())
+
+
+def resolve_code2wav_wait_sources(
+    request_id: str, from_stage: str, payload: StagePayload
+) -> list[str] | None:
+    if from_stage != TALKER_STAGE:
+        return None
+    elif code2wav_reference_audio(payload) is None:
+        return [TALKER_STAGE]
+    else:
+        return [TALKER_STAGE, "reference"]
+
+
 def project_preprocessing_to_image_encoder(payload: StagePayload) -> StagePayload:
     return project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
 

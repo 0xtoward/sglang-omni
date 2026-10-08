@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -21,17 +22,22 @@ from sglang_omni.models.minicpm_o.components.audio_encoder import MiniCPMOAudioE
 from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
 from sglang_omni.models.minicpm_o.components.image_encoder import MiniCPMOImageEncoder
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
+from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
+    SpeakerReferenceEncoder,
+)
 from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
 from sglang_omni.models.minicpm_o.merge import build_decode_result
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     build_sglang_server_args,
@@ -58,6 +64,32 @@ def create_preprocessing_executor(
 
 ENCODER_CACHE_MAX_ENTRIES = 64
 ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
+
+
+def create_reference_executor(
+    model_path: str, *, max_concurrency: int, cache_entries: int, cache_bytes: int
+) -> SimpleScheduler[StagePayload, StagePayload]:
+    encoder = SpeakerReferenceEncoder(
+        Path(resolve_model_path(model_path)) / "assets" / "token2wav"
+    )
+    service = ReferenceEncodeService(
+        encoder, max_items=cache_entries, max_bytes=cache_bytes
+    )
+
+    def prepare_reference(payload: StagePayload) -> StagePayload:
+        reference = code2wav_reference_audio(payload)
+        assert reference is not None
+        features = service.get_or_encode(reference)
+        state = MiniCPMOPipelineState(reference_features=features)
+        return StagePayload(
+            request_id=payload.request_id, request=payload.request, data=state.to_dict()
+        )
+
+    return SimpleScheduler(
+        prepare_reference,
+        max_concurrency=max_concurrency,
+        shutdown_callback=service.close,
+    )
 
 
 def create_encoder_executor(
@@ -286,7 +318,11 @@ def create_code2wav_executor(
             reference = code2wav_reference_audio(payload)
         except ValueError:
             return
-        model.prefetch_reference(payload.request_id, reference)
+        features = MiniCPMOPipelineState.from_dict(payload.data).reference_features
+        if features is None:
+            model.prefetch_reference(payload.request_id, reference)
+        else:
+            model.prefetch_reference(payload.request_id, reference, features=features)
 
     def vocode_and_release(payloads: list[StagePayload]) -> list[StagePayload]:
         try:
