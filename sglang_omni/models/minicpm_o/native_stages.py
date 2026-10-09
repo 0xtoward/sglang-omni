@@ -191,10 +191,9 @@ class PerceptionHooks(BatchedSessionHooks):
                         image_embeds=unit.image_embeds,
                     )
                 )
-        groups: dict[AudioBatchKey, list[PendingAudioUnit]] = defaultdict(list)
-        for unit in pending_units:
-            groups[unit.audio.batch_key()].append(unit)
-        for group in groups.values():
+        # debug: encode every session's chunk on its own to rule cross-session batching in or out
+        groups = [[unit] for unit in pending_units]
+        for group in groups:
             encoded = self.audio_encoder.forward_streaming_batch(
                 [unit.audio for unit in group]
             )
