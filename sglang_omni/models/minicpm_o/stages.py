@@ -30,6 +30,7 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
     operator_selected_prefill_backend,
     validate_generation_batch_policy,
@@ -327,6 +328,11 @@ def create_decode_executor(model_path: str) -> StreamingDetokenizeScheduler:
     )
 
 
+# note (0xtoward): short prefills are launch-bound and replay; longer ones are compute-bound,
+# where bucket padding costs more than the launches saved, so they run eager.
+THINKER_PREFILL_CUDA_GRAPH_MAX_TOKENS = 512
+
+
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
@@ -360,6 +366,9 @@ def create_sglang_thinker_executor_from_config(
         chunked_prefill_size=8192,
         sampling_backend="pytorch",
         cuda_graph_backend_prefill=prefill_graph_backend,
+        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(
+            THINKER_PREFILL_CUDA_GRAPH_MAX_TOKENS
+        ),
     )
     overrides.setdefault("trust_remote_code", False)
     overrides["tp_size"] = tp_size
