@@ -157,10 +157,17 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
         """Pair generated tokens with their next-step hidden states for the talker."""
         conditioned: list[tuple[DuplexUnitRequestData, int, bool]] = []
         hidden_states: list[torch.Tensor] = []
-        for scheduler_request in scheduler_output.requests:
+        batch_size = len(scheduler_output.requests)
+        for row, scheduler_request in enumerate(scheduler_output.requests):
             request_output = outputs[scheduler_request.request_id]
             data = scheduler_request.data
             sampled_token_id = int(request_output.data)
+            print(
+                f"UNIT_TOKEN sess={id(data.thinker_state) % 100000} rid={scheduler_request.request_id[-8:]} "
+                f"step={data.generation_steps} bs={batch_size} row={row} tok={sampled_token_id} "
+                f"piece={data.req.tokenizer.decode([sampled_token_id])!r}",
+                flush=True,
+            )
             special_tokens = self.resolve_special_tokens(data)
             pending_token_id = data.pending_unit_token
             if pending_token_id is not None and data.generation_steps >= 2:
