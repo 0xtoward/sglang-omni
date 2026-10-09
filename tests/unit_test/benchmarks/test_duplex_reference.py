@@ -144,6 +144,40 @@ def fake_nemo(monkeypatch):
     sys.modules["nemo.collections"].asr = sys.modules["nemo.collections.asr"]
 
 
+@pytest.mark.usefixtures("fake_nemo")
+def test_parakeet_disables_graphs_and_preserves_checkpoint_settings() -> None:
+    applied_decoding_configs: list[dict[str, JsonValue]] = []
+    model = types.SimpleNamespace(
+        cfg=types.SimpleNamespace(
+            decoding={
+                "strategy": "greedy_batch",
+                "model_type": "tdt",
+                "durations": [0, 1, 2, 3, 4],
+                "greedy": {"max_symbols": 10},
+            }
+        ),
+        change_decoding_strategy=applied_decoding_configs.append,
+        eval=lambda: None,
+    )
+    sys.modules["nemo.collections.asr"].models = types.SimpleNamespace(
+        ASRModel=types.SimpleNamespace(
+            restore_from=lambda restore_path, map_location: model
+        )
+    )
+
+    assert reference_asr.load_nemo_model(Path("checkpoint.nemo"), "cpu") is model
+
+    assert len(applied_decoding_configs) == 1
+    applied_decoding_config = applied_decoding_configs[0]
+    assert applied_decoding_config["strategy"] == "greedy_batch"
+    assert applied_decoding_config["model_type"] == "tdt"
+    assert applied_decoding_config["durations"] == [0, 1, 2, 3, 4]
+    assert applied_decoding_config["greedy"] == {
+        "max_symbols": 10,
+        "use_cuda_graph_decoder": False,
+    }
+
+
 def write_wav(path: Path, spans: list[tuple[float, float]]) -> None:
     audio = np.zeros(3 * SR, dtype=np.float32)
     for start_s, end_s in spans:
