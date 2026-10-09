@@ -87,6 +87,9 @@ class DllmScheduler:
         self.waiting_queue: list[Req] = []
         self.staging_queue: list[Req] = []
 
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.running = True
         self._event_loop()
@@ -143,7 +146,18 @@ class DllmScheduler:
                 pass
 
             if msg.type == "new_request":
-                req_data = self.request_builder(msg.data)
+                try:
+                    req_data = self.request_builder(msg.data)
+                except Exception as exc:
+                    logger.exception(
+                        f"DllmScheduler: request builder failed for {msg.request_id}"
+                    )
+                    self.outbox.put(
+                        OutgoingMessage(
+                            request_id=msg.request_id, type="error", data=exc
+                        )
+                    )
+                    continue
                 req = req_data.req
                 self.rid_to_req_data[req.rid] = req_data
                 self.waiting_queue.append(req)
