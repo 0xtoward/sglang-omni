@@ -23,7 +23,10 @@ from sglang_omni.config.runtime import (
 )
 from sglang_omni.models.minicpm_o import native_stages, stages
 from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
-from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
+from sglang_omni.models.minicpm_o.engine_builder import (
+    DUPLEX_PREFILL_CUDA_GRAPH_MAX_TOKENS,
+    MiniCPMOThinkerEngineBuilder,
+)
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.minicpm_o.native_config import (
     TALKER_CONTEXT_LENGTH,
@@ -442,3 +445,12 @@ def test_duplex_speech_settings_reach_the_vocoder(
     )
     runtime_kwargs = native_stages.MiniCPMOVocoderRuntime.call_args.kwargs
     assert runtime_kwargs["max_open_sessions"] == config.max_sessions
+
+
+def test_duplex_thinker_prefills_on_the_breakable_graph_up_to_its_cap() -> None:
+    defaults = MiniCPMOThinkerEngineBuilder().generation_defaults(dtype="bfloat16")
+    assert MiniCPMOThinkerEngineBuilder.supports_breakable_prefill_cuda_graph
+    assert defaults["cuda_graph_backend_prefill"] == "breakable"
+    assert (
+        max(defaults["cuda_graph_bs_prefill"]) == DUPLEX_PREFILL_CUDA_GRAPH_MAX_TOKENS
+    )
