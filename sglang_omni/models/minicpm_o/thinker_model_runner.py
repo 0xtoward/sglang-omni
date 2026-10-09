@@ -9,6 +9,10 @@ import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
 from sglang_omni.scheduling.types import (
@@ -71,6 +75,33 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             else get_server_return_hidden_states_mode()
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
+
+    def custom_prefill_forward(
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult | None:
+        """Hand every prefill its embeddings through the sidecar the prefill graph replays."""
+        if not schedule_batch.forward_mode.is_extend():
+            return None
+        else:
+            pass
+        omni_result = self.inject_multimodal_embeds(forward_batch, schedule_batch)
+        if omni_result is not None and omni_result[0] is not None:
+            input_embeds, deepstack_embeds, _ = omni_result
+            if deepstack_embeds is not None:
+                raise RuntimeError(
+                    "MiniCPM-o thinker prefill carries no deepstack embeddings"
+                )
+            else:
+                pass
+        else:
+            input_embeds = self.embed_tokens(forward_batch.input_ids)
+        attach_omni_prefill_inputs(
+            forward_batch, OmniPrefillInputs(input_embeds=input_embeds)
+        )
+        return None
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]

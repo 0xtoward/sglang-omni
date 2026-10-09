@@ -26,9 +26,12 @@ from sglang_omni.models.minicpm_o.merge import build_decode_result
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
     build_generation_batch_overrides,
+    operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -343,6 +346,10 @@ def create_sglang_thinker_executor_from_config(
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
     register_minicpm_o_hf_config()
+    if current_platform.is_cuda():
+        prefill_graph_backend = CudaGraphBackend.BREAKABLE
+    else:
+        prefill_graph_backend = CudaGraphBackend.DISABLED
     overrides = build_generation_batch_overrides(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
@@ -352,6 +359,7 @@ def create_sglang_thinker_executor_from_config(
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
         sampling_backend="pytorch",
+        cuda_graph_backend_prefill=prefill_graph_backend,
     )
     overrides.setdefault("trust_remote_code", False)
     overrides["tp_size"] = tp_size
@@ -381,6 +389,9 @@ def create_sglang_thinker_executor_from_config(
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         speech_enabled=speech_enabled,
+        operator_selected_prefill_backend=operator_selected_prefill_backend(
+            server_args_overrides
+        ),
     )
     logger.info(
         f"sglang_ar_started stage=thinker gpu_id={gpu_id} "
