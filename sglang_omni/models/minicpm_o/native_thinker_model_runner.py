@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.schedule_batch import ScheduleBatch
@@ -14,12 +16,14 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.models.minicpm_o.duplex_sample_graphs import DuplexSampleGraphs
 from sglang_omni.models.minicpm_o.duplex_sampler import (
     DuplexSamplerState,
     DuplexUnitStart,
     build_forbidden_token_index,
     to_device,
 )
+from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
 from sglang_omni.models.minicpm_o.special_tokens import (
     MiniCPMOSpecialTokenIds,
     resolve_special_token_ids,
@@ -28,6 +32,7 @@ from sglang_omni.models.minicpm_o.thinker_model_runner import (
     MiniCPMOThinkerModelRunner as OfflineThinkerModelRunner,
 )
 from sglang_omni.models.minicpm_o.thinker_state import DuplexUnitRequestData
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import session_prefill_rows
 from sglang_omni.scheduling.types import (
@@ -35,6 +40,8 @@ from sglang_omni.scheduling.types import (
     SchedulerOutput,
     SchedulerRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
@@ -48,6 +55,7 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
         self.special_tokens: MiniCPMOSpecialTokenIds | None = None
         self.forbidden_token_index: torch.Tensor | None = None
         self.sampler_state: DuplexSamplerState | None = None
+        self.sample_graphs: DuplexSampleGraphs | None = None
 
     def custom_prefill_forward(
         self,
@@ -70,6 +78,59 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
             OmniPrefillInputs(input_embeds=torch.cat(rows, dim=0)),
         )
         return None
+
+    @torch.no_grad()
+    def capture_sample_graphs(self, special_tokens: MiniCPMOSpecialTokenIds) -> None:
+        """Allocate every session's sampler state and record its graphs before serving.
+
+        Without the graphs the sampler state still samples on the device, eagerly.
+        """
+        model_runner = self.tp_worker.model_runner
+        vocab_size = model_runner.model_config.vocab_size
+        defaults = MiniCPMODuplexSampling()
+        self.special_tokens = special_tokens
+        self.forbidden_token_index = build_forbidden_token_index(
+            special_tokens, vocab_size, self.device
+        )
+        self.sampler_state = DuplexSamplerState.allocate(
+            model_runner.req_to_token_pool.size,
+            defaults.repetition_window_size,
+            vocab_size,
+            self.device,
+        )
+        decode_graphs = model_runner.decode_cuda_graph_runner
+        backend = current_platform.get_device_graph_backend(self.device)
+        if backend is None:
+            reason = f"{self.device.type} records no model-owned graph"
+        elif decode_graphs is None:
+            reason = (
+                "the decode CUDA graphs this deployment would share were not captured"
+            )
+        else:
+            reason = None
+        if reason is not None:
+            logger.info(f"MiniCPM-o duplex thinker samples eagerly: {reason}")
+            return
+        else:
+            pass
+        try:
+            self.sample_graphs = DuplexSampleGraphs(
+                self.sampler_state,
+                [int(batch_size) for batch_size in decode_graphs.capture_bs],
+                defaults.top_k,
+                special_tokens=special_tokens,
+                forbidden_token_index=self.forbidden_token_index,
+                backend=backend,
+            )
+        except Exception:
+            logger.exception(
+                "MiniCPM-o duplex thinker sampling graph capture failed; sampling eagerly"
+            )
+            return
+        logger.info(
+            "MiniCPM-o duplex thinker captured sampling graphs for batch sizes "
+            f"{self.sample_graphs.batch_sizes}"
+        )
 
     def sample_before_post_prefill(
         self,
@@ -111,52 +172,47 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         logits = logits_output.next_token_logits[: len(requests)]
-        vocab_size = logits.shape[-1]
+        assert logits.shape[-1] == self.sampler_state.vocab
         special_tokens = self.resolve_special_tokens(requests[0].data)
-        if self.forbidden_token_index is None:
-            self.forbidden_token_index = build_forbidden_token_index(
-                special_tokens, vocab_size, logits.device
-            )
-        else:
-            pass
         states = [request.data.thinker_state for request in requests]
         samplings = [state.sampling for state in states]
         window = max(sampling.repetition_window_size for sampling in samplings)
-        if self.sampler_state is None:
-            self.sampler_state = DuplexSamplerState.allocate(
-                self.tp_worker.model_runner.req_to_token_pool.size,
-                window,
-                vocab_size,
-                logits.device,
-            )
-        else:
+        if window > self.sampler_state.history.shape[1]:
             self.sampler_state.widen_history(window)
+            # note (0xtoward): the graphs read the history buffer they were captured with.
+            self.sample_graphs = None
+        else:
+            pass
         if forward_batch.forward_mode.is_extend():
             self.sampler_state.start_units(
                 [
                     DuplexUnitStart(
-                        sampling_slot=request.data.thinker_state.sampling_slot,
-                        sampling=request.data.thinker_state.sampling,
-                        is_new_session=request.data.thinker_state.is_sampling_slot_fresh,
+                        sampling_slot=state.sampling_slot,
+                        sampling=state.sampling,
+                        is_new_session=state.is_sampling_slot_fresh,
                         generation_steps=request.data.generation_steps,
                         is_listen_forced=request.data.is_listen_forced,
                     )
-                    for request in requests
+                    for request, state in zip(requests, states, strict=True)
                 ]
             )
             for state in states:
                 state.is_sampling_slot_fresh = False
         else:
             pass
-        token_ids = self.sampler_state.sample(
-            logits,
-            to_device(
-                [state.sampling_slot for state in states], torch.long, logits.device
-            ),
-            samplings,
-            special_tokens=special_tokens,
-            forbidden_token_index=self.forbidden_token_index,
+        slots = to_device(
+            [state.sampling_slot for state in states], torch.long, logits.device
         )
+        if self.sample_graphs is not None and self.sample_graphs.fits(samplings):
+            token_ids = self.sample_graphs.sample(logits, slots)
+        else:
+            token_ids = self.sampler_state.sample(
+                logits,
+                slots,
+                samplings,
+                special_tokens=special_tokens,
+                forbidden_token_index=self.forbidden_token_index,
+            )
         for request in requests:
             data = request.data
             if data.is_listen_forced and data.generation_steps == 0:

@@ -93,7 +93,8 @@ class DuplexSamplerState:
     """Every session's duplex sampler state, one device row per session sampling slot.
 
     history keeps a session's recent second-stage picks right-aligned, oldest first; the
-    value vocab marks an empty position. Unit counters restart with each unit.
+    value vocab marks an empty position. Unit counters restart with each unit. Row spare
+    takes the padded rows of a sample graph.
     """
 
     history: torch.Tensor
@@ -111,11 +112,14 @@ class DuplexSamplerState:
     repetition_penalties: torch.Tensor
     listen_scales: torch.Tensor
     vocab: int
+    spare: int
 
     @classmethod
     def allocate(
         cls, slots: int, window: int, vocab: int, device: torch.device
     ) -> DuplexSamplerState:
+        spare = slots
+        slots += 1
         return cls(
             history=torch.full((slots, window), vocab, dtype=torch.long, device=device),
             window_sizes=torch.ones(slots, dtype=torch.long, device=device),
@@ -127,27 +131,22 @@ class DuplexSamplerState:
             is_greedy=torch.zeros(slots, dtype=torch.bool, device=device),
             is_second_stage_greedy=torch.zeros(slots, dtype=torch.bool, device=device),
             temperatures=torch.ones(slots, dtype=torch.float32, device=device),
-            top_ks=torch.full((slots,), -1, dtype=torch.long, device=device),
+            top_ks=torch.ones(slots, dtype=torch.long, device=device),
             top_ps=torch.ones(slots, dtype=torch.float32, device=device),
             repetition_penalties=torch.ones(slots, dtype=torch.float32, device=device),
             listen_scales=torch.ones(slots, dtype=torch.float32, device=device),
             vocab=vocab,
+            spare=spare,
         )
 
     def widen_history(self, window: int) -> None:
-        """Keep every session's history when a session asks for a longer window."""
+        """Keep every session's history in a new buffer for a session's longer window."""
         slots, current_window = self.history.shape
-        if window > current_window:
-            history = torch.full(
-                (slots, window),
-                self.vocab,
-                dtype=torch.long,
-                device=self.history.device,
-            )
-            history[:, window - current_window :] = self.history
-            self.history = history
-        else:
-            pass
+        history = torch.full(
+            (slots, window), self.vocab, dtype=torch.long, device=self.history.device
+        )
+        history[:, window - current_window :] = self.history
+        self.history = history
 
     def start_units(self, units: list[DuplexUnitStart]) -> None:
         """Restart the unit counters, and clear the rows of sessions that just opened."""
@@ -229,18 +228,38 @@ class DuplexSamplerState:
 
         samplings are the rows' session settings; their host copy fixes the draw's shapes.
         """
-        rows = logits.float()
-        count, vocab_size = rows.shape
         row_top_ks = [sampling.top_k for sampling in samplings]
-        max_top_k = max((k for k in row_top_ks if 0 < k < vocab_size), default=0)
-        has_top_p = any(0.0 < sampling.top_p < 1.0 for sampling in samplings)
+        return self.draw(
+            logits,
+            slots,
+            max_top_k=max((k for k in row_top_ks if 0 < k < self.vocab), default=0),
+            has_top_p=any(0.0 < sampling.top_p < 1.0 for sampling in samplings),
+            is_top_k_everywhere=all(0 < k < self.vocab for k in row_top_ks),
+            special_tokens=special_tokens,
+            forbidden_token_index=forbidden_token_index,
+        )
+
+    def draw(
+        self,
+        logits: torch.Tensor,
+        slots: torch.Tensor,
+        *,
+        max_top_k: int,
+        has_top_p: bool,
+        is_top_k_everywhere: bool,
+        special_tokens: MiniCPMOSpecialTokenIds,
+        forbidden_token_index: torch.Tensor,
+    ) -> torch.Tensor:
+        """The device side of sample: no host read, so a graph can record it."""
+        rows = logits.float()
+        count = rows.shape[0]
         # note (Junnan Li): The first sample must use the unscaled model distribution.
         first_picks = torch.where(
             self.is_greedy[slots],
             rows.argmax(dim=-1),
             torch.multinomial(F.softmax(rows, dim=-1), 1)[:, 0],
         )
-        rows[:, forbidden_token_index] = -torch.inf
+        rows.index_fill_(1, forbidden_token_index, -torch.inf)
         history = self.history[slots]
         window = history.shape[1]
         is_in_window = torch.arange(window, device=rows.device).unsqueeze(0) >= (
@@ -260,7 +279,7 @@ class DuplexSamplerState:
         temperatures = self.temperatures[slots].unsqueeze(1)
         top_ks = self.top_ks[slots]
         top_ps = self.top_ps[slots]
-        if all(0 < k < vocab_size for k in row_top_ks):
+        if is_top_k_everywhere:
             # note (0xtoward): every row keeps at most its top-k, so top-p and the draw only need the top-k candidates.
             candidate_logits, candidate_ids = torch.topk(
                 rows / temperatures, max_top_k, dim=-1

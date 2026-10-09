@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o.duplex_sample_graphs import DuplexSampleGraphs
 from sglang_omni.models.minicpm_o.duplex_sampler import (
     DuplexSamplerState,
     DuplexUnitStart,
@@ -24,6 +25,7 @@ from sglang_omni.models.minicpm_o.special_tokens import (
     REQUIRED_SPECIAL_TOKENS,
     MiniCPMOSpecialTokenIds,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
@@ -308,3 +310,51 @@ def test_talker_conditions_keep_each_step_hidden_state_until_the_unit_ends(
         (44, False),
     ]
     assert [float(hidden[0]) for _, hidden, _ in data.talker_conditions] == [2.0, 3.0]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="sampling graphs need CUDA")
+def test_sample_graphs_draw_what_the_eager_sampler_draws(special) -> None:
+    device = torch.device("cuda")
+    samplings = [
+        sampling(repetition_penalty=1.5),
+        sampling(listen_prob_scale=0.5, top_k=5),
+        sampling(),
+    ]
+    forbidden_token_index = build_forbidden_token_index(special, VOCAB, device)
+    eager_state, graph_state = (
+        DuplexSamplerState.allocate(4, 512, VOCAB, device) for _ in range(2)
+    )
+    for state in (eager_state, graph_state):
+        state.start_units(
+            [
+                DuplexUnitStart(
+                    sampling_slot=slot,
+                    sampling=samplings[slot],
+                    is_new_session=True,
+                    generation_steps=1,
+                    is_listen_forced=False,
+                )
+                for slot in range(3)
+            ]
+        )
+    graphs = DuplexSampleGraphs(
+        graph_state,
+        [1, 2, 4],
+        20,
+        special_tokens=special,
+        forbidden_token_index=forbidden_token_index,
+        backend=current_platform.get_device_graph_backend(device),
+    )
+    generator = torch.Generator().manual_seed(3)
+    slots = torch.tensor([0, 1, 2], device=device)
+    for step in range(6):
+        logits = torch.randn(3, VOCAB, generator=generator).to(device)
+        logits[:, 100:116] -= 4.0
+        eager = eager_state.sample(
+            logits,
+            slots,
+            samplings,
+            special_tokens=special,
+            forbidden_token_index=forbidden_token_index,
+        )
+        assert graphs.sample(logits, slots).tolist() == eager.tolist()

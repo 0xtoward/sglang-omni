@@ -79,7 +79,7 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
         model_config: ModelConfig,
     ) -> tuple[OmniScheduler, MiniCPMOThinkerModelRunner]:
         output_proc = SGLangOutputProcessor(capture_hidden=True)
-        return super().build_runtime(
+        scheduler, model_runner = super().build_runtime(
             model_worker=model_worker,
             model=model,
             output_proc=output_proc,
@@ -89,3 +89,5 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
             server_args=server_args,
             model_config=model_config,
         )
+        model_runner.capture_sample_graphs(self.adapter.special)
+        return scheduler, model_runner
