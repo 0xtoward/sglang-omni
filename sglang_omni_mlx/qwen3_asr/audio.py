@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import enum
 import struct
 
@@ -21,6 +23,11 @@ LOG_MEL_DYNAMIC_RANGE = 8.0
 WAV_FORMAT_PCM = 1
 WAV_FORMAT_FLOAT = 3
 PCM16_FULL_SCALE = 32768.0
+
+
+LIBM = ctypes.CDLL(ctypes.util.find_library("m"))
+LIBM.cosf.restype = ctypes.c_float
+LIBM.cosf.argtypes = [ctypes.c_float]
 
 
 class AudioLayout(enum.Enum):
@@ -122,14 +129,21 @@ def slaney_mel_filter_bank() -> np.ndarray:
 
 
 def periodic_hann_window() -> np.ndarray:
+    """Periodic Hann window in float32 with the C library's cosf and Swift's pi.
+
+    Voxt's Swift front end and the native runtime both call cosf; numpy's
+    vectorized float32 cos differs from it in the last bit for some inputs.
+    Swift's Float.pi is pi rounded toward zero, one step below float32(pi).
+    """
     denominator = np.float32(FFT_SIZE)
+    pi = np.nextafter(np.float32(np.pi), np.float32(0.0))
     return np.array(
         [
             np.float32(0.5)
             * (
                 np.float32(1.0)
-                - np.cos(
-                    np.float32(2.0) * np.float32(np.pi) * np.float32(n) / denominator
+                - np.float32(
+                    LIBM.cosf(np.float32(2.0) * pi * np.float32(n) / denominator)
                 )
             )
             for n in range(FFT_SIZE)
