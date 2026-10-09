@@ -314,7 +314,7 @@ def test_shutdown_reports_stopped() -> None:
     assert running.process.wait(timeout=10) == 0
 
 
-def test_only_qwen3_asr_is_served() -> None:
+def test_unknown_model_kinds_are_rejected() -> None:
     completed = subprocess.run(
         [
             str(Path(RUNTIME_BIN) / "qwen3_asr_server"),

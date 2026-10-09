@@ -40,5 +40,12 @@
       "tokenizer_config.json": "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c",
       "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
     }
+  },
+  "mlx-community/silero-vad-v6": {
+    "revision": "2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06",
+    "files": {
+      "config.json": "9fe1befb9692a0d4135adadc33f8075ef6d350bd2391b88d750f2c233f97fa0b",
+      "model.safetensors": "65b6c5f0293cbc44d109e58bef78b474d9c65dedbee814cf0b90ef5f0d9150ff"
+    }
   }
 }

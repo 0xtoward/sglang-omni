@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Native Qwen3-ASR server with the API of sglang_omni_mlx.qwen3_asr.server.
+// Native MLX server for Voxt: one model per process (qwen3_asr or silero_vad).
 // --supervised speaks Voxt's supervisor protocol: "ready" or "failed" once
 // serving, "stopped" after a shutdown command; end of stdin also stops it.
 #include <signal.h>
@@ -10,6 +10,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <limits>
@@ -21,55 +22,39 @@
 
 #include "civetweb.h"
 #include "form.h"
+#include "http.h"
 #include "nlohmann/json.hpp"
 #include "realtime.h"
+#include "vad_service.h"
 #include "worker.h"
 
 namespace {
 
 namespace mx = mlx::core;
+using omni_server::BadRequest;
+using omni_server::Field;
+using omni_server::Json;
+using omni_server::ReadBody;
+using omni_server::WriteJson;
 using qwen3_asr::AudioLayout;
 using qwen3_asr::TranscriptionOptions;
 using qwen3_asr::TranscriptionResult;
 using qwen3_asr::TranscriptionWorker;
-using Json = nlohmann::ordered_json;
 
 constexpr auto kHeartbeatInterval = std::chrono::milliseconds(250);
 
 struct ServerState {
+  // Note (Jiaxin Deng): set for qwen3_asr only.
   TranscriptionWorker *worker = nullptr;
   std::string model_name;
   qwen3_asr::RealtimeSettings realtime;
+  std::function<std::map<std::string, int>()> request_states;
 };
-
-void WriteResponse(mg_connection *connection, int status,
-                   const std::string &reason, const std::string &content_type,
-                   const std::string &body) {
-  mg_printf(connection,
-            "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: "
-            "%zu\r\nConnection: close\r\n\r\n",
-            status, reason.c_str(), content_type.c_str(), body.size());
-  mg_write(connection, body.data(), body.size());
-}
-
-int WriteJson(mg_connection *connection, int status, const Json &body) {
-  WriteResponse(connection, status,
-                status == 200   ? "OK"
-                : status == 400 ? "Bad Request"
-                : status == 405 ? "Method Not Allowed"
-                                : "Internal Server Error",
-                "application/json", body.dump());
-  return status;
-}
-
-int BadRequest(mg_connection *connection, const std::string &detail) {
-  return WriteJson(connection, 400, {{"detail", detail}});
-}
 
 int HandleHealth(mg_connection *connection, void *data) {
   const auto *state = static_cast<ServerState *>(data);
   Json states = Json::object();
-  for (const auto &[name, count] : state->worker->RequestStates())
+  for (const auto &[name, count] : state->request_states())
     states[name] = count;
   return WriteJson(
       connection, 200,
@@ -82,27 +67,6 @@ int HandleModels(mg_connection *connection, void *data) {
                    {{"object", "list"},
                     {"data", Json::array({{{"id", state->model_name},
                                            {"object", "model"}}})}});
-}
-
-std::string ReadBody(mg_connection *connection) {
-  std::string body;
-  char buffer[65536];
-  int read = 0;
-  while ((read = mg_read(connection, buffer, sizeof(buffer))) > 0) {
-    body.append(buffer, static_cast<size_t>(read));
-  }
-  return body;
-}
-
-std::optional<std::string>
-Field(const std::map<std::string, qwen3_asr::FormField> &form,
-      const std::string &name) {
-  const auto found = form.find(name);
-  if (found == form.end()) {
-    return std::nullopt;
-  } else {
-    return found->second.value;
-  }
 }
 
 Json DoneEvent(const TranscriptionResult &result,
@@ -135,8 +99,7 @@ bool WriteSse(mg_connection *connection, const std::string &payload) {
 
 int HandleTranscriptions(mg_connection *connection, void *data) {
   const auto *state = static_cast<ServerState *>(data);
-  const mg_request_info *request = mg_get_request_info(connection);
-  if (std::strcmp(request->request_method, "POST") != 0) {
+  if (!omni_server::IsPost(connection)) {
     return WriteJson(connection, 405, {{"detail", "Method Not Allowed"}});
   } else {
   }
@@ -332,6 +295,7 @@ void Emit(const Json &event) {
 }
 
 struct Arguments {
+  std::string model_kind = "qwen3_asr";
   std::string model_path;
   std::string model_name;
   std::string host = "127.0.0.1";
@@ -344,7 +308,6 @@ struct Arguments {
 
 Arguments ParseArguments(int argc, char **argv) {
   Arguments arguments;
-  std::string model_kind = "qwen3_asr";
   for (int i = 1; i < argc; ++i) {
     const std::string flag = argv[i];
     const auto value = [&]() -> std::string {
@@ -369,7 +332,7 @@ Arguments ParseArguments(int argc, char **argv) {
     } else if (flag == "--supervised") {
       arguments.supervised = true;
     } else if (flag == "--model-kind") {
-      model_kind = value();
+      arguments.model_kind = value();
     } else if (flag == "--startup-timeout-s") {
       value(); // Note (Jiaxin Deng): Voxt passes it; unused here.
     } else {
@@ -378,8 +341,9 @@ Arguments ParseArguments(int argc, char **argv) {
   }
   const double max_segment_samples =
       arguments.max_segment_seconds * qwen3_asr::kSampleRate;
-  if (model_kind != "qwen3_asr") {
-    throw std::invalid_argument("only --model-kind qwen3_asr is served");
+  if (arguments.model_kind != "qwen3_asr" &&
+      arguments.model_kind != "silero_vad") {
+    throw std::invalid_argument("--model-kind must be qwen3_asr or silero_vad");
   } else if (arguments.model_path.empty()) {
     throw std::invalid_argument("--model-path is required");
   } else if (arguments.decode_interval_ms <= 0) {
@@ -393,7 +357,7 @@ Arguments ParseArguments(int argc, char **argv) {
   } else {
   }
   if (arguments.model_name.empty()) {
-    arguments.model_name = "voxt-qwen3_asr-" + RandomHex(12);
+    arguments.model_name = "voxt-" + arguments.model_kind + "-" + RandomHex(12);
   } else {
   }
   return arguments;
@@ -472,10 +436,15 @@ int main(int argc, char **argv) {
   // server holds only the model.
   mx::set_cache_limit(0);
   std::unique_ptr<TranscriptionWorker> worker;
+  std::unique_ptr<silero_vad::VADService> vad;
   std::atomic<bool> loaded(false);
   std::thread loader([&]() {
     try {
-      worker = std::make_unique<TranscriptionWorker>(arguments.model_path);
+      if (arguments.model_kind == "silero_vad") {
+        vad = std::make_unique<silero_vad::VADService>(arguments.model_path);
+      } else {
+        worker = std::make_unique<TranscriptionWorker>(arguments.model_path);
+      }
       loaded.store(true);
     } catch (const std::exception &error) {
       if (arguments.supervised) {
@@ -505,17 +474,21 @@ int main(int argc, char **argv) {
   }
   loader.join();
 
-  ServerState state{worker.get(), arguments.model_name,
-                    qwen3_asr::MakeRealtimeSettings(
-                        arguments.decode_interval_ms, arguments.first_decode_ms,
-                        arguments.max_segment_seconds)};
+  ServerState state{
+      worker.get(), arguments.model_name,
+      qwen3_asr::MakeRealtimeSettings(arguments.decode_interval_ms,
+                                      arguments.first_decode_ms,
+                                      arguments.max_segment_seconds),
+      [&]() { return vad ? vad->RequestStates() : worker->RequestStates(); }};
   mg_init_library(0);
   const std::string listening =
       arguments.host + ":" + std::to_string(arguments.port);
+  // Note (Jiaxin Deng): each open WebSocket keeps a civetweb worker thread
+  // and Voxt opens a VAD stream per stream ID: allow far more than it uses.
   const char *options[] = {"listening_ports",
                            listening.c_str(),
                            "num_threads",
-                           "16",
+                           "64",
                            "request_timeout_ms",
                            "3600000",
                            "websocket_timeout_ms",
@@ -539,10 +512,14 @@ int main(int argc, char **argv) {
       arguments.host + ":" + std::to_string(server_port.port);
   mg_set_request_handler(context, "/health$", HandleHealth, &state);
   mg_set_request_handler(context, "/v1/models$", HandleModels, &state);
-  mg_set_request_handler(context, "/v1/audio/transcriptions$",
-                         HandleTranscriptions, &state);
-  mg_set_websocket_handler(context, "/v1/realtime", nullptr, SocketReady,
-                           SocketData, SocketClosed, &state);
+  if (vad) {
+    vad->Register(context);
+  } else {
+    mg_set_request_handler(context, "/v1/audio/transcriptions$",
+                           HandleTranscriptions, &state);
+    mg_set_websocket_handler(context, "/v1/realtime", nullptr, SocketReady,
+                             SocketData, SocketClosed, &state);
+  }
   const double startup_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
           .count();
@@ -561,7 +538,10 @@ int main(int argc, char **argv) {
   const std::string reason = stop.Wait();
   // Note (Jiaxin Deng): cancel and exit at once; civetweb's own stop waits out
   // its 2 s poll quantum, and the owner has no use for the open responses.
-  worker->CancelAll();
+  if (worker) {
+    worker->CancelAll();
+  } else {
+  }
   if (reason == "shutdown") {
     Emit({{"event", "stopped"}});
   } else {

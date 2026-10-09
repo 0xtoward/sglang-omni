@@ -1,12 +1,13 @@
 # Voxt on sglang-omni's native MLX runtime
 
-Voxt's local Qwen3-ASR runs on sglang-omni's native runtime
+Voxt's local Qwen3-ASR and Silero VAD run on sglang-omni's native runtime
 (`sglang_omni_mlx/native`): one C++ binary on MLX, with no Python. Voxt starts
 it and owns it. Every other model keeps Voxt's original Swift backend.
 
 | Checkpoint | Runtime | Voxt behavior kept |
 | --- | --- | --- |
 | `mlx-community/Qwen3-ASR-0.6B-4bit`, `mlx-community/Qwen3-ASR-1.7B-6bit`, `mlx-community/Qwen3-ASR-1.7B-8bit` | `qwen3_asr_server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second |
+| `mlx-community/silero-vad-v6` | `qwen3_asr_server --model-kind silero_vad` | Streaming speech probability per 512-sample chunk with one stream state per audio stream (`/v1/vad/stream`), and offline speech ranges with the meeting sensitivity profile's options (`/v1/vad/speech_timestamps`); one server shared by every detector, started on first use |
 
 ## Build and run
 
@@ -32,7 +33,8 @@ the original Swift backend for comparison.
 With the Omni backend enabled (`VOXT_ASR_BACKEND=omni`, `VOXT_OMNI_RUNTIME=<binary>`),
 selecting one of these Qwen3-ASR checkpoints starts the runtime on a free loopback port.
 Switching models, idle unload, deletion and quitting stop it, and a runtime
-that dies is replaced on the next use.
+that dies is replaced on the next use. Silero VAD gets its own server the first
+time a detector needs it; it stops when the last detector unloads or Voxt quits.
 
 ## How it fits together
 

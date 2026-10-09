@@ -114,6 +114,17 @@ actor OmniASRRuntime {
         return false
     }
 
+    /// False once the runtime failed, its server exited, or it was retired: a
+    /// caller that wants a server needs a new runtime.
+    var canServe: Bool {
+        switch state {
+        case .idle, .starting, .ready:
+            return true
+        case .retiring, .stopped, .failed:
+            return false
+        }
+    }
+
     /// Starts the server once; concurrent callers share the same launch.
     func prepare() async throws -> OmniServerEndpoint {
         switch state {
