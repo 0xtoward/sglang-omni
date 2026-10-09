@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -15,10 +16,18 @@ from sglang_omni.models.minicpm_o.duplex_sampler import (
     filter_top_k_top_p,
 )
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
+from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
+    MiniCPMOThinkerModelRunner,
+)
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import (
     REQUIRED_SPECIAL_TOKENS,
     MiniCPMOSpecialTokenIds,
+)
+from sglang_omni.scheduling.types import (
+    RequestOutput,
+    SchedulerOutput,
+    SchedulerRequest,
 )
 
 VOCAB = 128
@@ -257,3 +266,45 @@ def test_a_step_drawn_past_the_unit_end_changes_nothing(special) -> None:
     assert sessions.sample(peaked({special.listen: 5.0}), [0]) == [special.listen]
     sessions.start([0])
     assert sessions.sample(peaked({42: 5.0, 41: 4.0}), [0]) == [42]
+
+
+def test_talker_conditions_keep_each_step_hidden_state_until_the_unit_ends(
+    special,
+) -> None:
+    runner = MiniCPMOThinkerModelRunner.__new__(MiniCPMOThinkerModelRunner)
+    runner.special_tokens = special
+    runner.pending_hidden = {}
+    data = SimpleNamespace(
+        generation_steps=0,
+        pending_unit_token=None,
+        generated_unit_ids=[],
+        talker_conditions=[],
+    )
+    # One buffer for every step, as a replayed decode graph returns.
+    hidden_buffer = torch.zeros(1, 4)
+    for step, token_id in enumerate((42, 43, 44, special.chunk_eos)):
+        hidden_buffer.fill_(float(step))
+        data.generation_steps = step
+        runner.post_process_outputs(
+            None,
+            SchedulerOutput(
+                requests=[SchedulerRequest(request_id="unit", data=data)],
+                batch_data=None,
+            ),
+            {
+                "unit": RequestOutput(
+                    request_id="unit",
+                    data=token_id,
+                    extra={"hidden_states": hidden_buffer},
+                )
+            },
+        )
+    runner.on_request_finished("unit", data)
+    assert data.generated_unit_ids == [43, 44]
+    assert [
+        (token_id, ends_turn) for token_id, _, ends_turn in data.talker_conditions
+    ] == [
+        (43, False),
+        (44, False),
+    ]
+    assert [float(hidden[0]) for _, hidden, _ in data.talker_conditions] == [2.0, 3.0]

@@ -214,14 +214,33 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
                     pass
                 data.pending_unit_token = sampled_token_id
         if hidden_states:
-            # note (0xtoward): one device read for the batch instead of one per session.
-            host_hidden_states = torch.stack(hidden_states).detach().to("cpu")
+            # note (0xtoward): the rows stay on the device until their unit ends, so a step reads nothing back.
+            step_hidden_states = torch.stack(hidden_states).detach()
             for (data, token_id, is_turn_end), hidden_state in zip(
-                conditioned, host_hidden_states, strict=True
+                conditioned, step_hidden_states, strict=True
             ):
                 data.talker_conditions.append((token_id, hidden_state, is_turn_end))
         else:
             pass
+
+    def on_request_finished(
+        self, request_id: str, req_data: DuplexUnitRequestData
+    ) -> None:
+        """Move the unit's talker conditions to the host with one copy."""
+        conditions = req_data.talker_conditions
+        if conditions:
+            host_hidden_states = torch.stack(
+                [hidden_state for _, hidden_state, _ in conditions]
+            ).to("cpu")
+            req_data.talker_conditions = [
+                (token_id, hidden_state, is_turn_end)
+                for (token_id, _, is_turn_end), hidden_state in zip(
+                    conditions, host_hidden_states, strict=True
+                )
+            ]
+        else:
+            pass
+        super().on_request_finished(request_id, req_data)
 
 
 __all__ = [
