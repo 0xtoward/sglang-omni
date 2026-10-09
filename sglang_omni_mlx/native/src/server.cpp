@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Native MLX server for Voxt: one model per process (qwen3_asr or silero_vad).
-// --supervised speaks Voxt's supervisor protocol: "ready" or "failed" once
-// serving, "stopped" after a shutdown command; end of stdin also stops it.
+// Native MLX server for Voxt: one model per process (qwen3_asr, silero_vad or
+// sortformer). --supervised speaks Voxt's supervisor protocol: "ready" or
+// "failed" once serving, "stopped" after a shutdown command or end of stdin.
 #include <signal.h>
 #include <unistd.h>
 
@@ -25,6 +25,7 @@
 #include "http.h"
 #include "nlohmann/json.hpp"
 #include "realtime.h"
+#include "sortformer_service.h"
 #include "vad_service.h"
 #include "worker.h"
 
@@ -342,8 +343,10 @@ Arguments ParseArguments(int argc, char **argv) {
   const double max_segment_samples =
       arguments.max_segment_seconds * qwen3_asr::kSampleRate;
   if (arguments.model_kind != "qwen3_asr" &&
-      arguments.model_kind != "silero_vad") {
-    throw std::invalid_argument("--model-kind must be qwen3_asr or silero_vad");
+      arguments.model_kind != "silero_vad" &&
+      arguments.model_kind != "sortformer") {
+    throw std::invalid_argument(
+        "--model-kind must be qwen3_asr, silero_vad or sortformer");
   } else if (arguments.model_path.empty()) {
     throw std::invalid_argument("--model-path is required");
   } else if (arguments.decode_interval_ms <= 0) {
@@ -437,11 +440,15 @@ int main(int argc, char **argv) {
   mx::set_cache_limit(0);
   std::unique_ptr<TranscriptionWorker> worker;
   std::unique_ptr<silero_vad::VADService> vad;
+  std::unique_ptr<sortformer::SortformerService> diarization;
   std::atomic<bool> loaded(false);
   std::thread loader([&]() {
     try {
       if (arguments.model_kind == "silero_vad") {
         vad = std::make_unique<silero_vad::VADService>(arguments.model_path);
+      } else if (arguments.model_kind == "sortformer") {
+        diarization = std::make_unique<sortformer::SortformerService>(
+            arguments.model_path);
       } else {
         worker = std::make_unique<TranscriptionWorker>(arguments.model_path);
       }
@@ -474,12 +481,19 @@ int main(int argc, char **argv) {
   }
   loader.join();
 
-  ServerState state{
-      worker.get(), arguments.model_name,
-      qwen3_asr::MakeRealtimeSettings(arguments.decode_interval_ms,
-                                      arguments.first_decode_ms,
-                                      arguments.max_segment_seconds),
-      [&]() { return vad ? vad->RequestStates() : worker->RequestStates(); }};
+  ServerState state{worker.get(), arguments.model_name,
+                    qwen3_asr::MakeRealtimeSettings(
+                        arguments.decode_interval_ms, arguments.first_decode_ms,
+                        arguments.max_segment_seconds),
+                    [&]() {
+                      if (vad) {
+                        return vad->RequestStates();
+                      } else if (diarization) {
+                        return diarization->RequestStates();
+                      } else {
+                        return worker->RequestStates();
+                      }
+                    }};
   mg_init_library(0);
   const std::string listening =
       arguments.host + ":" + std::to_string(arguments.port);
@@ -514,6 +528,8 @@ int main(int argc, char **argv) {
   mg_set_request_handler(context, "/v1/models$", HandleModels, &state);
   if (vad) {
     vad->Register(context);
+  } else if (diarization) {
+    diarization->Register(context);
   } else {
     mg_set_request_handler(context, "/v1/audio/transcriptions$",
                            HandleTranscriptions, &state);

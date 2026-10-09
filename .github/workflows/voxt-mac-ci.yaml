@@ -134,7 +134,8 @@ jobs:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
-          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_check_golden.py sglang_omni_mlx/native/ci/test_server_api.py sglang_omni_mlx/native/ci/test_vad_api.py
+          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_check_golden.py sglang_omni_mlx/native/ci/test_server_api.py sglang_omni_mlx/native/ci/test_vad_api.py \
+            sglang_omni_mlx/native/ci/test_sortformer_api.py
 
   voxt-unit:
     name: Voxt Omni unit tests
@@ -215,6 +216,7 @@ jobs:
             -only-testing:VoxtTests/OmniRealtimeSessionUpdateTests \
             -only-testing:VoxtTests/OmniASRRuntimeLaunchTests \
             -only-testing:VoxtTests/OmniVoiceActivityTests \
+            -only-testing:VoxtTests/OmniSpeakerDiarizationTests \
             -only-testing:VoxtTests/OmniModelManagerRecoveryTests \
             -only-testing:VoxtTests/OmniFailurePathTests \
             -only-testing:VoxtTests/MLXModelManagerLifecycleTests \

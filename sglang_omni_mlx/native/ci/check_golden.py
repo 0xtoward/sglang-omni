@@ -3,7 +3,7 @@
 
 Greedy decoding follows each Apple chip's GPU arithmetic, so a golden file keeps
 exact outputs per chip; other chips are gated on error rates within tolerance.
-Silero VAD golden files are checked within kernel tolerances (vad_golden.py).
+Silero VAD and Sortformer golden files are checked within kernel tolerances.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import sys
 import unicodedata
 from pathlib import Path
 
+import sortformer_golden
 import vad_golden
 
 CI_DIRECTORY = Path(__file__).resolve().parent
@@ -230,6 +231,10 @@ def main() -> None:
             *vad_golden.check(
                 golden, arguments.runtime_bin, arguments.data_root, list(manifest)
             )
+        )
+    elif golden.get("kind") == "sortformer":
+        report(
+            *sortformer_golden.check(golden, arguments.runtime_bin, arguments.data_root)
         )
     else:
         pass

@@ -47,5 +47,12 @@
       "config.json": "9fe1befb9692a0d4135adadc33f8075ef6d350bd2391b88d750f2c233f97fa0b",
       "model.safetensors": "65b6c5f0293cbc44d109e58bef78b474d9c65dedbee814cf0b90ef5f0d9150ff"
     }
+  },
+  "mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16": {
+    "revision": "e23e6404bd9859e93edbf94a740eb1c7fc58f12e",
+    "files": {
+      "config.json": "17c9f943bed07b0593f2b8dca01e0be6a418053becc6148b01ecabdff9cbd84d",
+      "model.safetensors": "3b60b8df29e59a8abaf8061ceeeae6e9284a68fbcd2e762c68f5e058bfceebfa"
+    }
   }
 }
