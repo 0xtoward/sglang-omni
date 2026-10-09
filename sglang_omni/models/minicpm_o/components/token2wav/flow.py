@@ -630,6 +630,25 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
 
         Pops each stream's estimator attention cache; the returned caches replace it.
         """
+        stream_count = len(caches)
+        widest_graph_streams = max(
+            (graph.stream_count for graph in self.decoder.chunk_graphs), default=0
+        )
+        if 0 < widest_graph_streams < stream_count:
+            # note (0xtoward): a forward wider than every graph would run eagerly, so it replays graph-wide slices.
+            return [
+                decoded
+                for start in range(0, stream_count, widest_graph_streams)
+                for decoded in self.inference_chunks(
+                    token_ids[start : start + widest_graph_streams],
+                    speaker_embeddings[start : start + widest_graph_streams],
+                    caches[start : start + widest_graph_streams],
+                    is_last_chunk[start : start + widest_graph_streams],
+                    n_timesteps=n_timesteps,
+                )
+            ]
+        else:
+            pass
         speaker_embeddings = F.normalize(speaker_embeddings, dim=1)
         speaker_embeddings = self.speaker_embedding_projection(speaker_embeddings)
         encoder_groups: dict[tuple[int, bool, int], list[int]] = defaultdict(list)
@@ -679,7 +698,6 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         history_counts = [
             cache["estimator_attention_cache"].shape[4] for cache in caches
         ]
-        stream_count = len(caches)
         graph = self.decoder.chunk_graph(
             stream_count, max(frame_counts), max(history_counts)
         )

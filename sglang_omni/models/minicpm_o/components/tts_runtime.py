@@ -219,7 +219,7 @@ class MiniCPMOVocoderRuntime:
 
     def warm_up(self, reference_audio: bytes) -> None:
         """Capture the flow's chunk graphs for this voice, then decode a stream prefill and an equal-length and a ragged chunk forward of every width a forward can reach."""
-        # note (Junnan Li): A forward wider than every graph runs eagerly, and a compiled estimator compiles its equal and ragged forms once each.
+        # note (Junnan Li): A forward wider than every graph replays graph-wide slices, and a compiled estimator compiles its equal and ragged forms once each.
         if self.max_open_sessions > CHUNK_GRAPH_MAX_STREAMS:
             forward_stream_counts = (2, CHUNK_GRAPH_MAX_STREAMS + 1)
         else:

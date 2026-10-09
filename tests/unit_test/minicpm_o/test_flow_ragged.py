@@ -134,6 +134,12 @@ def warmed_caches(
         ((28, 10, 15), [False, False, False], [0, 1, 2]),
         ((28, 9, 15, 28), [False, True, False, False], [1, 1, 0, 2]),
         ((28, 28), [False, False], [1, 1]),
+        # Wider than every captured graph, so the forward replays graph-wide slices.
+        (
+            (28, 9, 15, 28, 28, 20),
+            [False, True, False, False, False, False],
+            [1, 1, 0, 2, 1, 0],
+        ),
     ],
 )
 def test_ragged_chunks_match_each_stream_alone(
