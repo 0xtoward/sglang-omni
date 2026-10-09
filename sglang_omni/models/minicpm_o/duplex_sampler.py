@@ -1,18 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MiniCPM-o duplex token sampling over the thinker states of one batch."""
+"""MiniCPM-o duplex token sampling with each session's sampler state on the device."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
 from sglang_omni.models.minicpm_o.special_tokens import MiniCPMOSpecialTokenIds
-from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
-
-# note (0xtoward): a batch row is its session's thinker state, generation step and listen forcing.
-UnitRow = tuple[MiniCPMOThinkerSessionState, int, bool]
 
 
 def build_forbidden_token_index(
@@ -80,146 +77,267 @@ def filter_top_k_top_p(
     return filtered_logits
 
 
-def duplex_sample(
-    logits: torch.Tensor,
-    units: Sequence[UnitRow],
-    *,
-    special_tokens: MiniCPMOSpecialTokenIds,
-    forbidden_token_index: torch.Tensor,
-) -> list[int]:
-    """Apply the two-stage unit sampler to every row of a batch with one device read."""
-    token_ids: list[int] = [-1] * len(units)
-    active: list[int] = []
-    for index, (state, generation_step, is_listen_forced) in enumerate(units):
-        if generation_step >= state.sampling.max_new_tokens_per_unit - 1:
-            token_ids[index] = special_tokens.chunk_eos
-        elif generation_step == 0 and is_listen_forced:
-            token_ids[index] = special_tokens.listen
-        else:
-            active.append(index)
-    if not active:
-        return token_ids
-    else:
-        pass
-    states = [units[index][0] for index in active]
-    vocab_size = logits.shape[-1]
-    count = len(active)
-    penalized = [
-        (row, token_id, state.sampling.repetition_penalty)
-        for row, state in enumerate(states)
-        if state.sampling.repetition_penalty != 1.0
-        for token_id in set(
-            state.generated_history[-state.sampling.repetition_window_size :]
+@dataclass(kw_only=True)
+class DuplexUnitStart:
+    """Host facts for a unit whose first sample this step draws."""
+
+    sampling_slot: int
+    sampling: MiniCPMODuplexSampling
+    is_new_session: bool
+    generation_steps: int
+    is_listen_forced: bool
+
+
+@dataclass(kw_only=True)
+class DuplexSamplerState:
+    """Every session's duplex sampler state, one device row per session sampling slot.
+
+    history keeps a session's recent second-stage picks right-aligned, oldest first; the
+    value vocab marks an empty position. Unit counters restart with each unit.
+    """
+
+    history: torch.Tensor
+    window_sizes: torch.Tensor
+    is_turn_ended: torch.Tensor
+    unit_steps: torch.Tensor
+    unit_budgets: torch.Tensor
+    is_listen_forced: torch.Tensor
+    is_unit_done: torch.Tensor
+    is_greedy: torch.Tensor
+    is_second_stage_greedy: torch.Tensor
+    temperatures: torch.Tensor
+    top_ks: torch.Tensor
+    top_ps: torch.Tensor
+    repetition_penalties: torch.Tensor
+    listen_scales: torch.Tensor
+    vocab: int
+
+    @classmethod
+    def allocate(
+        cls, slots: int, window: int, vocab: int, device: torch.device
+    ) -> DuplexSamplerState:
+        return cls(
+            history=torch.full((slots, window), vocab, dtype=torch.long, device=device),
+            window_sizes=torch.ones(slots, dtype=torch.long, device=device),
+            is_turn_ended=torch.ones(slots, dtype=torch.bool, device=device),
+            unit_steps=torch.zeros(slots, dtype=torch.long, device=device),
+            unit_budgets=torch.ones(slots, dtype=torch.long, device=device),
+            is_listen_forced=torch.zeros(slots, dtype=torch.bool, device=device),
+            is_unit_done=torch.zeros(slots, dtype=torch.bool, device=device),
+            is_greedy=torch.zeros(slots, dtype=torch.bool, device=device),
+            is_second_stage_greedy=torch.zeros(slots, dtype=torch.bool, device=device),
+            temperatures=torch.ones(slots, dtype=torch.float32, device=device),
+            top_ks=torch.full((slots,), -1, dtype=torch.long, device=device),
+            top_ps=torch.ones(slots, dtype=torch.float32, device=device),
+            repetition_penalties=torch.ones(slots, dtype=torch.float32, device=device),
+            listen_scales=torch.ones(slots, dtype=torch.float32, device=device),
+            vocab=vocab,
         )
-    ]
-    top_k = [state.sampling.top_k for state in states]
-    top_p = [state.sampling.top_p for state in states]
-    # note (0xtoward): one copy per dtype carries every row's settings, so the device never waits on a host read.
-    integers = to_device(
-        active
-        + top_k
-        + [row for row, _, _ in penalized]
-        + [token_id for _, token_id, _ in penalized],
-        torch.long,
-        logits.device,
-    )
-    floats = to_device(
-        [float(state.sampling.greedy) for state in states]
-        + [
-            float(state.sampling.greedy or state.sampling.temperature <= 0)
-            for state in states
-        ]
-        + [
-            state.sampling.temperature if state.sampling.temperature > 0 else 1.0
-            for state in states
-        ]
-        + [state.sampling.listen_prob_scale for state in states]
-        + top_p
-        + [penalty for _, _, penalty in penalized],
-        torch.float32,
-        logits.device,
-    )
-    rows = logits.index_select(0, integers[:count]).float()
-    # note (Junnan Li): The first sample must use the unscaled model distribution.
-    first_picks = torch.where(
-        floats[:count] > 0,
-        rows.argmax(dim=-1),
-        torch.multinomial(F.softmax(rows, dim=-1), 1)[:, 0],
-    )
-    rows[:, forbidden_token_index] = -torch.inf
-    if penalized:
-        pairs = len(penalized)
-        penalty_rows = integers[2 * count : 2 * count + pairs]
-        penalty_tokens = integers[2 * count + pairs :]
+
+    def widen_history(self, window: int) -> None:
+        """Keep every session's history when a session asks for a longer window."""
+        slots, current_window = self.history.shape
+        if window > current_window:
+            history = torch.full(
+                (slots, window),
+                self.vocab,
+                dtype=torch.long,
+                device=self.history.device,
+            )
+            history[:, window - current_window :] = self.history
+            self.history = history
+        else:
+            pass
+
+    def start_units(self, units: list[DuplexUnitStart]) -> None:
+        """Restart the unit counters, and clear the rows of sessions that just opened."""
+        device = self.history.device
+        slots = to_device([unit.sampling_slot for unit in units], torch.long, device)
+        self.unit_steps[slots] = to_device(
+            [unit.generation_steps for unit in units], torch.long, device
+        )
+        self.unit_budgets[slots] = to_device(
+            [unit.sampling.max_new_tokens_per_unit for unit in units],
+            torch.long,
+            device,
+        )
+        self.is_listen_forced[slots] = to_device(
+            [unit.is_listen_forced for unit in units], torch.bool, device
+        )
+        self.is_unit_done[slots] = False
+        new_sessions = [unit for unit in units if unit.is_new_session]
+        if new_sessions:
+            samplings = [unit.sampling for unit in new_sessions]
+            new_slots = to_device(
+                [unit.sampling_slot for unit in new_sessions], torch.long, device
+            )
+            self.history[new_slots] = self.vocab
+            self.is_turn_ended[new_slots] = True
+            self.window_sizes[new_slots] = to_device(
+                [sampling.repetition_window_size for sampling in samplings],
+                torch.long,
+                device,
+            )
+            self.is_greedy[new_slots] = to_device(
+                [sampling.greedy for sampling in samplings], torch.bool, device
+            )
+            self.is_second_stage_greedy[new_slots] = to_device(
+                [
+                    sampling.greedy or sampling.temperature <= 0
+                    for sampling in samplings
+                ],
+                torch.bool,
+                device,
+            )
+            self.temperatures[new_slots] = to_device(
+                [
+                    sampling.temperature if sampling.temperature > 0 else 1.0
+                    for sampling in samplings
+                ],
+                torch.float32,
+                device,
+            )
+            self.top_ks[new_slots] = to_device(
+                [sampling.top_k for sampling in samplings], torch.long, device
+            )
+            self.top_ps[new_slots] = to_device(
+                [sampling.top_p for sampling in samplings], torch.float32, device
+            )
+            self.repetition_penalties[new_slots] = to_device(
+                [sampling.repetition_penalty for sampling in samplings],
+                torch.float32,
+                device,
+            )
+            self.listen_scales[new_slots] = to_device(
+                [sampling.listen_prob_scale for sampling in samplings],
+                torch.float32,
+                device,
+            )
+        else:
+            pass
+
+    def sample(
+        self,
+        logits: torch.Tensor,
+        slots: torch.Tensor,
+        samplings: list[MiniCPMODuplexSampling],
+        *,
+        special_tokens: MiniCPMOSpecialTokenIds,
+        forbidden_token_index: torch.Tensor,
+    ) -> torch.Tensor:
+        """Draw every row's next token and advance its session's state without a host read.
+
+        samplings are the rows' session settings; their host copy fixes the draw's shapes.
+        """
+        rows = logits.float()
+        count, vocab_size = rows.shape
+        row_top_ks = [sampling.top_k for sampling in samplings]
+        max_top_k = max((k for k in row_top_ks if 0 < k < vocab_size), default=0)
+        has_top_p = any(0.0 < sampling.top_p < 1.0 for sampling in samplings)
+        # note (Junnan Li): The first sample must use the unscaled model distribution.
+        first_picks = torch.where(
+            self.is_greedy[slots],
+            rows.argmax(dim=-1),
+            torch.multinomial(F.softmax(rows, dim=-1), 1)[:, 0],
+        )
+        rows[:, forbidden_token_index] = -torch.inf
+        history = self.history[slots]
+        window = history.shape[1]
+        is_in_window = torch.arange(window, device=rows.device).unsqueeze(0) >= (
+            window - self.window_sizes[slots]
+        ).unsqueeze(1)
+        is_recent = torch.zeros(
+            count, self.vocab + 1, dtype=torch.bool, device=rows.device
+        )
+        is_recent.scatter_(1, torch.where(is_in_window, history, self.vocab), True)
         # note (Junnan Li): Matches the checkpoint sampler, which ignores the logit sign.
-        rows[penalty_rows, penalty_tokens] /= floats[5 * count :]
-    else:
-        pass
-    rows[:, special_tokens.listen] *= floats[3 * count : 4 * count]
-    temperatures = floats[2 * count : 3 * count].unsqueeze(1)
-    row_top_k = integers[count : 2 * count]
-    row_top_p = floats[4 * count : 5 * count]
-    max_top_k = max((k for k in top_k if 0 < k < vocab_size), default=0)
-    has_top_p = any(0.0 < p < 1.0 for p in top_p)
-    if max_top_k > 0 and all(0 < k < vocab_size for k in top_k):
-        # note (0xtoward): every row keeps at most its top-k, so top-p and the draw only need the top-k candidates.
-        candidate_logits, candidate_ids = torch.topk(
-            rows / temperatures, max_top_k, dim=-1
+        rows = torch.where(
+            is_recent[:, : self.vocab],
+            rows / self.repetition_penalties[slots].unsqueeze(1),
+            rows,
         )
-        ranks = torch.arange(max_top_k, device=rows.device)
-        candidate_logits = candidate_logits.masked_fill(
-            ranks.unsqueeze(0) >= row_top_k.unsqueeze(1), -torch.inf
-        )
-        if has_top_p:
-            cumulative_probabilities = torch.cumsum(
-                F.softmax(candidate_logits, dim=-1), dim=-1
+        rows[:, special_tokens.listen] *= self.listen_scales[slots]
+        temperatures = self.temperatures[slots].unsqueeze(1)
+        top_ks = self.top_ks[slots]
+        top_ps = self.top_ps[slots]
+        if all(0 < k < vocab_size for k in row_top_ks):
+            # note (0xtoward): every row keeps at most its top-k, so top-p and the draw only need the top-k candidates.
+            candidate_logits, candidate_ids = torch.topk(
+                rows / temperatures, max_top_k, dim=-1
             )
-            limits = torch.where(
-                (row_top_p > 0.0) & (row_top_p < 1.0), row_top_p, torch.inf
+            ranks = torch.arange(max_top_k, device=rows.device)
+            candidate_logits = candidate_logits.masked_fill(
+                ranks.unsqueeze(0) >= top_ks.unsqueeze(1), -torch.inf
             )
-            should_remove = cumulative_probabilities > limits.unsqueeze(1)
-            should_remove[:, 1:] = should_remove[:, :-1].clone()
-            should_remove[:, 0] = False
-            candidate_logits = candidate_logits.masked_fill(should_remove, -torch.inf)
+            if has_top_p:
+                cumulative_probabilities = torch.cumsum(
+                    F.softmax(candidate_logits, dim=-1), dim=-1
+                )
+                limits = torch.where((top_ps > 0.0) & (top_ps < 1.0), top_ps, torch.inf)
+                should_remove = cumulative_probabilities > limits.unsqueeze(1)
+                should_remove[:, 1:] = should_remove[:, :-1].clone()
+                should_remove[:, 0] = False
+                candidate_logits = candidate_logits.masked_fill(
+                    should_remove, -torch.inf
+                )
+            else:
+                pass
+            sampled = candidate_ids.gather(
+                1, torch.multinomial(F.softmax(candidate_logits, dim=-1), 1)
+            )[:, 0]
         else:
-            pass
-        sampled = candidate_ids.gather(
-            1, torch.multinomial(F.softmax(candidate_logits, dim=-1), 1)
-        )[:, 0]
-    else:
-        filtered_logits = filter_top_k_top_p(
-            rows / temperatures,
-            top_k=row_top_k,
-            top_p=row_top_p,
-            max_top_k=max_top_k,
-            has_top_p=has_top_p,
+            filtered_logits = filter_top_k_top_p(
+                rows / temperatures,
+                top_k=top_ks,
+                top_p=top_ps,
+                max_top_k=max_top_k,
+                has_top_p=has_top_p,
+            )
+            sampled = torch.multinomial(F.softmax(filtered_logits, dim=-1), 1)[:, 0]
+        second_picks = torch.where(
+            self.is_second_stage_greedy[slots], rows.argmax(dim=-1), sampled
         )
-        sampled = torch.multinomial(F.softmax(filtered_logits, dim=-1), 1)[:, 0]
-    second_picks = torch.where(
-        floats[count : 2 * count] > 0, rows.argmax(dim=-1), sampled
-    )
-    picks = torch.stack((first_picks, second_picks)).tolist()
-    for position, (index, state) in enumerate(zip(active, states, strict=True)):
-        if picks[0][position] == special_tokens.chunk_eos:
-            token_ids[index] = special_tokens.chunk_eos
-            continue
-        else:
-            pass
-        candidate_token_id = picks[1][position]
-        sampling = state.sampling
+        unit_steps = self.unit_steps[slots]
+        is_turn_ended = self.is_turn_ended[slots]
+        is_unit_done = self.is_unit_done[slots]
+        is_budget_spent = unit_steps >= self.unit_budgets[slots] - 1
+        is_listen_forced = (unit_steps == 0) & self.is_listen_forced[slots]
+        is_chunk_closed = first_picks == special_tokens.chunk_eos
+        candidate_ids = torch.where(
+            (second_picks == special_tokens.listen) & ~is_turn_ended,
+            special_tokens.tts_bos,
+            second_picks,
+        )
+        token_ids = torch.where(
+            is_budget_spent,
+            special_tokens.chunk_eos,
+            torch.where(
+                is_listen_forced,
+                special_tokens.listen,
+                torch.where(is_chunk_closed, special_tokens.chunk_eos, candidate_ids),
+            ),
+        )
+        # note (0xtoward): a row whose unit already closed is a step drawn past its end, so it changes nothing.
+        is_sampled = ~(
+            is_budget_spent | is_listen_forced | is_chunk_closed | is_unit_done
+        )
+        is_chunk_terminator = (
+            (token_ids == special_tokens.listen)
+            | (token_ids == special_tokens.chunk_eos)
+            | (token_ids == special_tokens.chunk_tts_eos)
+        )
         # note (Junnan Li): History retains controls before the mid-turn listen rewrite.
-        history = state.generated_history
-        history.append(candidate_token_id)
-        del history[: -sampling.repetition_window_size]
-        if candidate_token_id == special_tokens.listen and not state.is_turn_ended:
-            candidate_token_id = special_tokens.tts_bos
-        else:
-            pass
-        if candidate_token_id == special_tokens.turn_eos:
-            state.is_turn_ended = True
-        elif candidate_token_id not in special_tokens.chunk_terminators:
-            state.is_turn_ended = False
-        else:
-            pass
-        token_ids[index] = candidate_token_id
-    return token_ids
+        self.history[slots] = torch.where(
+            is_sampled.unsqueeze(1),
+            torch.cat((history[:, 1:], second_picks.unsqueeze(1)), dim=1),
+            history,
+        )
+        self.is_turn_ended[slots] = torch.where(
+            is_sampled,
+            (token_ids == special_tokens.turn_eos)
+            | (is_chunk_terminator & is_turn_ended),
+            is_turn_ended,
+        )
+        self.unit_steps[slots] = unit_steps + 1
+        self.is_unit_done[slots] = is_unit_done | is_chunk_terminator
+        return token_ids

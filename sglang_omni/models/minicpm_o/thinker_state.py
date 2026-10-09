@@ -14,10 +14,11 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 @dataclass(kw_only=True)
 class MiniCPMOThinkerSessionState:
     sampling: MiniCPMODuplexSampling
-    is_turn_ended: bool = True
+    # note (0xtoward): the session's row in the runner's device sampler state, which holds its history and turn.
+    sampling_slot: int
+    is_sampling_slot_fresh: bool = True
     is_prefix_pending: bool = True
     force_listen_counter: int = 0
-    generated_history: list[int] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)

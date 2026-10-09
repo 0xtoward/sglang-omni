@@ -15,8 +15,9 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
 )
 from sglang_omni.models.minicpm_o.duplex_sampler import (
+    DuplexSamplerState,
+    DuplexUnitStart,
     build_forbidden_token_index,
-    duplex_sample,
     to_device,
 )
 from sglang_omni.models.minicpm_o.special_tokens import (
@@ -46,6 +47,7 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
         super().__init__(tp_worker, output_processor, eos_token_ids=[])
         self.special_tokens: MiniCPMOSpecialTokenIds | None = None
         self.forbidden_token_index: torch.Tensor | None = None
+        self.sampler_state: DuplexSamplerState | None = None
 
     def custom_prefill_forward(
         self,
@@ -108,24 +110,50 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
-        logits = logits_output.next_token_logits
+        logits = logits_output.next_token_logits[: len(requests)]
+        vocab_size = logits.shape[-1]
         special_tokens = self.resolve_special_tokens(requests[0].data)
         if self.forbidden_token_index is None:
             self.forbidden_token_index = build_forbidden_token_index(
-                special_tokens, logits.shape[-1], logits.device
+                special_tokens, vocab_size, logits.device
             )
         else:
             pass
-        token_ids = duplex_sample(
+        states = [request.data.thinker_state for request in requests]
+        samplings = [state.sampling for state in states]
+        window = max(sampling.repetition_window_size for sampling in samplings)
+        if self.sampler_state is None:
+            self.sampler_state = DuplexSamplerState.allocate(
+                self.tp_worker.model_runner.req_to_token_pool.size,
+                window,
+                vocab_size,
+                logits.device,
+            )
+        else:
+            self.sampler_state.widen_history(window)
+        if forward_batch.forward_mode.is_extend():
+            self.sampler_state.start_units(
+                [
+                    DuplexUnitStart(
+                        sampling_slot=request.data.thinker_state.sampling_slot,
+                        sampling=request.data.thinker_state.sampling,
+                        is_new_session=request.data.thinker_state.is_sampling_slot_fresh,
+                        generation_steps=request.data.generation_steps,
+                        is_listen_forced=request.data.is_listen_forced,
+                    )
+                    for request in requests
+                ]
+            )
+            for state in states:
+                state.is_sampling_slot_fresh = False
+        else:
+            pass
+        token_ids = self.sampler_state.sample(
             logits,
-            [
-                (
-                    request.data.thinker_state,
-                    request.data.generation_steps,
-                    request.data.is_listen_forced,
-                )
-                for request in requests
-            ],
+            to_device(
+                [state.sampling_slot for state in states], torch.long, logits.device
+            ),
+            samplings,
             special_tokens=special_tokens,
             forbidden_token_index=self.forbidden_token_index,
         )
@@ -135,7 +163,7 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
                 data.thinker_state.force_listen_counter += 1
             else:
                 pass
-        return to_device(token_ids, torch.long, logits.device)
+        return token_ids
 
     # note (Junnan Li): FULL capture must match decode graphs and retain talker conditioning.
     def requested_capture_hidden_mode_prefill(

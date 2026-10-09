@@ -14,8 +14,9 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     PerceptionStepPlan,
 )
 from sglang_omni.models.minicpm_o.duplex_sampler import (
+    DuplexSamplerState,
+    DuplexUnitStart,
     build_forbidden_token_index,
-    duplex_sample,
 )
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks
@@ -24,7 +25,6 @@ from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
 )
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
-from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.session import SessionAppend
@@ -130,22 +130,33 @@ def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
     logits[7] = 100.0
     logits[special.tts_pad] = 99.0
     logits[42] = 0.0
-    state = MiniCPMOThinkerSessionState(
-        sampling=MiniCPMODuplexSampling(
-            greedy=True,
-            top_k=1,
-            repetition_penalty=1.0,
-            max_new_tokens_per_unit=max_new_tokens,
-        )
+    sampling = MiniCPMODuplexSampling(
+        greedy=True,
+        top_k=1,
+        repetition_penalty=1.0,
+        max_new_tokens_per_unit=max_new_tokens,
     )
-    (token_id,) = duplex_sample(
+    state = DuplexSamplerState.allocate(1, 512, 128, torch.device("cpu"))
+    state.start_units(
+        [
+            DuplexUnitStart(
+                sampling_slot=0,
+                sampling=sampling,
+                is_new_session=True,
+                generation_steps=generation_step,
+                is_listen_forced=False,
+            )
+        ]
+    )
+    (token_id,) = state.sample(
         logits.unsqueeze(0),
-        [(state, generation_step, False)],
+        torch.tensor([0]),
+        [sampling],
         special_tokens=special,
         forbidden_token_index=build_forbidden_token_index(
             special, 128, torch.device("cpu")
         ),
-    )
+    ).tolist()
     assert token_id == (special.chunk_eos if closes else 42)
 
 

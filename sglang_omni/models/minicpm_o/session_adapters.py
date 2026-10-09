@@ -52,19 +52,31 @@ class ThinkerAdapter(ARSessionAdapter):
             tokenizer, bad_token_ids=tuple(tokenizer.bad_token_ids)
         )
         self.states: dict[SessionIdentity, MiniCPMOThinkerSessionState] = {}
+        self.free_sampling_slots: list[int] = []
+        self.sampling_slot_count: int = 0
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        if self.free_sampling_slots:
+            sampling_slot = self.free_sampling_slots.pop()
+        else:
+            sampling_slot = self.sampling_slot_count
+            self.sampling_slot_count += 1
         self.states[session_identity] = MiniCPMOThinkerSessionState(
             sampling=MiniCPMODuplexSampling.model_validate(
                 {
                     key: request.params[key]
                     for key in MiniCPMODuplexSampling.model_fields
                 }
-            )
+            ),
+            sampling_slot=sampling_slot,
         )
 
     def close(self, session_identity: SessionIdentity) -> None:
-        self.states.pop(session_identity, None)
+        state = self.states.pop(session_identity, None)
+        if state is not None:
+            self.free_sampling_slots.append(state.sampling_slot)
+        else:
+            pass
 
     def finish_input(
         self, session_identity: SessionIdentity, payload: StagePayload
