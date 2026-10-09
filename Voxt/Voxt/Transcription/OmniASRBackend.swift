@@ -25,6 +25,8 @@ nonisolated enum LoadedASRModel: @unchecked Sendable {
 nonisolated enum OmniASRBackend {
     static let modelKindsByRepo: [String: OmniASRModelKind] = [
         "mlx-community/Qwen3-ASR-0.6B-4bit": .qwen3ASR,
+        "mlx-community/Qwen3-ASR-1.7B-6bit": .qwen3ASR,
+        "mlx-community/Qwen3-ASR-1.7B-8bit": .qwen3ASR,
     ]
 
     static let launchSettings: LaunchSettings? = LaunchSettings(environment: ProcessInfo.processInfo.environment)
