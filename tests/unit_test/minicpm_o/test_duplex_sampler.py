@@ -23,6 +23,7 @@ from sglang_omni.models.minicpm_o.special_tokens import (
     MiniCPMOSpecialTokenIds,
 )
 from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 VOCAB_SIZE = 128
 
@@ -68,7 +69,9 @@ def sample(
         logits,
         rows,
         special_tokens=special_tokens,
-        forbidden_token_index=forbidden_token_index(special_tokens),
+        forbidden_token_index=build_forbidden_token_index(
+            special_tokens, VOCAB_SIZE, logits.device
+        ),
     )
 
 
@@ -245,6 +248,38 @@ def test_a_row_draws_every_token_tied_with_its_kth_logit(
     assert tied_counts[42] / tied_counts.total() == pytest.approx(
         expected_share, abs=0.03
     )
+
+
+@pytest.mark.parametrize(("has_row_without_top_k",), [(False,), (True,)])
+@pytest.mark.parametrize(
+    ("device",),
+    [("cpu",), pytest.param("cuda", marks=pytest.mark.accelerator)],
+)
+def test_nucleus_cut_through_tied_logits_keeps_the_original_tokens(
+    special_tokens: MiniCPMOSpecialTokenIds,
+    has_row_without_top_k: bool,
+    device: str,
+) -> None:
+    if device == "cuda":
+        require_cuda()
+    else:
+        pass
+    torch.manual_seed(5)
+    tied_row = torch.full((VOCAB_SIZE,), -10.0, device=device)
+    tied_row[42] = 5.0
+    tied_row[[43, 44]] = 4.0
+    sampling = {"greedy": False, "temperature": 1.0, "top_k": 2, "top_p": 0.7}
+    sampling_overrides = [sampling] * 32
+    if has_row_without_top_k:
+        sampling_overrides.append({**sampling, "top_k": -1})
+    else:
+        pass
+    logits = tied_row.expand(len(sampling_overrides), -1).clone()
+    expected = single_row_filter(tied_row, 2, 0.7).isfinite().nonzero()[:, 0]
+
+    counts = draw_counts(logits, sampling_overrides, special_tokens, call_count=100)
+
+    assert set(sum(counts[:32], Counter())) == set(expected.tolist())
 
 
 def test_a_tie_run_past_the_candidates_draws_from_the_whole_vocabulary(
