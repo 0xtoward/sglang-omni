@@ -6,6 +6,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+import logging
+
 import numpy as np
 import torch
 from sglang.srt import utils as sglang_utils
@@ -27,6 +29,7 @@ from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
 SILENCE_PREFIX_LENGTH = 3
 CODEC_CHUNK_SIZE = 25
 # note (Junnan Li): A forward holds its streams' flow caches once more in its batch window and once more in the copies taken out of it.
+logger = logging.getLogger(__name__)
 FORWARD_CACHE_COPIES = 2
 # note (Junnan Li): A graph replays a chunk forward's kernels in one launch, but wider forwards gain little and each graphed stream holds a static attention window.
 CHUNK_GRAPH_MAX_STREAMS = 8
@@ -218,10 +221,17 @@ class MiniCPMOVocoderRuntime:
         forward_bytes_per_stream = FORWARD_CACHE_COPIES * max(
             estimate_cache_bytes(state.caches) for state in states
         )
+        device_module = torch.get_device_module(self.token2wav.device)
+        cached_bytes = device_module.memory_reserved(self.token2wav.device) - device_module.memory_allocated(self.token2wav.device)
         if forward_bytes_per_stream == 0:
-            return len(states)
+            width = len(states)
         else:
-            return max(1, min(len(states), available_bytes // forward_bytes_per_stream))
+            width = max(1, min(len(states), available_bytes // forward_bytes_per_stream))
+        logger.warning(
+            "WIDTHLOG streams=%d width=%d free_gb=%.2f cached_gb=%.2f per_stream_gb=%.3f",
+            len(states), width, available_bytes / (1 << 30), cached_bytes / (1 << 30), forward_bytes_per_stream / (1 << 30),
+        )
+        return width
 
     def warm_up(self, reference_audio: bytes) -> None:
         """Capture the flow's chunk graphs for this voice, then decode a stream prefill and an equal-length and a ragged chunk forward of every width a forward can reach."""
