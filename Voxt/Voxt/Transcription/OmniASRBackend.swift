@@ -33,6 +33,7 @@ nonisolated enum OmniASRBackend {
         "beshkenadze/cohere-transcribe-03-2026-mlx-fp16": .cohereTranscribe,
         "OpenMOSS-Team/MOSS-Transcribe-Diarize": .mossTranscribeDiarize,
         "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit": .nemotronASR,
+        "mlx-community/parakeet-tdt-0.6b-v3": .parakeet,
     ]
 
     static let launchSettings: LaunchSettings? = LaunchSettings(environment: ProcessInfo.processInfo.environment)
@@ -61,7 +62,7 @@ nonisolated enum OmniASRBackend {
         switch kind {
         case .qwen3ASR, .sileroVAD, .sortformer:
             return qwenRuntime
-        case .whisper, .cohereTranscribe, .mossTranscribeDiarize, .nemotronASR:
+        case .whisper, .cohereTranscribe, .mossTranscribeDiarize, .nemotronASR, .parakeet:
             return qwenRuntime.deletingLastPathComponent().appendingPathComponent("\(kind.rawValue)_server")
         }
     }

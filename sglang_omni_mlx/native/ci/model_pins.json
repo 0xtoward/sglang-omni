@@ -84,5 +84,12 @@
       "config.json": "f30c7bc469fc01fd5483172b4d7c75075030ddb60f347589c44e216b0a5ea9b6",
       "model.safetensors": "a64a4da048e7d28dde4cd4ff61ce59308a63314bb5563e73e06c24aae50ea941"
     }
+  },
+  "mlx-community/parakeet-tdt-0.6b-v3": {
+    "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
+    "files": {
+      "config.json": "f320f1292511f34ec47f513755fe20fd01dbfc09a925d42730e66059a6e1ef4c",
+      "model.safetensors": "05e01c7f396c298cf7d23f61da7b504adeab698f0aaeafd9c82d198625464592"
+    }
   }
 }
