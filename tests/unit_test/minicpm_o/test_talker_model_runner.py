@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -282,8 +283,10 @@ def test_a_reused_slot_penalizes_only_its_own_request_window() -> None:
     ],
     ids=["filtered", "unfiltered", "greedy", "mixed"],
 )
-def test_seeded_requests_draw_the_tokens_of_sglangs_eager_sampler(
-    row_sampling: list[dict[str, float]], is_graph_used: bool
+def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
+    row_sampling: list[dict[str, float]],
+    is_graph_used: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     require_cuda()
     device = torch.device("cuda")
@@ -314,8 +317,8 @@ def test_seeded_requests_draw_the_tokens_of_sglangs_eager_sampler(
                     logits_output,
                     forward_batch.sampling_info,
                     False,
-                    [0] * len(rows),
-                    [[] for _ in rows],
+                    [0] * len(forward_batch.req_pool_indices),
+                    [[] for _ in forward_batch.req_pool_indices],
                     forward_batch.positions,
                 ),
             )
@@ -324,6 +327,11 @@ def test_seeded_requests_draw_the_tokens_of_sglangs_eager_sampler(
         eager_runner = device_sampling_runner(sglang_model_runner(None), device)
         assert graph_runner.sample_graphs is not None
         assert eager_runner.sample_graphs is None
+        replay = Mock(
+            spec=graph_runner.sample_graphs.sample,
+            wraps=graph_runner.sample_graphs.sample,
+        )
+        monkeypatch.setattr(graph_runner.sample_graphs, "sample", replay)
         runner_requests = [
             (
                 runner,
@@ -334,19 +342,24 @@ def test_seeded_requests_draw_the_tokens_of_sglangs_eager_sampler(
             )
             for runner in (graph_runner, eager_runner)
         ]
+        member_orders = ((0, 1, 2), (2, 0), (1, 2, 0), (1, 0))
         torch.manual_seed(0)
         for step in range(8):
-            logits = torch.randn(len(rows), VOCAB_SIZE, device=device) * 3
-            positions = torch.arange(len(rows), device=device) + 10 * step
+            members = member_orders[step % len(member_orders)]
+            batch_rows = rows[list(members)]
+            batch_params = [sampling_params[index] for index in members]
+            logits = torch.randn(len(members), VOCAB_SIZE, device=device) * 3
+            positions = torch.arange(len(members), device=device) + 10 * step
             draws = []
             for runner, requests in runner_requests:
+                batch_requests = [requests[index] for index in members]
                 forward_batch = SimpleNamespace(
-                    req_pool_indices=rows,
+                    req_pool_indices=batch_rows,
                     positions=positions,
                     forward_mode=SimpleNamespace(
                         is_extend=lambda first=step == 0: first
                     ),
-                    sampling_info=batch_sampling_info(sampling_params, device),
+                    sampling_info=batch_sampling_info(batch_params, device),
                 )
                 draws.append(
                     runner.sample_next_token_ids(
@@ -355,10 +368,13 @@ def test_seeded_requests_draw_the_tokens_of_sglangs_eager_sampler(
                         ),
                         forward_batch,
                         None,
-                        requests,
+                        batch_requests,
                     ).tolist()
                 )
+                for request, token_id in zip(batch_requests, draws[-1], strict=True):
+                    request.data.req.output_ids.append(token_id)
             assert draws[0] == draws[1], f"step {step}"
+        assert bool(replay.call_count) is is_graph_used
         sampling_info = batch_sampling_info(sampling_params, device)
         assert graph_runner.samples_in_graph(len(rows), sampling_info) is is_graph_used
         assert not graph_runner.samples_in_graph(9, sampling_info), "above the top size"
