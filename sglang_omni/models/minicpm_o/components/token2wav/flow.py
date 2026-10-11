@@ -22,6 +22,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Literal
 
+import logging
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -799,6 +801,22 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         graph = self.decoder.chunk_graph(
             stream_count, max(frame_counts), max(history_counts)
         )
+        widest = max((g.stream_count for g in self.decoder.chunk_graphs), default=0)
+        longest = max((g.frame_count for g in self.decoder.chunk_graphs), default=0)
+        deepest = max((g.history_capacity for g in self.decoder.chunk_graphs), default=0)
+        reasons = []
+        if graph is None:
+            if stream_count > widest:
+                reasons.append("width")
+            if max(frame_counts) > longest:
+                reasons.append("frames")
+            if max(history_counts) > deepest:
+                reasons.append("history")
+        _graph_log.warning(
+            "GRAPHLOG streams=%d frames=%d min_frames=%d history=%d hit=%d reasons=%s last=%d",
+            stream_count, max(frame_counts), min(frame_counts), max(history_counts), int(graph is not None),
+            "+".join(reasons) or "-", int(any(is_last_chunk)),
+        )
         if graph is None:
             window_streams = stream_count
             padded_frames = max(frame_counts)
@@ -942,3 +960,5 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
                 )
             )
         return results
+
+_graph_log = logging.getLogger(__name__ + '.graphlog')
