@@ -72,6 +72,7 @@ For repeatable output in regression and parity recordings, add `--sampling.greed
 | `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running |
 | `speech.dtype` | `float32` | Precision of the voice decoder's flow model: `float32`, `float16` or `bfloat16`; the lower precisions change the voice slightly |
 | `speech.enable_dit_torch_compile` | `false` | Compile the voice decoder's flow model with `torch.compile` while the server starts; CUDA only |
+| `speech.enable_hift_torch_compile` | `true` | Compile the voice decoder's HiFT body with `torch.compile` while the server starts, as the offline pipeline does; CUDA only, so set it to `false` on other devices |
 | `speech.n_timesteps` | 10 | Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality |
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
 | `sampling` | printed by `config resolve` | Default sampling when a session does not set its own |

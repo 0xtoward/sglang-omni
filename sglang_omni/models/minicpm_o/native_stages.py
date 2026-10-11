@@ -503,6 +503,7 @@ def create_speech_scheduler(
     max_state_bytes_per_session: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
     dtype: Literal["float32", "float16", "bfloat16"] = DEFAULT_SPEECH_SETTINGS.dtype,
     enable_dit_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_dit_torch_compile,
+    enable_hift_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_hift_torch_compile,
     n_timesteps: int = DEFAULT_SPEECH_SETTINGS.n_timesteps,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
@@ -514,6 +515,7 @@ def create_speech_scheduler(
         n_timesteps=n_timesteps,
         prompt_wav=reference_audio,
         enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_hift_torch_compile=enable_hift_torch_compile,
         enable_flow_variable_length=False,
         enable_flow_cuda_graph=False,
         flow_cuda_graph_capture_shapes=(),
