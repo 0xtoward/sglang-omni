@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import torch
+from sglang.srt import utils as sglang_utils
 
 from sglang_omni.models.minicpm_o.components.code2wav import (
     OUTPUT_SAMPLE_RATE,
@@ -22,6 +23,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
 )
 from sglang_omni.proto.session import ResourceUsage
 from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
+from sglang_omni.utils.gpu_memory import try_gpu_memory_release_lock
 
 SILENCE_PREFIX_LENGTH = 3
 CODEC_CHUNK_SIZE = 25
@@ -29,6 +31,35 @@ CODEC_CHUNK_SIZE = 25
 FORWARD_CACHE_COPIES = 2
 # note (Junnan Li): A graph replays a chunk forward's kernels in one launch, but wider forwards gain little and each graphed stream holds a static attention window.
 CHUNK_GRAPH_MAX_STREAMS = 8
+# note (0xtoward): the other stages on the card allocate outside their pools, perception up to about 2.4 GiB at once on long audio.
+OTHER_STAGES_HEADROOM_BYTES = 2 << 30
+
+
+def return_cached_blocks(device: torch.device) -> None:
+    """Give this process's unused cached blocks back to the card while the card is short and they would help."""
+    if device.type == "cpu":
+        return
+    else:
+        pass
+    device_module = torch.get_device_module(device)
+    cached_bytes = device_module.memory_reserved(
+        device
+    ) - device_module.memory_allocated(device)
+    # note (0xtoward): releasing blocks costs fresh allocations later, so only a cache that could cover the headroom is worth it.
+    if cached_bytes < OTHER_STAGES_HEADROOM_BYTES:
+        return
+    else:
+        pass
+    free_bytes, _ = device_module.mem_get_info(device)
+    if free_bytes < OTHER_STAGES_HEADROOM_BYTES:
+        # note (0xtoward): two stages giving blocks back at once stall each other for seconds, so one goes at a time.
+        with try_gpu_memory_release_lock(device.index or 0) as is_held:
+            if is_held:
+                device_module.empty_cache()
+            else:
+                pass
+    else:
+        pass
 
 
 def clone_caches(caches: StreamCaches) -> StreamCaches:
@@ -111,15 +142,15 @@ class MiniCPMOVocoderRuntime:
                 prompt=prompt,
                 base_caches=self.token2wav.open_stream(prompt),
             )
-            self.speakers[reference_key] = speaker
         else:
             pass
-        speaker.session_ids.append(session_id)
         state = MiniCPMOVocoderSessionState(
             speaker=speaker,
             caches=clone_caches(speaker.base_caches),
             pre_lookahead_tokens=self.token2wav.flow.pre_lookahead_len,
         )
+        self.speakers[reference_key] = speaker
+        speaker.session_ids.append(session_id)
         self.sessions[session_id] = state
         return state
 
@@ -174,16 +205,15 @@ class MiniCPMOVocoderRuntime:
                 yield index, finish(index)
             else:
                 pass
-        speaking_states = [state for state, plan in zip(states, plans) if plan]
-        if speaking_states:
-            width = self.streams_per_forward(speaking_states)
-        else:
-            width = 1
         for round_index in range(max(map(len, plans), default=0)):
             round_indices = [
                 index for index, plan in enumerate(plans) if round_index < len(plan)
             ]
-            for start in range(0, len(round_indices), width):
+            start = 0
+            while start < len(round_indices):
+                width = self.streams_per_forward(
+                    [states[index] for index in round_indices[start:]]
+                )
                 forward_indices = round_indices[start : start + width]
                 decoded = self.token2wav.stream_batch(
                     [
@@ -203,19 +233,33 @@ class MiniCPMOVocoderRuntime:
                         yield index, finish(index)
                     else:
                         pass
+                start += width
+        return_cached_blocks(self.token2wav.device)
 
     def streams_per_forward(self, states: list[MiniCPMOVocoderSessionState]) -> int:
-        unheld_bytes = sum(
-            self.max_state_bytes_per_session - self.held(session_id).bytes
-            for session_id in self.sessions
+        # note (0xtoward): Session caps reserve no device memory; a forward can use this process's cached blocks and the card's free memory, short of the other stages' headroom.
+        device = self.token2wav.device
+        free_bytes = int(
+            sglang_utils.get_available_gpu_memory(
+                device.type, device.index or 0, empty_cache=False
+            )
+            * (1 << 30)
         )
+        if device.type == "cpu":
+            cached_bytes = 0
+        else:
+            device_module = torch.get_device_module(device)
+            cached_bytes = device_module.memory_reserved(
+                device
+            ) - device_module.memory_allocated(device)
+        available_bytes = free_bytes + cached_bytes - OTHER_STAGES_HEADROOM_BYTES
         forward_bytes_per_stream = FORWARD_CACHE_COPIES * max(
             estimate_cache_bytes(state.caches) for state in states
         )
         if forward_bytes_per_stream == 0:
             return len(states)
         else:
-            return max(1, unheld_bytes // forward_bytes_per_stream)
+            return max(1, min(len(states), available_bytes // forward_bytes_per_stream))
 
     def warm_up(self, reference_audio: bytes) -> None:
         """Capture the flow's chunk graphs for this voice, then decode a stream prefill and an equal-length and a ragged chunk forward of every width a forward can reach."""
@@ -271,6 +315,7 @@ class MiniCPMOVocoderRuntime:
             list(self.synthesize_batch(batch))
         for request in requests:
             self.close_session(request.session_id)
+        return_cached_blocks(self.token2wav.device)
 
     def warm_up_vocoder(self) -> None:
         # note (Junnan Li): A forward takes at most every open session and a chunk holds at most one window of tokens, and cuDNN keeps its plans per thread.
@@ -279,6 +324,7 @@ class MiniCPMOVocoderRuntime:
             self.max_open_sessions,
             flow.up_rate * (CODEC_CHUNK_SIZE + flow.pre_lookahead_len),
         )
+        return_cached_blocks(self.token2wav.device)
 
     def close_session(self, session_id: str) -> None:
         speaker = self.sessions.pop(session_id).speaker

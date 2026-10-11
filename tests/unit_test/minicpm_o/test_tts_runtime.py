@@ -1,20 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Vocoder sessions: shared per-voice stream caches, turn resets and failed opens."""
+"""Vocoder sessions: shared per-voice stream caches, turn resets, failed opens and cached blocks given back to the card."""
 
+import fcntl
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o.components import tts_runtime as tts_runtime_module
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import StreamChunk
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     CODEC_CHUNK_SIZE,
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
+    return_cached_blocks,
 )
 from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
+from sglang_omni.utils import gpu_memory
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 PRE_LOOKAHEAD = 3
+CACHED_BLOCK_BYTES = 64 << 20
+# note (0xtoward): a block under 10 MiB comes from a 20 MiB segment, below this test headroom.
+SMALL_BLOCK_BYTES = 8 << 20
+TEST_HEADROOM_BYTES = 32 << 20
 
 
 class FakeToken2Wav:
@@ -90,6 +100,40 @@ def test_voice_cache_lifecycle() -> None:
     assert not runtime.speakers and not runtime.sessions
 
 
+@pytest.mark.parametrize(("has_existing_session",), [(False,), (True,)])
+def test_failed_cache_clone_leaves_no_speaker_owner(
+    monkeypatch: pytest.MonkeyPatch, has_existing_session: bool
+) -> None:
+    runtime = MiniCPMOVocoderRuntime(
+        FakeCode2Wav(), max_state_bytes_per_session=1 << 30, max_open_sessions=2
+    )
+    if has_existing_session:
+        runtime.open_session("existing", reference_audio=b"voice")
+    else:
+        pass
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            tts_runtime_module,
+            "clone_caches",
+            Mock(
+                spec=tts_runtime_module.clone_caches,
+                side_effect=torch.OutOfMemoryError("cache clone failed"),
+            ),
+        )
+        with pytest.raises(torch.OutOfMemoryError, match="cache clone failed"):
+            runtime.open_session("failed", reference_audio=b"voice")
+    if has_existing_session:
+        runtime.close_session("existing")
+    else:
+        pass
+
+    assert not runtime.speakers and not runtime.sessions
+    runtime.open_session("recovered", reference_audio=b"voice")
+    runtime.close_session("recovered")
+    assert not runtime.speakers and not runtime.sessions
+
+
 def test_turn_reset_restores_untouched_prompt_caches() -> None:
     runtime = MiniCPMOVocoderRuntime(
         FakeCode2Wav(), max_state_bytes_per_session=1 << 30, max_open_sessions=2
@@ -125,3 +169,68 @@ def test_turn_reset_restores_untouched_prompt_caches() -> None:
         )
     )
     assert state.caches[0]["estimator_attention_cache"].sum() == 0
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    ("block_bytes", "free_bytes", "is_returned"),
+    [
+        (CACHED_BLOCK_BYTES, TEST_HEADROOM_BYTES // 2, True),
+        (CACHED_BLOCK_BYTES, 2 * TEST_HEADROOM_BYTES, False),
+        (SMALL_BLOCK_BYTES, TEST_HEADROOM_BYTES // 2, False),
+    ],
+    ids=["short-card", "roomy-card", "small-cache"],
+)
+def test_cached_blocks_go_back_only_while_the_card_is_short_and_they_cover_the_headroom(
+    block_bytes: int,
+    free_bytes: int,
+    is_returned: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    monkeypatch.setattr(
+        tts_runtime_module, "OTHER_STAGES_HEADROOM_BYTES", TEST_HEADROOM_BYTES
+    )
+    torch.cuda.empty_cache()
+    torch.empty(block_bytes, dtype=torch.uint8, device=device)
+    reserved_bytes = torch.cuda.memory_reserved(device)
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda device=None: (free_bytes, free_bytes)
+    )
+
+    return_cached_blocks(device)
+
+    assert (
+        torch.cuda.memory_reserved(device) < reserved_bytes
+    ) == is_returned, "cached blocks go back exactly while the card is short and they cover the headroom"
+
+
+@pytest.mark.accelerator
+def test_cached_blocks_stay_while_another_stage_gives_memory_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    monkeypatch.setattr(
+        tts_runtime_module, "OTHER_STAGES_HEADROOM_BYTES", TEST_HEADROOM_BYTES
+    )
+    monkeypatch.setattr(gpu_memory.tempfile, "gettempdir", lambda: str(tmp_path))
+    torch.cuda.empty_cache()
+    torch.empty(CACHED_BLOCK_BYTES, dtype=torch.uint8, device=device)
+    reserved_bytes = torch.cuda.memory_reserved(device)
+    short_free_bytes = TEST_HEADROOM_BYTES // 2
+    monkeypatch.setattr(
+        torch.cuda,
+        "mem_get_info",
+        lambda device=None: (short_free_bytes, short_free_bytes),
+    )
+
+    with open(gpu_memory.get_gpu_lock_path(0, "memory_release"), "a+") as other_stage:
+        fcntl.flock(other_stage.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return_cached_blocks(device)
+        fcntl.flock(other_stage.fileno(), fcntl.LOCK_UN)
+
+    assert (
+        torch.cuda.memory_reserved(device) == reserved_bytes
+    ), "a stage keeps its blocks while another stage gives memory back"
