@@ -17,6 +17,7 @@ server. Other models keep their Swift backend.
 | `OpenMOSS-Team/MOSS-Transcribe-Diarize` | `moss_transcribe_diarize_server` | Final with the dictation or meeting prompt (hotwords included), 1200 s energy-cut chunks each with Voxt's token budget, timestamped speaker segments; live 4 s windows finalized as audio arrives, a preview of the last 2.5 s at most once a second |
 | `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit` | `nemotron_asr_server` | Final through the cache-aware stream at the native 1120 ms chunk with Voxt's first main language as the prompt; live text over the realtime socket from one stream per session at Voxt's chosen latency (80, 160, 320, 560 or 1120 ms), encoding only the audio that arrived since the last decode |
 | `mlx-community/parakeet-tdt-0.6b-v3` | `parakeet_server` | Final as Voxt's Swift path decodes it: 5 s chunks overlapping by 1 s for a whole-recording request (at least 0.5 s otherwise), their tokens merged on the overlap, and timed sentence segments; live text uses batch preview |
+| `mlx-community/SenseVoiceSmall` | `sensevoice_server` | Final with Voxt's language hint and ITN setting, the language, emotion and event of each pass in Voxt's SenseVoice metadata; past 30 s, Silero VAD speech cut into 24 s chunks overlapping by 0.35 s whose texts merge as Voxt merges them; live text uses batch preview |
 
 ## Build and run
 
@@ -32,8 +33,8 @@ Voxt/backend/run_omni_dev.sh run
 `bin/` holds `qwen3_asr_server`, `qwen3_asr_transcribe`, `whisper_server`,
 `whisper_transcribe`, `cohere_transcribe_server`, `cohere_transcribe`,
 `moss_transcribe_diarize_server`, `moss_transcribe`, `nemotron_asr_server`,
-`nemotron_transcribe`, `parakeet_server`, `parakeet_transcribe`, and the pinned
-MLX library
+`nemotron_transcribe`, `parakeet_server`, `parakeet_transcribe`,
+`sensevoice_server`, `sensevoice_transcribe`, and the pinned MLX library
 and Metal kernels next to them.
 
 "Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it

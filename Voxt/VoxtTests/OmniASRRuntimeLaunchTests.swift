@@ -66,6 +66,11 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
             "/opt/voxt/bin/parakeet_server"
         )
         XCTAssertEqual(OmniASRBackend.modelKindsByRepo["mlx-community/parakeet-tdt-0.6b-v3"], .parakeet)
+        XCTAssertEqual(
+            OmniASRBackend.runtimeExecutable(for: .senseVoice, qwenRuntime: qwenRuntime).path,
+            "/opt/voxt/bin/sensevoice_server"
+        )
+        XCTAssertEqual(OmniASRBackend.modelKindsByRepo["mlx-community/SenseVoiceSmall"], .senseVoice)
     }
 
     /// Every Qwen3-ASR checkpoint the native runtime is checked against runs on it;
