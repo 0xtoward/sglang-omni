@@ -304,7 +304,7 @@ def test_speech_request_prefills_its_text() -> None:
     )
 
 
-def speech_talker_request(talker_params: dict[str, int]) -> SGLangARRequestData:
+def build_speech_talker_request(talker_params: dict[str, int]) -> SGLangARRequestData:
     preprocessor = object.__new__(MiniCPMOPreprocessor)
     preprocessor.tokenizer = SpeechTokenizer()
     preprocessor.speech_enabled = True
@@ -348,7 +348,7 @@ def speech_talker_request(talker_params: dict[str, int]) -> SGLangARRequestData:
 
 
 def test_speech_sampling_fields_reach_the_talker() -> None:
-    talker_request = speech_talker_request({})
+    talker_request = build_speech_talker_request({})
 
     sampling_params = talker_request.req.sampling_params
     assert sampling_params.max_new_tokens == 30
@@ -359,7 +359,7 @@ def test_speech_sampling_fields_reach_the_talker() -> None:
 
 def test_a_negative_talker_minimum_length_is_rejected() -> None:
     with pytest.raises(ValueError, match="talker_min_new_tokens"):
-        speech_talker_request({"talker_min_new_tokens": -1})
+        build_speech_talker_request({"talker_min_new_tokens": -1})
 
 
 def test_speech_prefill_advances_by_chunk_in_its_own_cache_namespace() -> None:

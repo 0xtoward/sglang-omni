@@ -45,11 +45,7 @@ REP_PENALTY_WINDOW = 16
 
 @dataclass(kw_only=True)
 class TalkerSlotState:
-    """GPU-resident per-slot state for async decode.
-
-    Token i of a request sits at windows[slot, i % REP_PENALTY_WINDOW]; the spare slot
-    takes the padded rows of a sample graph.
-    """
+    """GPU-resident per-slot sampling state for async decode; a spare slot takes the padded rows of a graph."""
 
     windows: torch.Tensor
     generated: torch.Tensor
@@ -183,11 +179,7 @@ class TalkerSlotState:
 
 
 class TalkerSampleGraphs:
-    """CUDA graphs of the device-side sampling step, one per decode graph batch size.
-
-    Every size is captured at construction, before serving; the padded rows of a
-    replay sample on the spare slot.
-    """
+    """CUDA graphs of the device-side sampling step, one per decode graph batch size, captured before serving."""
 
     def __init__(
         self,
@@ -278,11 +270,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
 
     @torch.no_grad()
     def enable_device_sampling(self) -> None:
-        """Keep the decode step on the GPU, with sampling graphs where they are supported.
-
-        Each capability falls back on its own: without the graphs the decode step still
-        samples on the device, and without the slot state the runner samples on the host.
-        """
+        """Keep the decode step on the GPU, with sampling graphs where supported; each part falls back on its own."""
         self.slot_state = TalkerSlotState.allocate(
             self.tp_worker.model_runner.req_to_token_pool.req_to_token.shape[0],
             self.model.num_audio_tokens,

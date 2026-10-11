@@ -110,10 +110,7 @@ def create_talker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         session_adapter=TalkerAdapter(model) if session_mode else None,
-        # note (0xtoward): the default lookahead gate holds because the slot state
-        # scores the penalty and the length floor on the device inside the launch,
-        # so neither reads a token the resolve has not appended yet. A lone request
-        # also overlaps its host work with the next forward, so lookahead starts at 1.
+        # note (0xtoward): the penalty and length floor read device state, never an unresolved token, so lookahead starts at one request.
         enable_async_decode=not session_mode,
         async_decode_min_batch_size=1,
     )

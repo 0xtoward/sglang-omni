@@ -30,7 +30,7 @@ SLOT_COUNT = 12
 SUPPRESSED_ROW_AND_TOKEN = (1, 3)
 
 
-def talker_request(
+def make_talker_request(
     index: int, penalty: float, sampling_params: SamplingParams
 ) -> SimpleNamespace:
     request = SimpleNamespace(
@@ -49,7 +49,7 @@ def suppress_one_token(
     logits_output.next_token_logits[SUPPRESSED_ROW_AND_TOKEN] = float("-inf")
 
 
-def device_sampling_runner(
+def build_device_sampling_runner(
     sglang_model_runner: SimpleNamespace, device: torch.device
 ) -> MiniCPMOTalkerModelRunner:
     runner = MiniCPMOTalkerModelRunner.__new__(MiniCPMOTalkerModelRunner)
@@ -65,7 +65,7 @@ def device_sampling_runner(
     return runner
 
 
-def batch_sampling_info(
+def build_batch_sampling_info(
     sampling_params: list[SamplingParams], device: torch.device
 ) -> SamplingBatchInfo:
     """The flags SGLang derives for a batch of these requests."""
@@ -106,7 +106,7 @@ def batch_sampling_info(
 def test_device_history_matches_host_penalty_and_min_new_tokens() -> None:
     torch.manual_seed(0)
     requests = [
-        talker_request(
+        make_talker_request(
             row,
             1.05 if row % 2 else 1.0,
             SamplingParams(sampling_seed=SEED if row % 3 else None),
@@ -114,7 +114,7 @@ def test_device_history_matches_host_penalty_and_min_new_tokens() -> None:
         for row in range(4)
     ]
     rows = torch.tensor([5, 0, 11, 2])
-    runner = device_sampling_runner(
+    runner = build_device_sampling_runner(
         SimpleNamespace(
             req_to_token_pool=SimpleNamespace(req_to_token=torch.zeros(SLOT_COUNT, 1)),
             decode_cuda_graph_runner=None,
@@ -188,7 +188,7 @@ def test_a_failed_sampling_graph_capture_falls_back_to_eager(
         talker_model_runner, "current_sglang_sampling_backend", lambda: "pytorch"
     )
 
-    runner = device_sampling_runner(
+    runner = build_device_sampling_runner(
         SimpleNamespace(
             req_to_token_pool=SimpleNamespace(req_to_token=torch.zeros(SLOT_COUNT, 1)),
             decode_cuda_graph_runner=SimpleNamespace(capture_bs=[1, 2]),
@@ -204,7 +204,7 @@ def test_reset_keeps_the_seeds_of_deterministic_inference() -> None:
     state = TalkerSlotState.allocate(
         SLOT_COUNT, VOCAB_SIZE, CODEC_EOS_ID, torch.device("cpu")
     )
-    requests = [talker_request(row, 1.0, SamplingParams()) for row in range(2)]
+    requests = [make_talker_request(row, 1.0, SamplingParams()) for row in range(2)]
     rows = torch.tensor([3, 8])
     sampling_info = SimpleNamespace(
         sampling_seed=torch.tensor([42, 42]),
@@ -239,29 +239,29 @@ def test_a_reused_slot_penalizes_only_its_own_request_window() -> None:
     no_suppression = torch.zeros(1, VOCAB_SIZE, dtype=torch.bool)
     token_ids = [(step * 7) % (VOCAB_SIZE - 1) for step in range(20)]
     last_window = torch.zeros(VOCAB_SIZE, dtype=torch.bool)
-    last_window[token_ids[-16:]] = True
+    last_window[token_ids[-talker_model_runner.REP_PENALTY_WINDOW :]] = True
 
-    def penalized_and_eos_open() -> tuple[torch.Tensor, bool]:
+    def read_penalized_tokens_and_eos() -> tuple[torch.Tensor, bool]:
         logits = torch.ones(1, VOCAB_SIZE)
         state.apply(logits, rows)
         is_finite = torch.isfinite(logits[0])
         return (logits[0] < 1.0) & is_finite, bool(is_finite[CODEC_EOS_ID])
 
-    first = talker_request(0, 1.05, SamplingParams())
+    first = make_talker_request(0, 1.05, SamplingParams())
     state.reset(rows, [first], sampling_info, no_suppression)
     for token_id in token_ids:
         state.append(rows, torch.tensor([token_id]))
-    penalized, is_eos_open = penalized_and_eos_open()
+    penalized, is_eos_open = read_penalized_tokens_and_eos()
     assert torch.equal(penalized, last_window) and is_eos_open
 
-    second = talker_request(1, 1.0, SamplingParams())
+    second = make_talker_request(1, 1.0, SamplingParams())
     state.reset(rows, [second], sampling_info, no_suppression)
-    penalized, is_eos_open = penalized_and_eos_open()
+    penalized, is_eos_open = read_penalized_tokens_and_eos()
     assert not penalized.any() and not is_eos_open
 
     first.data.req.output_ids = list(token_ids)
     state.reset(rows, [first], sampling_info, no_suppression)
-    penalized, is_eos_open = penalized_and_eos_open()
+    penalized, is_eos_open = read_penalized_tokens_and_eos()
     assert torch.equal(penalized, last_window) and is_eos_open
 
 
@@ -291,6 +291,7 @@ def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
     require_cuda()
     device = torch.device("cuda")
     rows = torch.tensor([5, 0, 11], device=device)
+    member_orders = ((0, 1, 2), (2, 0), (1, 2, 0), (1, 0))
     sampling_params = []
     for row, sampling in enumerate(row_sampling):
         params = SamplingParams(max_new_tokens=32, sampling_seed=SEED + row, **sampling)
@@ -302,7 +303,7 @@ def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
     ):
         sampler = Sampler()
 
-        def sglang_model_runner(capture_bs: list[int] | None) -> SimpleNamespace:
+        def build_sglang_model_runner(capture_bs: list[int] | None) -> SimpleNamespace:
             return SimpleNamespace(
                 req_to_token_pool=SimpleNamespace(
                     req_to_token=torch.zeros(SLOT_COUNT, 1)
@@ -323,8 +324,12 @@ def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
                 ),
             )
 
-        graph_runner = device_sampling_runner(sglang_model_runner([1, 2, 4, 8]), device)
-        eager_runner = device_sampling_runner(sglang_model_runner(None), device)
+        graph_runner = build_device_sampling_runner(
+            build_sglang_model_runner([1, 2, 4, 8]), device
+        )
+        eager_runner = build_device_sampling_runner(
+            build_sglang_model_runner(None), device
+        )
         assert graph_runner.sample_graphs is not None
         assert eager_runner.sample_graphs is None
         replay = Mock(
@@ -336,13 +341,12 @@ def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
             (
                 runner,
                 [
-                    talker_request(row, 1.05, params)
+                    make_talker_request(row, 1.05, params)
                     for row, params in enumerate(sampling_params)
                 ],
             )
             for runner in (graph_runner, eager_runner)
         ]
-        member_orders = ((0, 1, 2), (2, 0), (1, 2, 0), (1, 0))
         torch.manual_seed(0)
         for step in range(8):
             members = member_orders[step % len(member_orders)]
@@ -359,7 +363,7 @@ def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
                     forward_mode=SimpleNamespace(
                         is_extend=lambda first=step == 0: first
                     ),
-                    sampling_info=batch_sampling_info(batch_params, device),
+                    sampling_info=build_batch_sampling_info(batch_params, device),
                 )
                 draws.append(
                     runner.sample_next_token_ids(
@@ -375,6 +379,6 @@ def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
                     request.data.req.output_ids.append(token_id)
             assert draws[0] == draws[1], f"step {step}"
         assert bool(replay.call_count) is is_graph_used
-        sampling_info = batch_sampling_info(sampling_params, device)
+        sampling_info = build_batch_sampling_info(sampling_params, device)
         assert graph_runner.samples_in_graph(len(rows), sampling_info) is is_graph_used
         assert not graph_runner.samples_in_graph(9, sampling_info), "above the top size"
