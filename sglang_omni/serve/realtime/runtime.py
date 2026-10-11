@@ -164,6 +164,7 @@ class SessionRuntime:
                 self.adapter = adapter
                 if self.close_task is not None:
                     # Note (Junnan Li): Admission cleanup belongs to the closing owner; do not publish OPEN here.
+                    self.state = "CLOSING"
                     return
                 else:
                     pass

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import torch
+from sglang.srt import utils as sglang_utils
 
 from sglang_omni.models.minicpm_o.components.code2wav import (
     OUTPUT_SAMPLE_RATE,
@@ -174,16 +175,15 @@ class MiniCPMOVocoderRuntime:
                 yield index, finish(index)
             else:
                 pass
-        speaking_states = [state for state, plan in zip(states, plans) if plan]
-        if speaking_states:
-            width = self.streams_per_forward(speaking_states)
-        else:
-            width = 1
         for round_index in range(max(map(len, plans), default=0)):
             round_indices = [
                 index for index, plan in enumerate(plans) if round_index < len(plan)
             ]
-            for start in range(0, len(round_indices), width):
+            start = 0
+            while start < len(round_indices):
+                width = self.streams_per_forward(
+                    [states[index] for index in round_indices[start:]]
+                )
                 forward_indices = round_indices[start : start + width]
                 decoded = self.token2wav.stream_batch(
                     [
@@ -203,11 +203,17 @@ class MiniCPMOVocoderRuntime:
                         yield index, finish(index)
                     else:
                         pass
+                start += width
 
     def streams_per_forward(self, states: list[MiniCPMOVocoderSessionState]) -> int:
-        unheld_bytes = sum(
-            self.max_state_bytes_per_session - self.held(session_id).bytes
-            for session_id in self.sessions
+        # note (0xtoward): Session caps reserve no device memory; only free memory can cover extra cache copies.
+        available_bytes = int(
+            sglang_utils.get_available_gpu_memory(
+                self.token2wav.device.type,
+                self.token2wav.device.index or 0,
+                empty_cache=False,
+            )
+            * (1 << 30)
         )
         forward_bytes_per_stream = FORWARD_CACHE_COPIES * max(
             estimate_cache_bytes(state.caches) for state in states
@@ -215,7 +221,7 @@ class MiniCPMOVocoderRuntime:
         if forward_bytes_per_stream == 0:
             return len(states)
         else:
-            return max(1, unheld_bytes // forward_bytes_per_stream)
+            return max(1, min(len(states), available_bytes // forward_bytes_per_stream))
 
     def warm_up(self, reference_audio: bytes) -> None:
         """Capture the flow's chunk graphs for this voice, then decode a stream prefill and an equal-length and a ragged chunk forward of every width a forward can reach."""

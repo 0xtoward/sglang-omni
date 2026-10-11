@@ -23,6 +23,7 @@ from sglang_omni.serve.realtime.types import (
     Envelope,
     InteractionAdapter,
     OutputSink,
+    ProtocolError,
     RuntimeLimits,
     Unit,
 )
@@ -81,6 +82,53 @@ async def receive_until(
         else:
             pass
     return envelopes
+
+
+@pytest.mark.asyncio
+async def test_failure_during_admission_rejects_a_queued_update() -> None:
+    admission_started = asyncio.Event()
+    release_admission = asyncio.Event()
+    update_queued = asyncio.Event()
+
+    class AdmissionAdapter(GatedAdapter):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.opens = 0
+            self.closes = 0
+
+        async def open(
+            self, session_id: str, config: SessionConfiguration, emit: OutputSink
+        ) -> None:
+            self.opens += 1
+            admission_started.set()
+            await release_admission.wait()
+
+        async def close(self) -> None:
+            self.closes += 1
+
+    adapter = AdmissionAdapter()
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), lambda: adapter, RuntimeLimits()
+    )
+
+    async def queued_update() -> None:
+        update_queued.set()
+        await runtime.update({}, "second")
+
+    first = asyncio.create_task(runtime.update({}, "first"))
+    await asyncio.wait_for(admission_started.wait(), timeout=2)
+    second = asyncio.create_task(queued_update())
+    await asyncio.wait_for(update_queued.wait(), timeout=2)
+    runtime.fail("connection closed")
+    release_admission.set()
+    await asyncio.wait_for(first, timeout=2)
+    try:
+        with pytest.raises(ProtocolError, match="closing"):
+            await asyncio.wait_for(second, timeout=2)
+    finally:
+        await asyncio.wait_for(runtime.close("test complete"), timeout=2)
+
+    assert (adapter.opens, adapter.closes) == (1, 1)
 
 
 @pytest.mark.asyncio

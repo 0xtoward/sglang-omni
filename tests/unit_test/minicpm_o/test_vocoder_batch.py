@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sglang.srt import utils as sglang_utils
 
 from sglang_omni.models.minicpm_o.components.code2wav import OUTPUT_SAMPLE_RATE
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
@@ -159,19 +160,28 @@ def test_units_synthesized_together_match_units_synthesized_alone() -> None:
     assert max(together.token2wav.forward_sizes) > 1
 
 
-def test_forward_width_follows_the_unheld_state_budget() -> None:
-    session_ids = [str(index) for index in range(48)]
+@pytest.mark.parametrize(("idle_sessions", "state_cap"), [(0, 1), (12, 1 << 30)])
+def test_forward_width_uses_free_memory_not_session_caps(
+    idle_sessions: int, state_cap: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_ids = [str(index) for index in range(4)]
     requests = [
         request(session_id, list(range(CODEC_CHUNK_SIZE)), is_turn_start=True)
         for session_id in session_ids
     ]
-    runtime = open_runtime(session_ids)
-    list(runtime.synthesize_batch(requests))
-    assert runtime.token2wav.forward_sizes == [len(session_ids)]
+    runtime = open_runtime(session_ids, max_state_bytes_per_session=state_cap)
+    for index in range(idle_sessions):
+        runtime.open_session(f"idle-{index}", reference_audio=b"voice")
+    free_bytes = 5 * OPENED_HISTORY_FRAMES * torch.float32.itemsize
+    monkeypatch.setattr(
+        sglang_utils,
+        "get_available_gpu_memory",
+        lambda device, gpu_id, empty_cache: free_bytes / (1 << 30),
+    )
 
-    runtime = open_runtime(session_ids, max_state_bytes_per_session=1)
     list(runtime.synthesize_batch(requests))
-    assert runtime.token2wav.forward_sizes == [1] * len(session_ids)
+
+    assert runtime.token2wav.forward_sizes == [2, 2]
 
 
 def test_units_finish_before_later_rounds_in_request_order() -> None:
