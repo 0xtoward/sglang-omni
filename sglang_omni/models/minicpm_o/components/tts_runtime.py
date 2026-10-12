@@ -206,6 +206,21 @@ class MiniCPMOVocoderRuntime:
                     else:
                         pass
                 start += width
+        self.return_cached_blocks(only_when_short=True)
+
+    def return_cached_blocks(self, *, only_when_short: bool) -> None:
+        """Hand this process's unused cached blocks back to the card, so the other stages can allocate them."""
+        device = self.token2wav.device
+        if device.type == "cpu":
+            return
+        else:
+            pass
+        device_module = torch.get_device_module(device)
+        free_bytes, _ = device_module.mem_get_info(device)
+        if not only_when_short or free_bytes < OTHER_STAGES_HEADROOM_BYTES:
+            device_module.empty_cache()
+        else:
+            pass
 
     def streams_per_forward(self, states: list[MiniCPMOVocoderSessionState]) -> int:
         # note (0xtoward): Session caps reserve no device memory; a forward can use this process's cached blocks and the card's free memory, short of the other stages' headroom.
@@ -286,6 +301,7 @@ class MiniCPMOVocoderRuntime:
             list(self.synthesize_batch(batch))
         for request in requests:
             self.close_session(request.session_id)
+        self.return_cached_blocks(only_when_short=False)
 
     def warm_up_vocoder(self) -> None:
         # note (Junnan Li): A forward takes at most every open session and a chunk holds at most one window of tokens, and cuDNN keeps its plans per thread.
@@ -294,6 +310,7 @@ class MiniCPMOVocoderRuntime:
             self.max_open_sessions,
             flow.up_rate * (CODEC_CHUNK_SIZE + flow.pre_lookahead_len),
         )
+        self.return_cached_blocks(only_when_short=False)
 
     def close_session(self, session_id: str) -> None:
         speaker = self.sessions.pop(session_id).speaker

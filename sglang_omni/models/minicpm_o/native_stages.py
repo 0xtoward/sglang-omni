@@ -402,6 +402,8 @@ def create_perception_scheduler(
     )
     # note (Junnan Li): The scheduler hands one call every ready session, so batches go up to the session limit.
     hooks.warm_up(max_open_sessions)
+    # note (0xtoward): the warm-up batches leave cached blocks the other stages on the card cannot use.
+    torch.get_device_module(device).empty_cache()
     return SessionScheduler(
         hooks,
         max_open_sessions=max_open_sessions,
