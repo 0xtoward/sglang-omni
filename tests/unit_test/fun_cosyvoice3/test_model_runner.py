@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from array import array
 from types import SimpleNamespace
 
 import pytest
@@ -294,6 +295,104 @@ def test_cosyvoice3_torch_mps_clears_ras_history_on_finish() -> None:
     runner.on_request_finished("req", None)
 
     assert runner.cosyvoice3_recent_tokens == {"keep": [2]}
+
+
+@pytest.mark.parametrize("use_ascend_backend", [False, True])
+def test_cosyvoice3_ras_masks_and_redraws_repeated_speech_tokens(
+    use_ascend_backend: bool,
+) -> None:
+    """A repeated speech token must not crowd out EOS until the length cap."""
+    probs = torch.zeros((6, EOS_ID + 1))
+    probs[0, 9], probs[0, EOS_ID] = 0.9, 0.1
+    probs[[1, 2, 3, 5], 2] = 0.4
+    probs[1, 5] = probs[2, 9] = probs[3, EOS_ID] = probs[5, 9] = 0.6
+    probs[4, 9] = 1.0
+    histories = [[9] + [4] * 9, [1, 2, 3], [9], [EOS_ID], [9], [9] + [4] * 10]
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.outbox = None
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            sampler=SimpleNamespace(use_ascend_backend=use_ascend_backend)
+        )
+    )
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                output_codes=[],
+                req=SimpleNamespace(
+                    output_ids=array("q", output_ids),
+                    sampling_params=SimpleNamespace(top_k=1 if row == 2 else 20),
+                ),
+            )
+        )
+        for row, output_ids in enumerate(histories)
+    ]
+    result = SimpleNamespace(
+        next_token_ids=torch.tensor([9, 5, 9, EOS_ID, 9, 9], dtype=torch.int32),
+        logits_output=SimpleNamespace(
+            next_token_logits=torch.log(probs) + 1 if use_ascend_backend else probs
+        ),
+    )
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
+        sampling_info=SimpleNamespace(sampling_seed=None),
+        positions=torch.arange(6),
+    )
+
+    runner.collect_tokens(result, forward_batch, None, requests)
+
+    assert result.next_token_ids.tolist() == [EOS_ID, 5, 9, EOS_ID, 9, 9]
+    assert [
+        [int(code) for code in request.data.output_codes] for request in requests
+    ] == [[], [5], [9], [], [9], [9]]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cosyvoice3_seeded_ras_redraw_of_a_row_subset_matches_the_full_draw() -> None:
+    rows = 256
+    probs = torch.zeros((rows, 8), device="cuda")
+    probs[:, 3], probs[:, 5], probs[:, 6] = 0.9, 0.06, 0.04
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.token_id_host_bufs = None
+    runner.token_id_host_slot = 0
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(sampler=SimpleNamespace(use_ascend_backend=False))
+    )
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
+        sampling_info=SimpleNamespace(
+            sampling_seed=torch.arange(1, rows + 1, device="cuda")
+        ),
+        positions=torch.arange(rows, device="cuda"),
+    )
+    subset = range(1, rows, 3)
+
+    def redraw(repeating_rows: range) -> list[int]:
+        requests = [
+            SimpleNamespace(
+                data=SimpleNamespace(
+                    req=SimpleNamespace(
+                        output_ids=array("q", [3 if row in repeating_rows else 4]),
+                        sampling_params=SimpleNamespace(top_k=20),
+                    )
+                )
+            )
+            for row in range(rows)
+        ]
+        result = SimpleNamespace(
+            next_token_ids=torch.full((rows,), 3, dtype=torch.int32, device="cuda"),
+            logits_output=SimpleNamespace(next_token_logits=probs),
+        )
+        return runner.redraw_repeated_tokens(
+            result, forward_batch, requests, [3] * rows
+        )
+
+    full = redraw(range(rows))
+    partial = redraw(subset)
+
+    assert 3 not in full
+    assert [partial[row] for row in subset] == [full[row] for row in subset]
 
 
 def test_cosyvoice3_load_weights_maps_custom_and_backbone_keys(
