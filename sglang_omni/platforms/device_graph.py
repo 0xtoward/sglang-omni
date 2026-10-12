@@ -17,6 +17,8 @@ import torch
 from torch.cuda import _POOL_HANDLE as CudaGraphPoolHandle
 from torch.xpu import _POOL_HANDLE as XpuGraphPoolHandle
 
+from sglang_omni.utils.startup import startup_capture
+
 
 class CudaCaptureKwargs(TypedDict, total=False):
     pool: CudaGraphPoolHandle
@@ -90,7 +92,10 @@ class CudaDeviceGraphBackend:
             kwargs["capture_error_mode"] = "thread_local"
         else:
             pass
-        with torch.cuda.graph(cuda_graph=graph, **kwargs):
+        with (
+            startup_capture(backend="cuda"),
+            torch.cuda.graph(cuda_graph=graph, **kwargs),
+        ):
             yield graph
 
 
@@ -122,7 +127,10 @@ class NpuDeviceGraphBackend:
             kwargs["capture_error_mode"] = "thread_local"
         else:
             pass
-        with torch.npu.graph(npu_graph=graph, **kwargs):
+        with (
+            startup_capture(backend="npu"),
+            torch.npu.graph(npu_graph=graph, **kwargs),
+        ):
             yield graph
 
 
@@ -154,7 +162,7 @@ class XpuDeviceGraphBackend:
         else:
             pass
         capture = torch.xpu.graph(xpu_graph=graph, **kwargs)
-        with ExitStack() as stack:
+        with startup_capture(backend="xpu"), ExitStack() as stack:
             # Note (siju): capture_begin registers the generator state in place, so
             # open it outside inference mode or later captures are refused.
             with torch.inference_mode(False):

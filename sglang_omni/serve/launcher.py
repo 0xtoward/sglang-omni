@@ -61,6 +61,7 @@ from sglang_omni.utils.gpu_memory import (
     get_gpu_device_info,
 )
 from sglang_omni.utils.imports import import_string
+from sglang_omni.utils.startup import startup_phase
 
 logger = logging.getLogger(__name__)
 
@@ -486,7 +487,8 @@ async def run_server(
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
     startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
-    await mp_runner.start(timeout=startup_timeout)
+    with startup_phase("pipeline.start"):
+        await mp_runner.start(timeout=startup_timeout)
     coordinator = mp_runner.coordinator
 
     # Plans are resolved once inside ``mp_runner.start()`` (which applies

@@ -35,6 +35,7 @@ from sglang_omni.scheduling.types import (
     StreamOutputBuilder,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.utils.startup import startup_phase
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -141,7 +142,8 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         from sglang_omni.scheduling import sglang_backend
         from sglang_omni.utils.device import resolve_concrete_device
 
-        checkpoint_dir = self.resolve_checkpoint(model_path)
+        with startup_phase("checkpoint.resolve"):
+            checkpoint_dir = self.resolve_checkpoint(model_path)
         concrete_device = resolve_concrete_device(device, gpu_id)
         device = str(concrete_device)
         gpu_id = concrete_device.index or 0
@@ -318,17 +320,19 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         )
         model = model_worker.model_runner.model
 
-        self.setup_model(
-            model_worker=model_worker,
-            checkpoint_dir=checkpoint_dir,
-            device=device,
-            gpu_id=gpu_id,
-            server_args=server_args,
-        )
+        with startup_phase("model.setup"):
+            self.setup_model(
+                model_worker=model_worker,
+                checkpoint_dir=checkpoint_dir,
+                device=device,
+                gpu_id=gpu_id,
+                server_args=server_args,
+            )
 
         self.validate_after_model_setup(model, server_args)
 
-        self.compile_model(model, server_args)
+        with startup_phase("model.compile_setup"):
+            self.compile_model(model, server_args)
 
         if want_cuda_graph:
             scheduling_bootstrap.init_sglang_cuda_graphs(model_worker)
@@ -348,14 +352,16 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         try:
             # Model-local encoder graphs and caches must be initialized after
             # SGLang's generation graphs to preserve the established order.
-            self.setup_model_resources(
-                model,
-                server_args,
-                generation_cuda_graph_enabled=want_cuda_graph,
-            )
+            with startup_phase("model.resources"):
+                self.setup_model_resources(
+                    model,
+                    server_args,
+                    generation_cuda_graph_enabled=want_cuda_graph,
+                )
 
             output_proc = sglang_backend.SGLangOutputProcessor()
-            self.setup_runtime_resources(model, server_args)
+            with startup_phase("runtime.resources"):
+                self.setup_runtime_resources(model, server_args)
             scheduler, model_runner = self.build_runtime(
                 model_worker=model_worker,
                 model=model,

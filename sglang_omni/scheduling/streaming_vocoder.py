@@ -39,10 +39,12 @@ import torch
 from typing_extensions import Generic, TypeVar
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.profiler.event_recorder import get_active_stage
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.startup import startup_phase
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +166,10 @@ class StreamingVocoderBase(
 
     def start(self) -> None:
         try:
-            self.on_serving_start()
+            with startup_phase(
+                "scheduler.warmup", report_compilation=True, stage=get_active_stage()
+            ):
+                self.on_serving_start()
             super().start()
         finally:
             self.shutdown_stream_states()
