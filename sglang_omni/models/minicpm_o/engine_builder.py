@@ -23,8 +23,12 @@ from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
 )
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.scheduling.engine_factory import SGLangGenerationEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+
+# note (0xtoward): a unit extends a session by about 20 tokens, so the ladder ends here and longer opening prompts run eager.
+SESSION_PREFILL_GRAPH_MAX_TOKENS = 512
 
 
 class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
@@ -32,6 +36,7 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
     model_arch_override: str = "MiniCPMO"
     context_length: int = THINKER_CONTEXT_LENGTH
     supports_context_length_override: ClassVar[bool] = True
+    supports_breakable_prefill_cuda_graph: ClassVar[bool] = True
     tokenizer: PreTrainedTokenizerBase
     adapter: ThinkerAdapter
 
@@ -42,6 +47,8 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
             enable_streaming_session=True,
             disable_overlap_schedule=True,
             chunked_prefill_size=-1,
+            cuda_graph_backend_prefill=CudaGraphBackend.BREAKABLE,
+            cuda_graph_max_bs_prefill=SESSION_PREFILL_GRAPH_MAX_TOKENS,
             enable_return_hidden_states=True,
             sampling_backend="pytorch",
             trust_remote_code=False,

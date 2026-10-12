@@ -27,7 +27,10 @@ from sglang_omni.config.runtime import (
 from sglang_omni.models.minicpm_o import native_stages, stages
 from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
-from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
+from sglang_omni.models.minicpm_o.engine_builder import (
+    SESSION_PREFILL_GRAPH_MAX_TOKENS,
+    MiniCPMOThinkerEngineBuilder,
+)
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.minicpm_o.native_config import (
     TALKER_CONTEXT_LENGTH,
@@ -36,6 +39,9 @@ from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexVision,
 )
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_generation_batch_overrides,
+)
 from sglang_omni.scheduling.session import BatchedSessionHooks
 from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
 from sglang_omni.utils.gpu_memory import GpuDeviceInfo
@@ -388,6 +394,31 @@ def test_duplex_settings_select_decode_graphs_without_compile(
         "disable_cuda_graph"
         not in MiniCPMOThinkerEngineBuilder().generation_defaults(dtype="bfloat16")
     )
+
+
+@pytest.mark.parametrize(
+    ("deployment_overrides", "prefill_backend"),
+    [({}, "breakable"), ({"disable_cuda_graph": True}, "disabled")],
+)
+def test_duplex_thinker_prefills_units_on_the_breakable_graph(
+    deployment_overrides: dict[str, bool], prefill_backend: str
+) -> None:
+    builder = MiniCPMOThinkerEngineBuilder()
+
+    overrides = build_generation_batch_overrides(
+        server_args_overrides=deployment_overrides,
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+
+    assert builder.supports_breakable_prefill_cuda_graph
+    assert overrides.get("cuda_graph_backend_prefill") == prefill_backend
+    if prefill_backend == "breakable":
+        assert overrides["cuda_graph_bs_prefill"][0] == 4, "a one-unit extend pads to 4"
+        assert (
+            overrides["cuda_graph_max_bs_prefill"] == SESSION_PREFILL_GRAPH_MAX_TOKENS
+        )
+    else:
+        assert "cuda_graph_bs_prefill" not in overrides
 
 
 def test_minicpmo_configs_load_without_sglang(tmp_path: Path) -> None:
