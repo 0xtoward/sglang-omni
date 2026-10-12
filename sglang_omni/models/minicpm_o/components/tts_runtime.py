@@ -30,6 +30,8 @@ CODEC_CHUNK_SIZE = 25
 FORWARD_CACHE_COPIES = 2
 # note (Junnan Li): A graph replays a chunk forward's kernels in one launch, but wider forwards gain little and each graphed stream holds a static attention window.
 CHUNK_GRAPH_MAX_STREAMS = 8
+# note (0xtoward): the other stages allocate outside their pools from the same card, up to about 1 GiB at once for long audio.
+OTHER_STAGES_HEADROOM_BYTES = 2 << 30
 
 
 def clone_caches(caches: StreamCaches) -> StreamCaches:
@@ -206,15 +208,22 @@ class MiniCPMOVocoderRuntime:
                 start += width
 
     def streams_per_forward(self, states: list[MiniCPMOVocoderSessionState]) -> int:
-        # note (0xtoward): Session caps reserve no device memory; only free memory can cover extra cache copies.
-        available_bytes = int(
+        # note (0xtoward): Session caps reserve no device memory; a forward can use this process's cached blocks and the card's free memory, short of the other stages' headroom.
+        device = self.token2wav.device
+        free_bytes = int(
             sglang_utils.get_available_gpu_memory(
-                self.token2wav.device.type,
-                self.token2wav.device.index or 0,
-                empty_cache=False,
+                device.type, device.index or 0, empty_cache=False
             )
             * (1 << 30)
         )
+        if device.type == "cpu":
+            cached_bytes = 0
+        else:
+            device_module = torch.get_device_module(device)
+            cached_bytes = device_module.memory_reserved(
+                device
+            ) - device_module.memory_allocated(device)
+        available_bytes = free_bytes + cached_bytes - OTHER_STAGES_HEADROOM_BYTES
         forward_bytes_per_stream = FORWARD_CACHE_COPIES * max(
             estimate_cache_bytes(state.caches) for state in states
         )
