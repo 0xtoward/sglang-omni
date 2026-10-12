@@ -34,6 +34,20 @@ CHUNK_GRAPH_MAX_STREAMS = 8
 OTHER_STAGES_HEADROOM_BYTES = 2 << 30
 
 
+def return_cached_blocks(device: torch.device, *, only_when_short: bool) -> None:
+    """Hand this process's unused cached blocks back to the card, so the other stages can allocate them."""
+    if device.type == "cpu":
+        return
+    else:
+        pass
+    device_module = torch.get_device_module(device)
+    free_bytes, _ = device_module.mem_get_info(device)
+    if not only_when_short or free_bytes < OTHER_STAGES_HEADROOM_BYTES:
+        device_module.empty_cache()
+    else:
+        pass
+
+
 def clone_caches(caches: StreamCaches) -> StreamCaches:
     flow_cache, hift_cache = caches
     return (
@@ -209,18 +223,7 @@ class MiniCPMOVocoderRuntime:
         self.return_cached_blocks(only_when_short=True)
 
     def return_cached_blocks(self, *, only_when_short: bool) -> None:
-        """Hand this process's unused cached blocks back to the card, so the other stages can allocate them."""
-        device = self.token2wav.device
-        if device.type == "cpu":
-            return
-        else:
-            pass
-        device_module = torch.get_device_module(device)
-        free_bytes, _ = device_module.mem_get_info(device)
-        if not only_when_short or free_bytes < OTHER_STAGES_HEADROOM_BYTES:
-            device_module.empty_cache()
-        else:
-            pass
+        return_cached_blocks(self.token2wav.device, only_when_short=only_when_short)
 
     def streams_per_forward(self, states: list[MiniCPMOVocoderSessionState]) -> int:
         # note (0xtoward): Session caps reserve no device memory; a forward can use this process's cached blocks and the card's free memory, short of the other stages' headroom.

@@ -37,6 +37,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
+    return_cached_blocks,
 )
 from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
@@ -216,6 +217,7 @@ class PerceptionHooks(BatchedSessionHooks):
                 unit.payload.data = unit.state.build_step_plan(
                     audio_embeds, unit.image_embeds
                 )
+        return_cached_blocks(self.audio_encoder.device, only_when_short=True)
         return [append.payload for append in appends]
 
     def warm_up(self, max_batch_size: int) -> None:
