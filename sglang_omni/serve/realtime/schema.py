@@ -76,6 +76,7 @@ class SamplingConfig(TypedDict, total=False):
     repetition_window_size: Annotated[int, Field(ge=1)]
     talker_temperature: Annotated[float, Field(ge=0, le=2)]
     talker_repetition_penalty: Annotated[float, Field(ge=1)]
+    max_text_characters_per_unit: Annotated[int, Field(ge=0)]
 
 
 class AudioReference(BaseModel):

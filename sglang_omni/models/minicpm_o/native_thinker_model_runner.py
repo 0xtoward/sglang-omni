@@ -118,7 +118,7 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
                 )
             else:
                 pass
-            result[index] = duplex_sample(
+            token_id = duplex_sample(
                 logits[index],
                 data.thinker_state,
                 special_tokens=special_tokens,
@@ -126,6 +126,22 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
                 generation_step=data.generation_steps,
                 is_listen_forced=data.is_listen_forced,
             )
+            character_limit = data.thinker_state.sampling.max_text_characters_per_unit
+            if (
+                character_limit > 0
+                and data.generation_steps > 0
+                and token_id not in special_tokens.chunk_terminators
+                and len(
+                    data.req.tokenizer.decode(
+                        [*data.generated_unit_ids, token_id], skip_special_tokens=True
+                    )
+                )
+                >= character_limit
+            ):
+                token_id = special_tokens.chunk_eos
+            else:
+                pass
+            result[index] = token_id
             if data.is_listen_forced and data.generation_steps == 0:
                 data.thinker_state.force_listen_counter += 1
             else:

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Native relay of unit images and audio from perception into the thinker session."""
+"""Native relay of unit images and audio from perception into the thinker session, and the thinker's unit sampling."""
 
 from types import SimpleNamespace
 from unittest.mock import Mock, call
@@ -155,6 +155,51 @@ def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
         is_listen_forced=False,
     )
     assert token_id == (special.chunk_eos if closes else 42)
+
+
+@pytest.mark.parametrize(
+    ("character_limit", "closes"), [(0, False), (28, True), (29, False)]
+)
+def test_unit_text_limit_closes_the_unit_before_the_token_that_reaches_it(
+    character_limit: int, closes: bool
+) -> None:
+    token_texts = {40: "a" * 10, 41: "b" * 10, 42: "c" * 8}
+    tokenizer = Mock(unk_token_id=0, bad_token_ids=[])
+    tokenizer.convert_tokens_to_ids.side_effect = dict(
+        zip(REQUIRED_SPECIAL_TOKENS, range(100, 116))
+    ).__getitem__
+    tokenizer.decode.side_effect = lambda token_ids, skip_special_tokens: "".join(
+        token_texts[token_id] for token_id in token_ids
+    )
+    runner = MiniCPMOThinkerModelRunner.__new__(MiniCPMOThinkerModelRunner)
+    runner.special_tokens = None
+    runner.forbidden_token_index = None
+    logits = torch.full((1, 128), -torch.inf)
+    logits[0, 42] = 0.0
+    data = SimpleNamespace(
+        req=Mock(tokenizer=tokenizer),
+        thinker_state=MiniCPMOThinkerSessionState(
+            sampling=MiniCPMODuplexSampling(
+                greedy=True,
+                repetition_penalty=1.0,
+                max_text_characters_per_unit=character_limit,
+            )
+        ),
+        generation_steps=3,
+        is_listen_forced=False,
+        generated_unit_ids=[40, 41],
+    )
+
+    token_ids = runner.sample_next_token_ids(
+        SimpleNamespace(next_token_logits=logits),
+        Mock(),
+        Mock(),
+        [SimpleNamespace(data=data)],
+    )
+
+    assert token_ids.tolist() == [
+        runner.special_tokens.chunk_eos if closes else 42
+    ], "the unit closes exactly when its text would reach the limit"
 
 
 @pytest.mark.parametrize(
