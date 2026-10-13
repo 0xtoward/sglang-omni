@@ -70,6 +70,67 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output_streaming.pcm
 ```
 
+## Example Usage
+
+The reference clip the samples below clone, unmodified:
+
+The reference, `en0` — a 3.9 s clip, the same `common_voice_en_10119832.wav` the cloning example above uses, with the transcript `We asked over twenty different people, and they all said it was his.`:
+
+<audio controls>
+  <source src="https://github.com/user-attachments/files/33393249/en0.wav" type="audio/wav">
+</audio>
+
+### Point tags
+
+A plain `/v1/tts` request: one reference (`en0`), no history, and the tags written into the text at the position where the event should land.
+
+```json
+{
+  "text": "[sighs] Fine. If we miss it, it's on you. [laughs] Well, maybe that's fair.",
+  "references": [{"audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav", "text": "We asked over twenty different people, and they all said it was his."}]
+}
+```
+
+<audio controls>
+  <source src="https://github.com/user-attachments/files/33393205/A1_point_tags.wav" type="audio/wav">
+</audio>
+
+
+### Editing as continuation
+
+Just send the previous VQ tokens and sent it as normal language models do.
+
+```json
+{
+  "text": "The quarterly report is due on Thursday, so please finish it by noon.",
+  "references": [{"audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav", "text": "We asked over twenty different people, and they all said it was his."}],
+  "previous_takes": ["The quarterly report is due on Wednesday, so please finish it by noon."]
+}
+```
+
+<audio controls>
+  <source src="https://github.com/user-attachments/files/33393156/K1_edit_word_with_context.wav" type="audio/wav">
+</audio>
+
+A second edit chained onto the result of the first:
+
+K5 chains a second edit: `by noon` becomes `by five`, with both earlier takes in the context.
+
+```json
+{
+  "text": "The quarterly report is due on Thursday, so please finish it by five.",
+  "references": [{"audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav", "text": "We asked over twenty different people, and they all said it was his."}],
+  "previous_takes": [
+    "The quarterly report is due on Wednesday, so please finish it by noon.",
+    "The quarterly report is due on Thursday, so please finish it by noon."
+  ]
+}
+```
+
+<audio controls>
+  <source src="https://github.com/user-attachments/files/33393164/K5_second_edit_chained.wav" type="audio/wav">
+</audio>
+
 ## Serving Limits
 
 ### Reference Audio Length
