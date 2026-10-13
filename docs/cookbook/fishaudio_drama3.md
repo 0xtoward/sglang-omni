@@ -118,7 +118,7 @@ Change the cap with `--tts_engine.factory.max_prompt_rows`. A prompt and its `ma
 
 Drama 3 runs its attention on the `triton` backend only. The server refuses to start with any other attention backend, for example `--tts_engine.engine.attention_backend fa3`.
 
-## Deployment
+## Deployment Performance
 
 On one GPU the default placement works as is: every stage runs on GPU 0, with the vocoder in its own process. With two GPUs, put the vocoder on the second one, so its decoding no longer shares a GPU with the engine:
 
@@ -131,7 +131,7 @@ sgl-omni serve \
 
 When the engine and the vocoder share one GPU, `--mps on` lets their processes share it through CUDA MPS (see [Same-GPU Data Parallelism with CUDA MPS](../basic_usage/mps_dp.md)). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.
 
-## High Concurrency
+### High Concurrency
 
 The defaults run at most 16 requests at a time on the engine and give it 0.70 of the GPU's memory. For more streams at once, raise the request cap; the measurements below also raise the engine's share:
 
@@ -144,18 +144,34 @@ sgl-omni serve \
 
 These values are sized for an H200: the engine's and the vocoder's shares and the preprocessing reserve must fit one GPU together, which the server checks at startup.
 
-### Throughput and Time to First Audio
+### Production Serving
 
-Measured on H200 GPUs with the settings above, the vocoder's default share and streamed requests, 1,088 requests per concurrency level, each cloning a voice from one reference given as `vq_codes` with its transcript, with `max_new_tokens` 500, `temperature` 1.0, `top_p` 0.9 and `top_k` 30. Each figure is the average over six server starts; the throughput counts every frame the engine generates, including the end-of-speech frame that ends a stream:
+All numbers below were measured on NVIDIA H200 GPUs with streaming requests on Seed-TTS English prompts. Each request clones a voice from one pre-encoded reference (`vq_codes` with its transcript) and uses `temperature` 1.0, `top_p` 0.9, `top_k` 30 and `max_new_tokens` 500. Throughput counts generated acoustic frames per second. TTFA is the time to first audio. RTF is the time from sending a request to its last audio chunk, divided by the duration of the returned audio.
 
-| Vocoder | Concurrent streams | Median time to first audio | 95th percentile | Throughput (generated frames/s) |
-|---|---|---|---|---|
-| On the engine's GPU | 128 | 685 ms | 1,412 ms | 2,177 |
-| On the engine's GPU | 256 | 3,403 ms | 4,255 ms | 2,422 |
-| On a second GPU | 128 | 401 ms | 995 ms | 3,692 |
-| On a second GPU | 256 | 2,146 ms | 2,469 ms | 4,160 |
+| Concurrency | Throughput (frames/s) | TTFA p50 | TTFA p95 | RTF (mean) |
+|---:|---:|---:|---:|---:|
+| 1 | 166.7 | 88.9 ms | 90.8 ms | 0.131 |
+| 2 | 287.0 | 96.2 ms | 130.1 ms | 0.152 |
+| 4 | 467.6 | 108.2 ms | 156.4 ms | 0.186 |
+| 8 | 678.1 | 153.2 ms | 210.9 ms | 0.256 |
+| 16 | 927.6 | 210.1 ms | 287.2 ms | 0.373 |
+| 32 | 1,244.7 | 304.6 ms | 396.1 ms | 0.551 |
+| 64 | 1,687.3 | 450.9 ms | 1,020.1 ms | 0.801 |
 
-With the vocoder on the engine's GPU, at 256 streams the vocoder runs at full load and each new stream's first audio waits in its queue. When you need many concurrent streams and a short time to first audio together, put the vocoder on a second GPU, as under [Deployment](#deployment): at 256 streams that gave about 72% more throughput and a 37% shorter median time to first audio.
+*Table 1. Drama 3 streaming performance on one H200. Each cell is the mean of four runs.*
+
+A single stream gets its first audio in under 100 ms. At concurrency 16, audio is still generated about 2.7× faster than it plays back, and at concurrency 64 mean RTF stays at 0.80. In SGLang-Omni, how the pipeline stages are grouped into processes and placed on GPUs is deployment-time configuration rather than per-model code. Table 2 uses this to compare two vocoder placements at higher concurrency, with the vocoder's default GPU share, 1,088 requests per concurrency level, and the average of six server starts. Its throughput also counts the end-of-speech frame that ends each stream.
+
+| Vocoder placement | Concurrency | Throughput (frames/s) | TTFA p50 | TTFA p95 |
+|---|---:|---:|---:|---:|
+| Engine's GPU | 128 | 2,177 | 685 ms | 1,412 ms |
+| Engine's GPU | 256 | 2,422 | 3,403 ms | 4,255 ms |
+| Second GPU | 128 | 3,692 | 401 ms | 995 ms |
+| Second GPU | 256 | 4,160 | 2,146 ms | 2,469 ms |
+
+*Table 2. Drama 3 streaming performance by vocoder placement. Each cell is the mean of six server starts.*
+
+With the vocoder on the engine's GPU, at 256 streams the vocoder is fully loaded and each new stream's first audio waits in its queue. Moving it to a second GPU, as described under [Deployment](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html#deployment), gave about 72% more throughput and a 37% lower median TTFA at 256 streams. Use this layout when you need many concurrent streams and a short time to first audio together.
 
 ### Non-Streaming Requests
 
@@ -202,3 +218,12 @@ Triton sampling and the fused codebook tower layers have been validated on Hoppe
 Drama 3 codebook sampling: PyTorch, untested GPU sm_120
 Drama 3 tower fused layers: off, untested GPU sm_120
 ```
+
+
+## Links
+
+- [Fish Audio Playground](https://fish.audio)
+- [Fish Speech GitHub](https://github.com/fishaudio/fish-speech)
+- [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
+- [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
+- [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
