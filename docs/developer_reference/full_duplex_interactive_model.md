@@ -46,6 +46,8 @@ Speech settings also accept dotted CLI flags, such as `--speech.dtype float16 --
 
 A session holds at most 8192 tokens of history, which is the model's trained context length. With the default `basic` window, once the history passes `basic_window_high_tokens` the server drops the oldest one-second units until at most `basic_window_low_tokens` tokens remain, and it drops units early when the next unit would not fit; the system prompt and the reference audio always stay. With `--window.sliding_window_mode off`, the server sends `context_exhausted` and closes the session when the history fills. A cut moves the retained KV in place, so the window needs the default bf16 or an fp8 KV cache; with an FP4 KV recipe or an HND KV layout, the server refuses to start unless the window is off.
 
+The voice of one spoken turn keeps up to 4096 tokens of talker history, about two minutes of speech. A longer turn restarts that history from its newest speech, up to half of it, instead of failing the session.
+
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:
 
 ```bash
