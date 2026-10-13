@@ -573,24 +573,14 @@ Pair each token with the matching onomatopoeia immediately after it.
 | `top_k` | int | `null` | Top-k sampling |
 | `seed` | int | `null` | Random seed for reproducibility |
 
+## Links
 
-### Performance
+- [Fish Audio Playground](https://fish.audio)
+- [Fish Speech GitHub](https://github.com/fishaudio/fish-speech)
+- [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
+- [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
+- [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
 
-Throughput on Seed-TTS EN (full set, **N=1088** per run). Client `--max-concurrency` sweep against a Higgs server (`max_running_requests=16`, bf16, CUDA Graph on). Each row is the **mean of 3 runs**. Hardware: **1× H100**.
+## License
 
-| Concurrency | Throughput (req/s) | Mean latency | RTF (per-req) | audio_s/s |
-|---:|---:|---:|---:|---:|
-| 1 | 1.62 | 617 ms | 0.147 | 6.89 |
-| 2 | 2.70 | 742 ms | 0.180 | 11.37 |
-| 4 | 5.45 | 733 ms | 0.177 | 22.84 |
-| 8 | 8.91 | 898 ms | 0.217 | 37.38 |
-| 16 | 14.74 | 1079 ms | 0.262 | 61.84 |
-
-
-- **Concurrency** — Maximum number of in-flight client requests (`--max-concurrency`).
-- **Throughput (req/s)** — Completed requests divided by total benchmark wall-clock time.
-- **Mean latency** — Average end-to-end time per request (send to full response received).
-- **RTF (per-req)** — Average ratio of processing time to generated audio duration per request. `<1` is faster than real time.
-- **audio_s/s** — Total seconds of audio produced divided by total benchmark wall-clock time.
-
-To reproduce the results, follow the instructions in [this script](https://github.com/sgl-project/sglang-omni/blob/main/benchmarks/eval/benchmark_tts_seedtts.py).
+This model is licensed under the [Fish Audio Community License](https://huggingface.co/fishaudio/drama-3/blob/main/LICENSE). Please refer to the license file for more information.
