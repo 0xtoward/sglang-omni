@@ -179,8 +179,8 @@ def talker_unit_payload(unit_index: int) -> StagePayload:
     )
 
 
-def test_a_turn_past_the_talker_context_restarts_from_its_newest_unit() -> None:
-    """Every unit fits the talker request limit: a unit that would not restarts the turn's history from its newest finished unit, and a new turn starts empty."""
+def test_a_turn_past_the_talker_context_keeps_its_newest_units() -> None:
+    """Every unit fits the talker request limit: a unit that would not restarts the turn's history from its newest finished units that fit with it in half the limit, and a new turn starts empty."""
     model = bare_model()
     model.num_audio_tokens = NUM_AUDIO_TOKENS
     model.codec_eos_id = CODEC_EOS
@@ -220,6 +220,8 @@ def test_a_turn_past_the_talker_context_restarts_from_its_newest_unit() -> None:
         )
 
     condition_rows = CONDITIONS_PER_UNIT + 1
+    unit_length = condition_rows + TALKER_TOKENS_PER_UNIT
+    carried_count = TALKER_MAX_REQUEST_LENGTH // 2 // unit_length - 1
     restarted_units = []
     for unit_index, (
         is_bypassed,
@@ -258,25 +260,41 @@ def test_a_turn_past_the_talker_context_restarts_from_its_newest_unit() -> None:
                 + TALKER_TOKENS_PER_UNIT
                 > TALKER_MAX_REQUEST_LENGTH
             ), f"unit {unit_index} restarts only when appending would not fit"
+            carried = [
+                carried_request_data
+                for _, _, _, _, carried_request_data in units[
+                    unit_index - carried_count : unit_index
+                ]
+            ]
             assert request_token_ids == [
+                *[
+                    token_id
+                    for carried_request_data in carried
+                    for token_id in [
+                        *[CODEC_EOS] * condition_rows,
+                        *carried_request_data.output_ids,
+                    ]
+                ],
                 *[CODEC_EOS] * condition_rows,
-                *previous_request_data.output_ids,
-                *[CODEC_EOS] * condition_rows,
-            ], "the rollover keeps the newest unit's condition and codes"
-            carried_condition, condition = request_data.unit_embedding_spans
-            assert (carried_condition.start, carried_condition.end) == (
-                0,
-                condition_rows,
-            )
-            assert (
-                carried_condition.input_embeds
-                is previous_request_data.unit_embedding_spans[-1].input_embeds
-            ), "the rollover carries the newest unit's condition"
+            ], "the rollover keeps the newest units' conditions and codes"
+            *carried_conditions, condition = request_data.unit_embedding_spans
+            for position, (carried_condition, carried_request_data) in enumerate(
+                zip(carried_conditions, carried, strict=True)
+            ):
+                assert (carried_condition.start, carried_condition.end) == (
+                    position * unit_length,
+                    position * unit_length + condition_rows,
+                )
+                assert (
+                    carried_condition.input_embeds
+                    is carried_request_data.unit_embedding_spans[-1].input_embeds
+                ), "the rollover carries each kept unit's own condition"
             assert (condition.start, condition.end) == (
                 len(request_token_ids) - condition_rows,
                 len(request_token_ids),
             )
     assert restarted_units == [
         6,
+        TURN_END_UNIT,
         TURN_END_UNIT + 1,
-    ], "six 31-token units fill 200 tokens, and the next turn starts empty"
+    ], "32-token units pass 200 tokens at units 6 and 10, each rollover keeps two units, and the next turn starts empty"
