@@ -17,7 +17,10 @@ from sglang_omni.models.minicpm_o.components.sglang_thinker import (
     MiniCPMOThinkerForCausalLM,
 )
 from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
-from sglang_omni.models.minicpm_o.native_config import THINKER_CONTEXT_LENGTH
+from sglang_omni.models.minicpm_o.native_config import (
+    THINKER_CONTEXT_LENGTH,
+    MiniCPMODuplexWindow,
+)
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner,
 )
@@ -34,6 +37,10 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
     supports_context_length_override: ClassVar[bool] = True
     tokenizer: PreTrainedTokenizerBase
     adapter: ThinkerAdapter
+    window: MiniCPMODuplexWindow
+
+    def __init__(self, *, window: MiniCPMODuplexWindow) -> None:
+        self.window = window
 
     def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float | bool]:
         return dict(
@@ -60,7 +67,12 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
         return MiniCPMOThinkerModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: MiniCPMOThinkerForCausalLM) -> tuple[None, None]:
-        self.adapter = ThinkerAdapter(self.tokenizer, model.config.vocab_size)
+        self.adapter = ThinkerAdapter(
+            self.tokenizer,
+            model.config.vocab_size,
+            window=self.window,
+            rotary_embedding=model.model.layers[0].self_attn.rotary_emb,
+        )
         return None, None
 
     def extra_scheduler_kwargs(self) -> dict[str, ThinkerAdapter | int]:
