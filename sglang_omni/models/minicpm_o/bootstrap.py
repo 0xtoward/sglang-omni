@@ -107,7 +107,7 @@ def create_talker_scheduler(
         result_adapter=result_adapter,
         session_adapter=TalkerAdapter(model) if session_mode else None,
         # note (0xtoward): the penalty and length floor read device state, never an unresolved token, so lookahead starts at one request.
-        enable_async_decode=not session_mode,
+        enable_async_decode=True,
         async_decode_min_batch_size=1,
     )
 
