@@ -482,6 +482,8 @@ class ARSessionBridge:
         self, session: BridgeSession, native_session: Session, cut: HistoryCut
     ) -> None:
         """Drop retained positions [cut.start, cut.end) of an idle session; later ones move down by the cut length."""
+        import logging, time
+        cut_began = time.perf_counter()
         dropped_length = cut.end - cut.start
         [last_node] = native_session.req_nodes.values()
         last_request = last_node.req
@@ -528,6 +530,8 @@ class ARSessionBridge:
             else:
                 pass
         session.embedding_spans = kept_spans
+        torch.cuda.synchronize()
+        logging.getLogger('window_test').warning('HISTORY_CUT session=%s start=%d end=%d dropped=%d kept_committed=%d ms=%.2f', native_session.session_id, cut.start, cut.end, dropped_length, native_session.committed_origin_len, (time.perf_counter() - cut_began) * 1000)
 
     def drop_retained_kv(self, kv: SessionKV, cut: HistoryCut) -> None:
         """Move the KV after the cut down inside the session row and free the row tail."""
