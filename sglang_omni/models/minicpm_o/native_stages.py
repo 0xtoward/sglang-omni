@@ -37,7 +37,6 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
-    return_cached_blocks,
 )
 from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
@@ -217,7 +216,6 @@ class PerceptionHooks(BatchedSessionHooks):
                 unit.payload.data = unit.state.build_step_plan(
                     audio_embeds, unit.image_embeds
                 )
-        return_cached_blocks(self.audio_encoder.device)
         return [append.payload for append in appends]
 
     def warm_up(self, max_batch_size: int) -> None:
@@ -404,7 +402,6 @@ def create_perception_scheduler(
     )
     # note (Junnan Li): The scheduler hands one call every ready session, so batches go up to the session limit.
     hooks.warm_up(max_open_sessions)
-    return_cached_blocks(torch.device(device))
     return SessionScheduler(
         hooks,
         max_open_sessions=max_open_sessions,

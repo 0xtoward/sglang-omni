@@ -318,14 +318,13 @@ def calculate_stage_load_delta_bytes(
     return int((pre_model_load_memory_gib - post_model_load_memory_gib) * (1024**3))
 
 
-def get_gpu_lock_path(
+def get_gpu_startup_lock_path(
     logical_gpu_id: int,
-    purpose: str,
     *,
     env: dict[str, str] | None = None,
     base_dir: str | Path | None = None,
 ) -> Path:
-    """Return the path of a lock that every process on the same physical GPU shares for one purpose."""
+    """Return the launch-time lock path for a CUDA logical GPU id."""
 
     source_env = env if env is not None else os.environ
     visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
@@ -336,18 +335,7 @@ def get_gpu_lock_path(
     else:
         pass
     lock_dir = Path(base_dir) if base_dir is not None else Path(tempfile.gettempdir())
-    return lock_dir / f"sglang_omni_gpu_{safe_device}_{purpose}.lock"
-
-
-def get_gpu_startup_lock_path(
-    logical_gpu_id: int,
-    *,
-    env: dict[str, str] | None = None,
-    base_dir: str | Path | None = None,
-) -> Path:
-    """Return the launch-time lock path for a CUDA logical GPU id."""
-
-    return get_gpu_lock_path(logical_gpu_id, "startup", env=env, base_dir=base_dir)
+    return lock_dir / f"sglang_omni_gpu_{safe_device}_startup.lock"
 
 
 @contextmanager
@@ -364,26 +352,6 @@ def gpu_startup_lock(logical_gpu_id: int) -> Generator[Path, None, None]:
             yield lock_path
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-
-@contextmanager
-def try_gpu_memory_release_lock(logical_gpu_id: int) -> Generator[bool, None, None]:
-    """Hold the GPU's lock for giving cached memory back; yield False while another process holds it."""
-
-    import fcntl
-
-    lock_path = get_gpu_lock_path(logical_gpu_id, "memory_release")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+") as lock_file:
-        try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield False
-        else:
-            try:
-                yield True
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def try_import_pynvml() -> ModuleType | None:

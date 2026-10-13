@@ -81,7 +81,7 @@ While the server starts, the speech stage records the voice decoder as CUDA grap
 
 Speech settings also accept dotted CLI flags, such as `--speech.dtype float16 --speech.n_timesteps 10`. Stage settings use `--speech.factory.<field>` or `--speech.process`.
 
-The speech state limit is a per-session cap, not reserved GPU memory. A speech forward batches as many streams as the card's free memory and the speech process's own cached blocks can hold, keeps 2 GiB free for the other stages, and recomputes that limit between forwards. After their warm-ups and their steps, the speech and perception stages give their unused cached blocks back to the card when it has less than 2 GiB free and they hold at least 2 GiB, one stage at a time. The automatic thinker KV budget follows `thinker.engine.dtype` and `thinker.engine.kv_cache_dtype`; block-quantized KV caches require an explicit `thinker.engine.kv_cache_bytes` budget.
+The speech state limit is a per-session cap, not reserved GPU memory. A speech forward batches as many streams as the card's free memory and the speech process's own cached blocks can hold, keeps 2 GiB free for the other stages, and recomputes that limit between forwards. The automatic thinker KV budget follows `thinker.engine.dtype` and `thinker.engine.kv_cache_dtype`; block-quantized KV caches require an explicit `thinker.engine.kv_cache_bytes` budget.
 
 A session holds at most 8192 tokens of history, which is the model's trained context length. When that fills, the server sends `context_exhausted` and closes the session.
 
