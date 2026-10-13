@@ -101,6 +101,8 @@ While the server starts, the speech stage records the voice decoder as CUDA grap
 
 A session holds at most 8192 tokens of history, which is the model's trained context length. With the default `window.mode basic`, once the history passes `window.high_tokens` the server drops the oldest one-second units until at most `window.low_tokens` tokens remain, and it also drops units early when the next unit would not fit; the system prompt and the reference audio always stay. With `--window.mode off`, the server sends `context_exhausted` and closes the session when the history fills.
 
+The voice of one spoken turn keeps up to 4096 tokens of talker history, about two minutes of speech. A longer turn restarts that history from its newest speech, up to half of it, instead of failing the session.
+
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:
 
 ```bash
