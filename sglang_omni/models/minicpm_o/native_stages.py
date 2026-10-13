@@ -292,7 +292,10 @@ class SpeechHooks(BatchedSessionHooks):
             if is_turn_end[index]
             or (
                 not append.payload.data["is_listen"]
-                and append.payload.data["talker_conditions"]
+                and (
+                    append.payload.data["talker_conditions"]
+                    or append.payload.data["codec_tokens"]
+                )
             )
         ]
 

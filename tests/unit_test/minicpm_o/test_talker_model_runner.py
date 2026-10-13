@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MiniCPM-o talker sampling on per-slot device history against the host window and SGLang's sampler."""
+"""MiniCPM-o talker sampling on per-slot device history against the host window and SGLang's sampler, and the session talker's unit bypass."""
 
 from __future__ import annotations
 
@@ -16,10 +16,14 @@ from sglang.srt.sampling.sampling_params import TOP_K_ALL, SamplingParams
 
 from sglang_omni.model_runner.base import rank_shared_unseeded_sampling_seed
 from sglang_omni.models.minicpm_o import talker_model_runner
+from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
 from sglang_omni.models.minicpm_o.talker_model_runner import (
     MiniCPMOTalkerModelRunner,
     TalkerSlotState,
 )
+from sglang_omni.models.minicpm_o.talker_session import TalkerAdapter
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from tests.unit_test.fixtures.accelerator import require_cuda
 
 VOCAB_SIZE = 64
@@ -28,6 +32,8 @@ MIN_NEW_TOKENS = 5
 SEED = 7
 SLOT_COUNT = 12
 SUPPRESSED_ROW_AND_TOKEN = (1, 3)
+AUDIO_BOS_ID = 5
+TEXT_EMBEDDING_ROWS = 8
 
 
 def make_talker_request(
@@ -382,3 +388,65 @@ def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
         sampling_info = build_batch_sampling_info(sampling_params, device)
         assert graph_runner.samples_in_graph(len(rows), sampling_info) is is_graph_used
         assert not graph_runner.samples_in_graph(9, sampling_info), "above the top size"
+
+
+def build_talker_adapter(text_embedding: torch.nn.Embedding) -> TalkerAdapter:
+    return TalkerAdapter(
+        SimpleNamespace(
+            codec_eos_id=CODEC_EOS_ID,
+            emb_text=text_embedding,
+            projector_semantic=torch.nn.Identity(),
+            audio_bos_token_id=AUDIO_BOS_ID,
+            normalize_projected_hidden=True,
+            num_audio_tokens=VOCAB_SIZE,
+        )
+    )
+
+
+def build_unit_without_new_text(
+    is_listen: bool, run_talker_on_empty_speak_units: bool
+) -> StagePayload:
+    sampling = MiniCPMODuplexSampling(
+        run_talker_on_empty_speak_units=run_talker_on_empty_speak_units
+    )
+    return StagePayload(
+        "unit",
+        OmniRequest(None, params=sampling.model_dump()),
+        dict(talker_conditions=[], is_listen=is_listen, end_of_turn=False),
+    )
+
+
+@pytest.mark.parametrize(
+    ("is_listen", "run_talker_on_empty_speak_units", "bypasses"),
+    [(False, True, False), (False, False, True), (True, True, True)],
+)
+def test_talker_bypasses_a_unit_without_new_text_unless_it_speaks_the_backlog(
+    is_listen: bool, run_talker_on_empty_speak_units: bool, bypasses: bool
+) -> None:
+    adapter = build_talker_adapter(torch.nn.Embedding(TEXT_EMBEDDING_ROWS, 4))
+    session_identity = SessionIdentity("talker")
+    adapter.open(session_identity, OmniRequest(None, params={}))
+    payload = build_unit_without_new_text(is_listen, run_talker_on_empty_speak_units)
+
+    preparation = adapter.prepare_unit(
+        session_identity, TimedChunk("text", 1000, 1000, 1, None), payload
+    )
+
+    assert preparation.bypass_generation is bypasses
+
+
+def test_talker_conditions_a_unit_without_new_text_on_audio_bos_alone() -> None:
+    text_embedding = torch.nn.Embedding(TEXT_EMBEDDING_ROWS, 4)
+    adapter = build_talker_adapter(text_embedding)
+    session_identity = SessionIdentity("talker")
+    adapter.open(session_identity, OmniRequest(None, params={}))
+    chunk = TimedChunk("text", 1000, 1000, 1, None)
+    payload = build_unit_without_new_text(False, True)
+    adapter.prepare_unit(session_identity, chunk, payload)
+
+    request_data = adapter.build(session_identity, chunk, payload)
+
+    (span,) = request_data.unit_embedding_spans
+    assert torch.equal(
+        span.input_embeds, text_embedding(torch.tensor([AUDIO_BOS_ID]))
+    ), "the condition is the audio_bos embedding and nothing else"

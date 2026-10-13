@@ -320,3 +320,30 @@ def test_speech_hooks_emit_one_voice_chunk_per_unit() -> None:
     assert voice.duration_ms == 1000
     assert len(voice.payload["pcm"]) == 2 * OUTPUT_SAMPLE_RATE
     assert runtime.token2wav.forward_sizes == [1]
+
+
+@pytest.mark.parametrize(
+    ("codec_token_count", "voice_duration_ms"), [(CODEC_CHUNK_SIZE, 1000), (0, 0)]
+)
+def test_speech_hooks_voice_a_speak_unit_without_new_text_when_the_talker_ran(
+    codec_token_count: int, voice_duration_ms: int
+) -> None:
+    runtime = open_runtime([])
+    hooks = SpeechHooks(runtime, b"voice")
+    session_identity = SessionIdentity("backlog")
+    hooks.open(session_identity, SimpleNamespace(params={}))
+    chunks: list[TimedChunk] = []
+    append = speech_append(
+        session_identity,
+        chunks,
+        codec_tokens=list(range(codec_token_count)),
+        is_listen=False,
+    )
+    append.payload.data["talker_conditions"] = []
+
+    hooks.append_batch([append])
+
+    (voice,) = chunks
+    assert (
+        voice.duration_ms == voice_duration_ms
+    ), "codec tokens alone decide whether a speak unit without new text is voiced"

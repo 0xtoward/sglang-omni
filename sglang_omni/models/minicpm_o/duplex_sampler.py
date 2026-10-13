@@ -90,6 +90,16 @@ def duplex_sample(
             else:
                 pass
 
+            if sampling.length_penalty != 1.0:
+                turn_end_logit = logits_row[special_tokens.turn_eos]
+                logits_row[special_tokens.turn_eos] = torch.where(
+                    turn_end_logit > 0,
+                    turn_end_logit / sampling.length_penalty,
+                    turn_end_logit * sampling.length_penalty,
+                )
+            else:
+                pass
+
             if sampling.listen_prob_scale != 1.0:
                 logits_row[special_tokens.listen] *= sampling.listen_prob_scale
             else:

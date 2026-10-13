@@ -83,6 +83,11 @@ class MiniCPMODuplexSampling(BaseModel):
     repetition_window_size: int = Field(default=512, ge=1)
     talker_temperature: float = Field(default=0.8, ge=0, le=2)
     talker_repetition_penalty: float = Field(default=1.05, ge=1)
+    # note (0xtoward): 0 keeps every token; the checkpoint's demo closes a unit before its text reaches 28 characters.
+    max_text_characters_per_unit: int = Field(default=0, ge=0)
+    # note (0xtoward): Scales the turn_eos logit away from zero, as the checkpoint's demo does at 1.1.
+    length_penalty: float = Field(default=1.0, gt=0)
+    run_talker_on_empty_speak_units: bool = False
 
 
 class MiniCPMODuplexVision(BaseModel):

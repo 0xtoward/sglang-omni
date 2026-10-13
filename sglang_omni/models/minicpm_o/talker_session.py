@@ -69,9 +69,14 @@ class TalkerAdapter(ARSessionAdapter):
         thinker_result["speech_turn_start"] = state.is_turn_start
         is_turn_end = thinker_result["end_of_turn"] or chunk.eos
         thinker_result["end_of_turn"] = is_turn_end
-        should_bypass_generation = not thinker_result["talker_conditions"] or (
-            thinker_result["is_listen"] and not is_turn_end
+        # note (0xtoward): The checkpoint's loop still runs the talker on a speak unit without new text, which speaks the backlog.
+        speaks_backlog = (
+            payload.request.params["run_talker_on_empty_speak_units"]
+            and not thinker_result["is_listen"]
         )
+        should_bypass_generation = (
+            not thinker_result["talker_conditions"] and not speaks_backlog
+        ) or (thinker_result["is_listen"] and not is_turn_end)
         if should_bypass_generation and is_turn_end:
             state.is_reset_pending = True
         else:
@@ -93,11 +98,15 @@ class TalkerAdapter(ARSessionAdapter):
             torch.tensor(
                 [token_id for token_id, _, _ in talker_conditions], dtype=torch.long
             ),
-            torch.stack(
-                [
-                    torch.as_tensor(hidden_state)
-                    for _, hidden_state, _ in talker_conditions
-                ]
+            (
+                torch.stack(
+                    [
+                        torch.as_tensor(hidden_state)
+                        for _, hidden_state, _ in talker_conditions
+                    ]
+                )
+                if talker_conditions
+                else torch.empty(0)
             ),
             text_embedding=self.model.emb_text,
             semantic_projector=self.model.projector_semantic,
