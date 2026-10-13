@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Incremental speech conditions over the shared SGLang talker and native KV."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -32,6 +32,11 @@ TALKER_TOKENS_PER_UNIT = CODEC_CHUNK_SIZE + 1
 class TalkerSessionState:
     is_reset_pending: bool = False
     is_turn_start: bool = True
+    is_rollover_pending: bool = False
+    # note (0xtoward): Tokens the turn's talker history holds, and the newest finished unit's condition and codes that a rollover keeps.
+    history_length: int = 0
+    previous_condition: torch.Tensor | None = None
+    previous_codec_tokens: list[int] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)
@@ -40,8 +45,12 @@ class TalkerUnitRequestData(SGLangARRequestData):
 
 
 class TalkerAdapter(ARSessionAdapter):
-    def __init__(self, model: MiniCPMOTalkerForCausalLM) -> None:
+    def __init__(
+        self, model: MiniCPMOTalkerForCausalLM, *, max_request_length: int
+    ) -> None:
         self.model = model
+        self.max_request_length = max_request_length
+        self.boundary_token_ids = (model.audio_bos_token_id,)
         self.tokenizer = CodecTokenizer(eos_token_id=model.codec_eos_id)
         self.states: dict[SessionIdentity, TalkerSessionState] = {}
 
@@ -62,6 +71,7 @@ class TalkerAdapter(ARSessionAdapter):
         if should_reset_history:
             state.is_turn_start = True
             state.is_reset_pending = False
+            state.history_length = 0
         else:
             pass
         thinker_result = payload.data
@@ -76,8 +86,16 @@ class TalkerAdapter(ARSessionAdapter):
             state.is_reset_pending = True
         else:
             pass
+        # note (0xtoward): A turn past the talker context restarts its history from the newest finished unit instead of failing the session.
+        state.is_rollover_pending = not should_bypass_generation and (
+            state.history_length
+            + len(thinker_result["talker_conditions"])
+            + len(self.boundary_token_ids)
+            + TALKER_TOKENS_PER_UNIT
+            > self.max_request_length
+        )
         return ARSessionPreparation(
-            reset_history=should_reset_history,
+            reset_history=should_reset_history or state.is_rollover_pending,
             bypass_generation=should_bypass_generation,
         )
 
@@ -101,7 +119,7 @@ class TalkerAdapter(ARSessionAdapter):
             ),
             text_embedding=self.model.emb_text,
             semantic_projector=self.model.projector_semantic,
-            boundary_tokens=(self.model.audio_bos_token_id,),
+            boundary_tokens=self.boundary_token_ids,
             normalize_projected_hidden=self.model.normalize_projected_hidden,
         )
         sampling_params = SamplingParams(
@@ -120,10 +138,36 @@ class TalkerAdapter(ARSessionAdapter):
         sampling_params.normalize(self.tokenizer)
         sampling_params.verify(self.model.num_audio_tokens)
         condition_rows = int(tts_condition.shape[0])
+        if state.is_rollover_pending:
+            assert (
+                state.previous_condition is not None
+            ), "a rollover keeps the newest finished unit of the turn"
+            carried_rows = int(state.previous_condition.shape[0])
+            carried_token_ids = [
+                self.model.codec_eos_id
+            ] * carried_rows + state.previous_codec_tokens
+            embedding_spans = [
+                EmbeddingSpan(
+                    start=0, end=carried_rows, input_embeds=state.previous_condition
+                )
+            ]
+        else:
+            carried_token_ids = []
+            embedding_spans = []
+        embedding_spans.append(
+            EmbeddingSpan(
+                start=len(carried_token_ids),
+                end=len(carried_token_ids) + condition_rows,
+                input_embeds=tts_condition,
+            )
+        )
         request = Req(
             rid=payload.request_id,
             origin_input_text="",
-            origin_input_ids=[self.model.codec_eos_id] * condition_rows,
+            origin_input_ids=[
+                *carried_token_ids,
+                *[self.model.codec_eos_id] * condition_rows,
+            ],
             sampling_params=sampling_params,
             eos_token_ids={self.model.codec_eos_id},
             vocab_size=self.model.num_audio_tokens,
@@ -132,9 +176,7 @@ class TalkerAdapter(ARSessionAdapter):
         return TalkerUnitRequestData(
             req=request,
             stage_payload=payload,
-            unit_embedding_spans=[
-                EmbeddingSpan(start=0, end=condition_rows, input_embeds=tts_condition)
-            ],
+            unit_embedding_spans=embedding_spans,
             max_new_tokens=TALKER_TOKENS_PER_UNIT,
             talker_model_inputs={
                 "rep_penalty": payload.request.params["talker_repetition_penalty"]
@@ -149,4 +191,9 @@ class TalkerAdapter(ARSessionAdapter):
         state = self.states[session_identity]
         state.is_turn_start = False
         state.is_reset_pending = payload.data["end_of_turn"]
+        state.history_length = len(request_data.req.origin_input_ids) + len(
+            request_data.output_ids
+        )
+        state.previous_condition = request_data.unit_embedding_spans[-1].input_embeds
+        state.previous_codec_tokens = list(request_data.output_ids)
         return payload
