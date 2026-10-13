@@ -42,4 +42,4 @@ jobs:
           node-version: "22"
 
       - name: Test realtime playback state
-        run: node --test playground/qwen-omni/realtime/playback.test.js
+        run: node --test playground/qwen-omni/realtime/playback.test.js playground/realtime/frontend/orb/worklet.test.js

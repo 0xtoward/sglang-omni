@@ -860,7 +860,10 @@ that happened to contain an older version of the test.
   - realtime barge-in cancellation, partial session updates, terminal races,
     VAD stop-to-start segmentation, and assistant-history truncation.
   - Browser-side realtime playback state is covered separately by
-    `playground/qwen-omni/realtime/playback.test.js`.
+    `playground/qwen-omni/realtime/playback.test.js`, and the duplex orb page's
+    playback buffering (whole-unit prebuffer, faded stalls, per-response underrun
+    report) by `playground/realtime/frontend/orb/worklet.test.js`; the Lint
+    workflow runs both with `node --test`.
 
 - `unit_test/fishaudio_s2_pro/`: FishAudio S2-Pro unit tests:
   - inference prompt segmentation, reference VQ edge cases, and state contracts
