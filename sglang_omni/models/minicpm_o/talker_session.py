@@ -112,6 +112,9 @@ class TalkerAdapter(ARSessionAdapter):
             + TALKER_TOKENS_PER_UNIT
             > self.max_request_length
         )
+        if state.is_rollover_pending:
+            import logging
+            logging.getLogger('talker_test').warning('TALKER_ROLLOVER session=%s history=%d conditions=%d', session_identity, state.history_length, len(thinker_result["talker_conditions"]))
         return ARSessionPreparation(
             reset_history=should_reset_history or state.is_rollover_pending,
             bypass_generation=should_bypass_generation,
