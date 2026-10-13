@@ -306,3 +306,70 @@ def test_batched_streaming_matches_each_session_alone(
             state.key_value_states.untyped_storage().nbytes()
             == state.key_value_states.nbytes
         )
+
+
+def test_budget_split_streaming_batch_matches_each_session_alone_up_to_rounding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sessions join forwards in ascending history order while rows times padded frames fit the budget, and a lone session always runs."""
+    history_lengths = (1400, 0, 400, 1480, 60, 450, 900)
+    new_frames = 50
+    budget_frames = 1100
+    config = small_whisper_config()
+    history_bytes_per_frame = (
+        config.encoder_layers * 2 * config.d_model * torch.float32.itemsize
+    )
+    encoder = tiny_audio_encoder()
+    generator = torch.Generator().manual_seed(1)
+    chunks = [
+        StreamingAudioChunk(
+            audio_features=torch.randn(
+                1, 80, STREAMING_MEL_FRAMES, generator=generator
+            ),
+            state=random_history(length, generator),
+            prefix_extra_frames=2,
+            suffix_extra_frames=2,
+        )
+        for length in history_lengths
+    ]
+    alone = [
+        encoder.forward_streaming_batch([dataclasses.replace(chunk)])[0]
+        for chunk in chunks
+    ]
+    forwards: list[tuple[int, int]] = []
+
+    def record_forward(
+        module: torch.nn.Module, inputs: tuple[torch.Tensor, ...]
+    ) -> None:
+        key_value_states = inputs[2]
+        forwards.append((key_value_states.shape[2], key_value_states.shape[4]))
+
+    encoder.apm.register_forward_pre_hook(record_forward)
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.components.audio_encoder.STREAMING_BATCH_HISTORY_BYTES",
+        budget_frames * history_bytes_per_frame,
+    )
+
+    split = encoder.forward_streaming_batch(
+        [dataclasses.replace(chunk) for chunk in chunks]
+    )
+
+    assert forwards == [
+        (3, 60 + new_frames),
+        (2, 450 + new_frames),
+        (1, 900 + new_frames),
+        (1, 1400 + new_frames),
+    ], "ascending history, the 1480 row reset to none, while rows x padded frames fit"
+    for (embeds, state), (alone_embeds, alone_state) in zip(split, alone, strict=True):
+        torch.testing.assert_close(embeds, alone_embeds, rtol=1e-5, atol=1e-5)
+        assert state.past_length == alone_state.past_length
+        torch.testing.assert_close(
+            state.key_value_states,
+            alone_state.key_value_states,
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        assert (
+            state.key_value_states.untyped_storage().nbytes()
+            == state.key_value_states.nbytes
+        )

@@ -77,7 +77,7 @@ For repeatable output in regression and parity recordings, add `--sampling.greed
 | `sampling` | printed by `config resolve` | Default sampling when a session does not set its own |
 | `vision` | printed by `config resolve` | Camera-frame limits per unit (1 s of audio) |
 
-While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them.
+While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them. Perception encodes the audio of long conversations in several batches of at most 1 GiB of attention history each.
 
 A session holds at most 8192 tokens of history, which is the model's trained context length. When that fills, the server sends `context_exhausted` and closes the session.
 

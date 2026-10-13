@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 AudioBatchKey = tuple[tuple[int, ...], int, int]
 # note (Junnan Li): cuDNN attention rebuilds a graph for every new key length, and streaming makes a new one each unit.
 STREAMING_ATTENTION_BACKENDS = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+# note (0xtoward): 24-32 sessions with aligned 30 s histories asked for about 2 GiB in one step (4.4 GiB near the 1500-frame limit) and failed them all on an H100-sized card; 1 GiB still batches 7 sessions at that limit.
+STREAMING_BATCH_HISTORY_BYTES = 1 << 30
 
 
 @dataclass(kw_only=True)
@@ -242,22 +244,9 @@ class MiniCPMOAudioEncoder(nn.Module):
     def forward_streaming_batch(
         self, chunks: list[StreamingAudioChunk]
     ) -> list[tuple[torch.Tensor, AudioEncoderState]]:
-        """Encode one mel chunk per session in one forward; histories are left-padded and the padding is masked."""
+        """Encode one mel chunk per session, in forwards whose padded histories fit STREAMING_BATCH_HISTORY_BYTES; results follow chunk order."""
         first = chunks[0]
         convolution_length = (first.audio_features.shape[-1] + 1) // 2
-        states: list[AudioEncoderState] = []
-        for chunk in chunks:
-            state = AudioEncoderState() if chunk.state is None else chunk.state
-            chunk.state = None
-            if (
-                state.past_length + convolution_length
-                >= self.apm.embed_positions.num_embeddings
-            ):
-                logger.info(f"Resetting audio encoder KV at {state.past_length} frames")
-                state = AudioEncoderState()
-            else:
-                pass
-            states.append(state)
         current_length = (
             convolution_length
             - (first.prefix_extra_frames + 1) // 2
@@ -267,6 +256,65 @@ class MiniCPMOAudioEncoder(nn.Module):
             raise ValueError("streaming audio chunk is too short after context removal")
         else:
             pass
+        past_lengths: list[int] = []
+        for chunk in chunks:
+            if chunk.state is None:
+                past_lengths.append(0)
+            elif (
+                chunk.state.past_length + convolution_length
+                >= self.apm.embed_positions.num_embeddings
+            ):
+                logger.info(
+                    f"Resetting audio encoder KV at {chunk.state.past_length} frames"
+                )
+                chunk.state = None
+                past_lengths.append(0)
+            else:
+                past_lengths.append(chunk.state.past_length)
+        attention = self.apm.layers[0].self_attn
+        history_bytes_per_frame = (
+            len(self.apm.layers)
+            * 2
+            * attention.num_heads
+            * attention.head_dim
+            * self.dtype.itemsize
+        )
+        # note (0xtoward): Sorted by history, each added session is its group's longest and sets every row's padded length.
+        row_groups: list[list[int]] = []
+        for row in sorted(range(len(chunks)), key=past_lengths.__getitem__):
+            if (
+                row_groups
+                and (len(row_groups[-1]) + 1)
+                * (past_lengths[row] + current_length)
+                * history_bytes_per_frame
+                <= STREAMING_BATCH_HISTORY_BYTES
+            ):
+                row_groups[-1].append(row)
+            else:
+                row_groups.append([row])
+        encoded_by_row: dict[int, tuple[torch.Tensor, AudioEncoderState]] = {}
+        for rows in row_groups:
+            encoded_by_row.update(
+                zip(
+                    rows,
+                    self.forward_streaming_group(
+                        [chunks[row] for row in rows], current_length
+                    ),
+                    strict=True,
+                )
+            )
+        return [encoded_by_row[row] for row in range(len(chunks))]
+
+    @torch.no_grad()
+    def forward_streaming_group(
+        self, chunks: list[StreamingAudioChunk], current_length: int
+    ) -> list[tuple[torch.Tensor, AudioEncoderState]]:
+        """Encode one mel chunk per session in one forward; histories must leave room for the chunk's positions, and are left-padded with the padding masked."""
+        first = chunks[0]
+        states: list[AudioEncoderState] = []
+        for chunk in chunks:
+            states.append(AudioEncoderState() if chunk.state is None else chunk.state)
+            chunk.state = None
         past_lengths = [state.past_length for state in states]
         longest = max(past_lengths)
         attention = self.apm.layers[0].self_attn
