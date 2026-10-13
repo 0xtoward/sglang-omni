@@ -33,10 +33,9 @@ class TalkerSessionState:
     is_reset_pending: bool = False
     is_turn_start: bool = True
     is_rollover_pending: bool = False
-    # note (0xtoward): Tokens the turn's talker history holds, and the newest finished unit's condition and codes that a rollover keeps.
+    # note (0xtoward): Tokens the turn's talker history holds, and the turn's newest finished units (condition, codes) that a rollover can keep.
     history_length: int = 0
-    previous_condition: torch.Tensor | None = None
-    previous_codec_tokens: list[int] = field(default_factory=list)
+    recent_units: list[tuple[torch.Tensor, list[int]]] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)
@@ -53,6 +52,24 @@ class TalkerAdapter(ARSessionAdapter):
         self.boundary_token_ids = (model.audio_bos_token_id,)
         self.tokenizer = CodecTokenizer(eos_token_id=model.codec_eos_id)
         self.states: dict[SessionIdentity, TalkerSessionState] = {}
+
+    def units_to_carry(
+        self, units: list[tuple[torch.Tensor, list[int]]], next_unit_length: int
+    ) -> list[tuple[torch.Tensor, list[int]]]:
+        """The newest units that fit with the next unit in half the request limit, and at least the newest one."""
+        first = len(units) - 1
+        kept_length = (
+            next_unit_length + int(units[first][0].shape[0]) + len(units[first][1])
+        )
+        while first > 0:
+            condition, codec_tokens = units[first - 1]
+            unit_length = int(condition.shape[0]) + len(codec_tokens)
+            if kept_length + unit_length > self.max_request_length // 2:
+                break
+            else:
+                kept_length += unit_length
+                first -= 1
+        return units[first:]
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         self.states[session_identity] = TalkerSessionState()
@@ -72,6 +89,7 @@ class TalkerAdapter(ARSessionAdapter):
             state.is_turn_start = True
             state.is_reset_pending = False
             state.history_length = 0
+            state.recent_units.clear()
         else:
             pass
         thinker_result = payload.data
@@ -138,22 +156,28 @@ class TalkerAdapter(ARSessionAdapter):
         sampling_params.normalize(self.tokenizer)
         sampling_params.verify(self.model.num_audio_tokens)
         condition_rows = int(tts_condition.shape[0])
+        carried_token_ids: list[int] = []
+        embedding_spans: list[EmbeddingSpan] = []
         if state.is_rollover_pending:
             assert (
-                state.previous_condition is not None
+                state.recent_units
             ), "a rollover keeps the newest finished unit of the turn"
-            carried_rows = int(state.previous_condition.shape[0])
-            carried_token_ids = [
-                self.model.codec_eos_id
-            ] * carried_rows + state.previous_codec_tokens
-            embedding_spans = [
-                EmbeddingSpan(
-                    start=0, end=carried_rows, input_embeds=state.previous_condition
+            # note (0xtoward): Like the thinker's window, a rollover keeps the turn's newest units, here as many as fit with the new unit in half the request limit.
+            state.recent_units = self.units_to_carry(
+                state.recent_units, condition_rows + TALKER_TOKENS_PER_UNIT
+            )
+            for condition, codec_tokens in state.recent_units:
+                rows = int(condition.shape[0])
+                embedding_spans.append(
+                    EmbeddingSpan(
+                        start=len(carried_token_ids),
+                        end=len(carried_token_ids) + rows,
+                        input_embeds=condition,
+                    )
                 )
-            ]
+                carried_token_ids += [self.model.codec_eos_id] * rows + codec_tokens
         else:
-            carried_token_ids = []
-            embedding_spans = []
+            pass
         embedding_spans.append(
             EmbeddingSpan(
                 start=len(carried_token_ids),
@@ -194,6 +218,11 @@ class TalkerAdapter(ARSessionAdapter):
         state.history_length = len(request_data.req.origin_input_ids) + len(
             request_data.output_ids
         )
-        state.previous_condition = request_data.unit_embedding_spans[-1].input_embeds
-        state.previous_codec_tokens = list(request_data.output_ids)
+        state.recent_units.append(
+            (
+                request_data.unit_embedding_spans[-1].input_embeds,
+                list(request_data.output_ids),
+            )
+        )
+        state.recent_units = self.units_to_carry(state.recent_units, 0)
         return payload
