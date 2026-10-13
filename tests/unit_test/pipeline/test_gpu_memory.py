@@ -375,6 +375,26 @@ def test_gpu_startup_lock_releases_after_exception(
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+def test_gpu_memory_release_lock_is_granted_only_while_no_other_holder_has_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setattr(gpu_memory.tempfile, "gettempdir", lambda: str(tmp_path))
+    lock_path = gpu_memory.get_gpu_lock_path(0, "memory_release")
+
+    with open(lock_path, "a+") as other_holder:
+        fcntl.flock(other_holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with gpu_memory.try_gpu_memory_release_lock(0) as is_held_while_taken:
+            pass
+        fcntl.flock(other_holder.fileno(), fcntl.LOCK_UN)
+    with gpu_memory.try_gpu_memory_release_lock(0) as is_held_when_free:
+        pass
+
+    assert not is_held_while_taken, "another holder keeps the release lock"
+    assert is_held_when_free, "a free release lock is granted"
+
+
 def test_get_gpu_device_info_reports_name_and_total_memory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

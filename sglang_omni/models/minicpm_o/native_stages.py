@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from PIL import Image
 from pydantic import JsonValue
+from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.mem_cache.kv_cache_dtype import configure_kv_cache_dtype
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase
 
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
@@ -35,10 +37,14 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
+    return_cached_blocks,
 )
 from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
-from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
+from sglang_omni.models.minicpm_o.hf_config import (
+    MiniCPMOConfig,
+    register_minicpm_o_hf_config,
+)
 from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_MAX_SESSIONS,
     DEFAULT_SPEECH_SETTINGS,
@@ -65,6 +71,8 @@ logger = logging.getLogger(__name__)
 WARM_UP_UNITS = 2
 # note (Junnan Li): One vocoder forward with the chunk graphs costs about this much before its width adds to it.
 FORWARD_FLOOR_MS = 45
+# note (0xtoward): these KV formats store per-block scales, so their bytes per token are not one element size.
+BLOCK_QUANTIZED_KV_CACHE_DTYPES = ("nvfp4", "fp4_mx_block16", "mxfp8")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -209,6 +217,7 @@ class PerceptionHooks(BatchedSessionHooks):
                 unit.payload.data = unit.state.build_step_plan(
                     audio_embeds, unit.image_embeds
                 )
+        return_cached_blocks(self.audio_encoder.device)
         return [append.payload for append in appends]
 
     def warm_up(self, max_batch_size: int) -> None:
@@ -395,6 +404,7 @@ def create_perception_scheduler(
     )
     # note (Junnan Li): The scheduler hands one call every ready session, so batches go up to the session limit.
     hooks.warm_up(max_open_sessions)
+    return_cached_blocks(torch.device(device))
     return SessionScheduler(
         hooks,
         max_open_sessions=max_open_sessions,
@@ -423,12 +433,34 @@ def create_thinker_scheduler(
         )
     else:
         text_config = MiniCPMOConfig.from_pretrained(model_path).get_text_config()
+        overrides = server_args_overrides or {}
+        effective_dtype = overrides.get("dtype", dtype)
+        if effective_dtype == "auto":
+            register_minicpm_o_hf_config()
+            model_dtype = ModelConfig(model_path, dtype="auto").dtype
+        else:
+            model_dtype = resolve_dtype(effective_dtype)
+        cache_format = overrides.get("kv_cache_dtype", "auto")
+        if cache_format in BLOCK_QUANTIZED_KV_CACHE_DTYPES:
+            raise ValueError(
+                "Set thinker.engine.kv_cache_bytes for block-quantized KV caches"
+            )
+        else:
+            pass
+        _, cache_dtype = configure_kv_cache_dtype(
+            server_args_kv_cache_dtype=cache_format,
+            model=None,
+            model_dtype=model_dtype,
+            is_draft_worker=False,
+            is_dflash=False,
+            speculative_draft_attention_backend=None,
+        )
         kv_bytes_per_token = (
             2
             * text_config.num_hidden_layers
             * text_config.num_key_value_heads
             * text_config.head_dim
-            * resolve_dtype(dtype).itemsize
+            * cache_dtype.itemsize
         )
         kv_cache_bytes = kv_cache_tokens * kv_bytes_per_token
         logger.info(
@@ -443,6 +475,7 @@ def create_thinker_scheduler(
         ).total_memory_bytes
         if (
             total_memory_bytes is not None
+            and total_gpu_memory_fraction is not None
             and kv_cache_bytes > total_gpu_memory_fraction * total_memory_bytes
         ):
             raise ValueError(
