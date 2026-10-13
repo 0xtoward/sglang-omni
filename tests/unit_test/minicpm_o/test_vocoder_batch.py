@@ -165,13 +165,77 @@ def test_forward_width_follows_the_unheld_state_budget() -> None:
         request(session_id, list(range(CODEC_CHUNK_SIZE)), is_turn_start=True)
         for session_id in session_ids
     ]
-    runtime = open_runtime(session_ids)
-    list(runtime.synthesize_batch(requests))
-    assert runtime.token2wav.forward_sizes == [len(session_ids)]
-
     runtime = open_runtime(session_ids, max_state_bytes_per_session=1)
     list(runtime.synthesize_batch(requests))
     assert runtime.token2wav.forward_sizes == [1] * len(session_ids)
+
+
+def test_wide_rounds_decode_in_request_order_in_graph_wide_forwards() -> None:
+    """Each round decodes every speaking stream once, in request order and at most CHUNK_GRAPH_MAX_STREAMS per forward, into the waveform it gets alone."""
+    width = CHUNK_GRAPH_MAX_STREAMS
+    session_ids = [f"session-{index}" for index in range(2 * width + 4)]
+    listening_index = width
+    runtime, alone = open_runtime(session_ids), open_runtime(session_ids)
+    requests = [
+        request(
+            session_ids[index],
+            (
+                []
+                if index == listening_index
+                else [index] * (CODEC_CHUNK_SIZE * (1 + index % 2))
+            ),
+            is_turn_start=True,
+        )
+        for index in reversed(range(len(session_ids)))
+    ]
+    speaking = [unit.session_id for unit in requests if unit.codec_token_ids]
+    continuing = [
+        unit.session_id
+        for unit in requests
+        if len(unit.codec_token_ids) > CODEC_CHUNK_SIZE
+    ]
+    alone_waveforms = {
+        unit.session_id: waveform
+        for unit in requests
+        for _, waveform in alone.synthesize_batch([unit])
+    }
+    forwards: list[list[str]] = []
+    decode = runtime.token2wav.stream_batch
+
+    def recording_stream_batch(
+        chunks: list[StreamChunk],
+    ) -> list[tuple[bytes, StreamCaches]]:
+        forwards.append(
+            [
+                session_id
+                for chunk in chunks
+                for session_id, state in runtime.sessions.items()
+                if state.caches is chunk.caches
+            ]
+        )
+        return decode(chunks)
+
+    runtime.token2wav.stream_batch = recording_stream_batch
+
+    finished = list(runtime.synthesize_batch(requests))
+
+    assert forwards == [
+        speaking[:width],
+        speaking[width : 2 * width],
+        speaking[2 * width :],
+        continuing[:width],
+        continuing[width:],
+    ], "every speaking stream decodes once per round, in request order"
+    finished_indices = sorted(index for index, _ in finished)
+    assert finished_indices == list(range(len(requests))), "every unit finishes once"
+    for index, waveform in finished:
+        session_id = requests[index].session_id
+        if alone_waveforms[session_id] is None:
+            assert waveform is None, session_id
+        else:
+            np.testing.assert_array_equal(
+                waveform, alone_waveforms[session_id], err_msg=session_id
+            )
 
 
 def test_units_finish_before_later_rounds_in_request_order() -> None:
@@ -204,19 +268,18 @@ def test_units_finish_before_later_rounds_in_request_order() -> None:
 
 
 @pytest.mark.parametrize(
-    ("max_open_sessions", "stream_counts", "forward_widths"),
+    ("max_open_sessions", "stream_counts"),
     [
-        (1, (1,), (2,)),
-        (2, (1, 2), (2,)),
-        (6, (1, 2, 4, 6), (2,)),
-        (CHUNK_GRAPH_MAX_STREAMS, (1, 2, 4, 8), (2,)),
-        (CHUNK_GRAPH_MAX_STREAMS + 1, (1, 2, 4, 8), (2, CHUNK_GRAPH_MAX_STREAMS + 1)),
+        (1, (1,)),
+        (2, (1, 2)),
+        (6, (1, 2, 4, 6)),
+        (CHUNK_GRAPH_MAX_STREAMS, (1, 2, 4, 8)),
+        (CHUNK_GRAPH_MAX_STREAMS + 1, (1, 2, 4, 8)),
     ],
 )
-def test_warm_up_decodes_equal_and_ragged_forwards_of_every_reachable_width(
+def test_warm_up_captures_graphs_up_to_the_widest_and_decodes_two_streams_only(
     max_open_sessions: int,
     stream_counts: tuple[int, ...],
-    forward_widths: tuple[int, ...],
 ) -> None:
     runtime = MiniCPMOVocoderRuntime(
         FakeCode2Wav(),
@@ -247,23 +310,35 @@ def test_warm_up_decodes_equal_and_ragged_forwards_of_every_reachable_width(
     assert runtime.token2wav.captured_graphs == [
         (stream_counts, (CODEC_CHUNK_SIZE * UP_RATE, (window - 1) * UP_RATE))
     ]
-    expected_forwards = []
-    for width in forward_widths:
-        expected_forwards += [
-            [(window, False, OPENED_HISTORY_FRAMES)] * width,
-            [(window, False, OPENED_HISTORY_FRAMES + 1)] * (width - 1)
-            + [(PRE_LOOKAHEAD, True, OPENED_HISTORY_FRAMES + 1)],
-        ]
-    assert forwards == expected_forwards
+    assert forwards == [
+        [(window, False, OPENED_HISTORY_FRAMES)] * 2,
+        [
+            (window, False, OPENED_HISTORY_FRAMES + 1),
+            (PRE_LOOKAHEAD, True, OPENED_HISTORY_FRAMES + 1),
+        ],
+    ], "an equal and then a ragged two-stream forward, however many sessions"
     assert not runtime.sessions and not runtime.speakers
     assert runtime.token2wav.vocoder_warm_ups == []
 
 
-def test_speech_hooks_warm_the_vocoder_for_every_reachable_batch() -> None:
-    runtime = open_runtime([])
+@pytest.mark.parametrize(
+    ("max_open_sessions", "vocoder_rows"),
+    [
+        (DEFAULT_MAX_SESSIONS, DEFAULT_MAX_SESSIONS),
+        (CHUNK_GRAPH_MAX_STREAMS + 1, CHUNK_GRAPH_MAX_STREAMS),
+    ],
+)
+def test_speech_hooks_warm_the_vocoder_for_every_reachable_batch(
+    max_open_sessions: int, vocoder_rows: int
+) -> None:
+    runtime = MiniCPMOVocoderRuntime(
+        FakeCode2Wav(),
+        max_state_bytes_per_session=DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
+        max_open_sessions=max_open_sessions,
+    )
     SpeechHooks(runtime, b"voice").warm_up_serving_thread()
     assert runtime.token2wav.vocoder_warm_ups == [
-        (DEFAULT_MAX_SESSIONS, (CODEC_CHUNK_SIZE + PRE_LOOKAHEAD) * UP_RATE)
+        (vocoder_rows, (CODEC_CHUNK_SIZE + PRE_LOOKAHEAD) * UP_RATE)
     ]
 
 

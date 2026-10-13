@@ -213,39 +213,29 @@ class MiniCPMOVocoderRuntime:
             estimate_cache_bytes(state.caches) for state in states
         )
         if forward_bytes_per_stream == 0:
-            return len(states)
+            budget_streams = len(states)
         else:
-            return max(1, unheld_bytes // forward_bytes_per_stream)
+            budget_streams = max(1, unheld_bytes // forward_bytes_per_stream)
+        # note (0xtoward): A forward wider than every graph runs eagerly on a fresh window of about 0.6 GiB per stream, so a wider round runs as several graph-wide forwards.
+        return min(budget_streams, CHUNK_GRAPH_MAX_STREAMS)
 
     def warm_up(self, reference_audio: bytes) -> None:
-        """Capture the flow's chunk graphs for this voice, then decode a stream prefill and an equal-length and a ragged chunk forward of every width a forward can reach."""
-        # note (Junnan Li): A forward wider than every graph runs eagerly, and a compiled estimator compiles its equal and ragged forms once each.
-        if self.max_open_sessions > CHUNK_GRAPH_MAX_STREAMS:
-            forward_stream_counts = (2, CHUNK_GRAPH_MAX_STREAMS + 1)
-        else:
-            forward_stream_counts = (2,)
+        """Capture the flow's chunk graphs for this voice, then decode a stream prefill and an equal-length and a ragged two-stream chunk forward."""
         # note (Junnan Li): Every stream decodes a steady chunk in the first round; in the second the last stream decodes only its turn's lookahead tail, so that forward is ragged.
-        batches = [
-            [
-                SynthesisRequest(
-                    session_id=f"warm-up-{stream_count}-continuing-{index}",
-                    codec_token_ids=[SILENCE_TOKEN_ID] * (2 * CODEC_CHUNK_SIZE),
-                    is_turn_start=False,
-                    end_of_turn=False,
-                )
-                for index in range(stream_count - 1)
-            ]
-            + [
-                SynthesisRequest(
-                    session_id=f"warm-up-{stream_count}-ending",
-                    codec_token_ids=[SILENCE_TOKEN_ID] * CODEC_CHUNK_SIZE,
-                    is_turn_start=False,
-                    end_of_turn=True,
-                )
-            ]
-            for stream_count in forward_stream_counts
+        requests = [
+            SynthesisRequest(
+                session_id="warm-up-continuing",
+                codec_token_ids=[SILENCE_TOKEN_ID] * (2 * CODEC_CHUNK_SIZE),
+                is_turn_start=False,
+                end_of_turn=False,
+            ),
+            SynthesisRequest(
+                session_id="warm-up-ending",
+                codec_token_ids=[SILENCE_TOKEN_ID] * CODEC_CHUNK_SIZE,
+                is_turn_start=False,
+                end_of_turn=True,
+            ),
         ]
-        requests = [request for batch in batches for request in batch]
         for request in requests:
             self.open_session(request.session_id, reference_audio=reference_audio)
         speaker = self.sessions[requests[0].session_id].speaker
@@ -267,16 +257,15 @@ class MiniCPMOVocoderRuntime:
                 * up_rate,
             ),
         )
-        for batch in batches:
-            list(self.synthesize_batch(batch))
+        list(self.synthesize_batch(requests))
         for request in requests:
             self.close_session(request.session_id)
 
     def warm_up_vocoder(self) -> None:
-        # note (Junnan Li): A forward takes at most every open session and a chunk holds at most one window of tokens, and cuDNN keeps its plans per thread.
+        # note (Junnan Li): A forward takes at most CHUNK_GRAPH_MAX_STREAMS open sessions and a chunk holds at most one window of tokens, and cuDNN keeps its plans per thread.
         flow = self.token2wav.flow
         self.token2wav.warm_up_vocoder(
-            self.max_open_sessions,
+            min(self.max_open_sessions, CHUNK_GRAPH_MAX_STREAMS),
             flow.up_rate * (CODEC_CHUNK_SIZE + flow.pre_lookahead_len),
         )
 
