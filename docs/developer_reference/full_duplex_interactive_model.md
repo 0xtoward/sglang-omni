@@ -39,6 +39,8 @@ We provide two demonstrative config files.
 
 While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them.
 
+Each one-second unit speaks about one second of text, so the model closes a unit before its text reaches `max_text_characters_per_unit` characters (default 28, the value in the checkpoint's own demo; 0 lifts the limit). Longer units leave text behind that the end of the turn drops.
+
 A session holds at most 8192 tokens of history, which is the model's trained context length. When that fills, the server sends `context_exhausted` and closes the session.
 
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:
@@ -50,7 +52,7 @@ curl --fail http://localhost:8000/v1/realtime/capabilities
 The results should be as follows:
 
 ```json
-{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":false,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30}}#
+{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":false,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty","max_text_characters_per_unit"],"supports_reference_audio":true,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30}}#
 ```
 
 The duplex server only accepts `/v1/realtime` requests; other chat completions or voice cloning against it fail.

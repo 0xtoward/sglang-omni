@@ -81,6 +81,7 @@ class SamplingConfig(TypedDict, total=False):
     talker_max_new_tokens: Annotated[int, Field(ge=1)]
     max_new_tokens: Annotated[int, Field(ge=1)]
     seed: Annotated[int, Field(ge=0)]
+    max_text_characters_per_unit: Annotated[int, Field(ge=0)]
 
 
 class AudioReference(BaseModel):

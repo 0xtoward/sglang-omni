@@ -123,10 +123,26 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
             generation_steps=[request.data.generation_steps for request in requests],
             listen_forced_flags=[request.data.is_listen_forced for request in requests],
         )
-        for request in requests:
+        for index, request in enumerate(requests):
             data = request.data
             if data.is_listen_forced and data.generation_steps == 0:
                 data.thinker_state.force_listen_counter += 1
+            else:
+                pass
+            character_limit = data.thinker_state.sampling.max_text_characters_per_unit
+            if (
+                character_limit > 0
+                and data.generation_steps > 0
+                and token_ids[index] not in special_tokens.chunk_terminators
+                and len(
+                    data.req.tokenizer.decode(
+                        [*data.generated_unit_ids, token_ids[index]],
+                        skip_special_tokens=True,
+                    )
+                )
+                >= character_limit
+            ):
+                token_ids[index] = special_tokens.chunk_eos
             else:
                 pass
         return torch.tensor(token_ids, dtype=torch.long, device=logits.device)

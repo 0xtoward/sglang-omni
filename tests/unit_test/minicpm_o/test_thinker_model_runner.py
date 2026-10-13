@@ -34,6 +34,11 @@ BAD_TOKEN_IDS = (7, 8, 94)
 PLAIN_TOKEN_ID = 42
 OTHER_TOKEN_ID = 55
 THIRD_TOKEN_ID = 60
+TOKEN_TEXTS = {
+    OTHER_TOKEN_ID: "a" * 10,
+    THIRD_TOKEN_ID: "b" * 10,
+    PLAIN_TOKEN_ID: "c" * 8,
+}
 
 
 def bare_runner() -> MiniCPMOThinkerModelRunner:
@@ -127,6 +132,9 @@ def duplex_tokenizer() -> Mock:
     tokenizer.convert_tokens_to_ids.side_effect = dict(
         zip(REQUIRED_SPECIAL_TOKENS, special_token_ids)
     ).__getitem__
+    tokenizer.decode.side_effect = lambda token_ids, skip_special_tokens: "".join(
+        TOKEN_TEXTS.get(token_id, "x") for token_id in token_ids
+    )
     return tokenizer
 
 
@@ -157,12 +165,15 @@ def unit_request(
     *,
     generation_step: int = 1,
     is_listen_forced: bool = False,
+    generated_unit_ids: list[int] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         data=SimpleNamespace(
+            req=SimpleNamespace(tokenizer=duplex_tokenizer()),
             thinker_state=state,
             generation_steps=generation_step,
             is_listen_forced=is_listen_forced,
+            generated_unit_ids=generated_unit_ids or [],
         )
     )
 
@@ -217,6 +228,27 @@ def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
     )
 
     assert token_ids == [special_tokens.chunk_eos if closes else PLAIN_TOKEN_ID]
+
+
+@pytest.mark.parametrize(
+    ("character_limit", "closes"), [(0, False), (28, True), (29, False)]
+)
+def test_unit_text_limit_closes_the_unit_before_the_token_that_reaches_it(
+    character_limit: int, closes: bool
+) -> None:
+    """Twenty characters are already in the unit; the sampled token adds eight."""
+    runner = duplex_runner(SPECIAL_TOKENS)
+    request = unit_request(
+        session_state(max_text_characters_per_unit=character_limit),
+        generation_step=3,
+        generated_unit_ids=[OTHER_TOKEN_ID, THIRD_TOKEN_ID],
+    )
+
+    token_ids = sample(runner, unit_logits({PLAIN_TOKEN_ID: 0.0}), [request])
+
+    assert token_ids == [
+        SPECIAL_TOKENS.chunk_eos if closes else PLAIN_TOKEN_ID
+    ], "the unit closes exactly when its text would reach the limit"
 
 
 def test_forced_listen_applies_to_the_first_step_only() -> None:
