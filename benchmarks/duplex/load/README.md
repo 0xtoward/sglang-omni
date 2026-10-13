@@ -26,6 +26,7 @@ benchmarks/duplex/load/run_cell.sh --model-path "$MODEL" --sessions-dir duplex-i
   --warmup-wav duplex-input/questions/q0.wav --output-dir runs/main-s16 --sessions 16 \
   --profile-at 35 --profile-window 40 -- --mps off --max_sessions 32 --thinker.engine.max_total_tokens 139264
 python benchmarks/duplex/load/report.py lag runs/main-s16/cell
+python benchmarks/duplex/load/report.py continuity runs/main-s16/cell
 python benchmarks/duplex/load/report.py stages runs/main-s16
 ```
 
@@ -52,6 +53,16 @@ To compare two trees, run the cells in A B B A order on one GPU with the same se
 - for the thinker, also prefill and decode.
 
 The report gives each segment's median and p90, separately for speaking and listening units.
+
+**Playback continuity** (`report.py continuity`). A client holds the first audio of a speaking turn for a prebuffer B, then plays the rest as it arrives. A turn is one response's audio: its `response.output_audio.delta` events, grouped by `response_id`, at the times the client received them.
+
+- Delta k arrives at t_k and holds a_k seconds of audio. It plays on time if t_k <= t_1 + B + a_1 + ... + a_(k-1).
+- The turn's *required prebuffer* R is the largest t_k - t_1 - (a_1 + ... + a_(k-1)), and at least 0. The turn is *gap-free* at B if B >= R.
+- *Stall seconds*: playback starts at t_1 + B, stops when the received audio runs out, and resumes when the next delta arrives. A turn's silences add up to max(0, R - B).
+
+The report gives R's median, p90 and max in ms, and at each B the share of gap-free turns (`free@B`) and the total stall seconds (`stall@B`). It writes the same numbers, with every turn's R per session, to `continuity.json` in the cell directory.
+
+Real clients hold about 200 to 400 ms. Perf reports give continuity at B = 0, 200 and 300 ms, the default `--prebuffer-ms`, alongside lag.
 
 ## Traces
 

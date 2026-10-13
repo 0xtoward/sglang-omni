@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit lag and per-stage split of full-duplex load cells.
+"""Unit lag, playback continuity and per-stage split of full-duplex load cells.
 
 lag: from client.py records, every unit's lag (its sglang.unit.done minus the time that input second was
 sent), split into listening and speaking units, with the units more than a second late.
+continuity: from client.py records, the prebuffer every speaking turn needs to play without a gap, and the
+gap-free turns and stall seconds of clients that hold each turn's first audio for a given prebuffer.
 stages: from the event_dir of /start_profile, every unit (one request id) split into perception, thinker,
 talker and speech segments.
 """
@@ -164,6 +166,98 @@ def report_lag(cell_dirs: list[Path]) -> None:
         )
 
 
+def session_required_prebuffers_ms(session_path: Path) -> list[float]:
+    """Required prebuffer R of every speaking turn, one response's audio deltas as the client received them.
+
+    Holding the first delta for B plays delta k on time if B >= t_k - t_1 - (audio of the deltas before it).
+    """
+    record = json.loads(session_path.read_text(encoding="utf-8"))
+    audio_by_response: dict[str, list[tuple[float, float]]] = collections.defaultdict(
+        list
+    )
+    for event in record["events"]:
+        if event["type"] == "response.output_audio.delta":
+            audio_by_response[event["response_id"]].append(
+                (event["t"], event["audio_s"])
+            )
+        else:
+            pass
+    required_ms = []
+    for turn in audio_by_response.values():
+        first_arrival_s = turn[0][0]
+        earlier_audio_s = required_s = 0.0
+        for arrival_s, audio_s in turn:
+            required_s = max(required_s, arrival_s - first_arrival_s - earlier_audio_s)
+            earlier_audio_s += audio_s
+        # note (0xtoward): client.py records times to 0.1 ms; rounding keeps a turn with B == R gap-free.
+        required_ms.append(round(required_s * 1000, 1))
+    return required_ms
+
+
+def report_continuity(cell_dirs: list[Path], prebuffers_ms: list[int]) -> None:
+    print(
+        f"{'cell':32} {'sess':>4} {'turns':>5} {'R med':>6} {'R p90':>6} {'R max':>6}"
+        + "".join(
+            f" {f'free@{prebuffer_ms}':>8} {f'stall@{prebuffer_ms}':>9}"
+            for prebuffer_ms in prebuffers_ms
+        )
+    )
+    for cell_dir in cell_dirs:
+        session_paths = sorted(cell_dir.glob("s[0-9]*.json"))
+        required_ms_by_session = {
+            session_path.stem: session_required_prebuffers_ms(session_path)
+            for session_path in session_paths
+        }
+        required_ms = [
+            turn_required_ms
+            for session_required_ms in required_ms_by_session.values()
+            for turn_required_ms in session_required_ms
+        ]
+        if not required_ms:
+            print(f"{str(cell_dir)[-32:]:32} {len(session_paths):>4} no speaking turns")
+            continue
+        else:
+            pass
+        required_summary_ms = {
+            "median": statistics.median(required_ms),
+            "p90": percentile(required_ms, 0.9),
+            "max": max(required_ms),
+        }
+        prebuffers = [
+            {
+                "prebuffer_ms": prebuffer_ms,
+                "gap_free_share": sum(
+                    turn_required_ms <= prebuffer_ms for turn_required_ms in required_ms
+                )
+                / len(required_ms),
+                # note (0xtoward): resuming on arrival, a turn's silences add up to R - B.
+                "stall_s": sum(
+                    max(0.0, turn_required_ms - prebuffer_ms)
+                    for turn_required_ms in required_ms
+                )
+                / 1000,
+            }
+            for prebuffer_ms in prebuffers_ms
+        ]
+        report: dict[str, JsonValue] = {
+            "turns": len(required_ms),
+            "required_prebuffer_ms": required_summary_ms,
+            "prebuffers": prebuffers,
+            "required_prebuffer_ms_by_session": required_ms_by_session,
+        }
+        with open(cell_dir / "continuity.json", "w", encoding="utf-8") as handle:
+            json.dump(report, handle, indent=1)
+        print(
+            f"{str(cell_dir)[-32:]:32} {len(session_paths):>4} {len(required_ms):>5} "
+            f"{required_summary_ms['median']:6.0f} {required_summary_ms['p90']:6.0f} "
+            f"{required_summary_ms['max']:6.0f}"
+            + "".join(
+                f" {prebuffer['gap_free_share'] * 100:7.1f}% {prebuffer['stall_s']:9.2f}"
+                for prebuffer in prebuffers
+            )
+        )
+
+
 def load_stage_events(event_dir: Path) -> dict[str, dict[StageEvent, float]]:
     """First time (ms) of every (stage, event name) per request id; a stage may stream several chunks."""
     units: dict[str, dict[StageEvent, float]] = collections.defaultdict(dict)
@@ -227,6 +321,18 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     lag = commands.add_parser("lag", help="unit lag per cell from client records")
     lag.add_argument("cell_dirs", type=Path, nargs="+")
+    continuity = commands.add_parser(
+        "continuity",
+        help="speaking-turn playback continuity per cell from client records",
+    )
+    continuity.add_argument("cell_dirs", type=Path, nargs="+")
+    continuity.add_argument(
+        "--prebuffer-ms",
+        type=int,
+        nargs="+",
+        default=[0, 200, 300],
+        help="how long a client holds the first audio of a turn before playing it",
+    )
     stages = commands.add_parser(
         "stages", help="per-unit stage split from a profile event_dir"
     )
@@ -235,6 +341,8 @@ def main() -> None:
 
     if args.command == "lag":
         report_lag(args.cell_dirs)
+    elif args.command == "continuity":
+        report_continuity(args.cell_dirs, args.prebuffer_ms)
     else:
         report_stages(args.run_dir)
 
