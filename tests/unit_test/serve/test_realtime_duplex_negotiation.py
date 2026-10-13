@@ -164,7 +164,9 @@ def test_open_session_merges_patch_into_current_configuration() -> None:
         ("force_listen_count", 1.5),
         ("max_new_tokens_per_unit", 0),
         ("talker_temperature", -1.0),
-        ("length_penalty", 1.1),
+        ("length_penalty", 0.0),
+        ("max_text_characters_per_unit", -1),
+        ("min_p", 0.1),
     ],
 )
 def test_invalid_sampling_is_rejected(field: str, value: JsonValue) -> None:
