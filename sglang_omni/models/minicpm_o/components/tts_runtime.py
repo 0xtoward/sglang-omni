@@ -32,7 +32,7 @@ FORWARD_CACHE_COPIES = 2
 # note (Junnan Li): A graph replays a chunk forward's kernels in one launch, but wider forwards gain little and each graphed stream holds a static attention window.
 CHUNK_GRAPH_MAX_STREAMS = 8
 # note (0xtoward): the other stages on the card allocate outside their pools, perception up to about 2.4 GiB at once on long audio.
-OTHER_STAGES_HEADROOM_BYTES = 2 << 30
+OTHER_STAGES_HEADROOM_BYTES = 4 << 30
 
 
 def return_cached_blocks(device: torch.device) -> None:
