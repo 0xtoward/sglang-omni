@@ -94,10 +94,12 @@ For repeatable output in regression and parity recordings, add `--sampling.greed
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
 | `sampling` | printed by `config resolve` | Default sampling when a session does not set its own |
 | `vision` | printed by `config resolve` | Camera-frame limits per unit (1 s of audio) |
+| `window.mode` | `basic` | `basic` drops the oldest units of a long conversation, as the checkpoint's duplex window does; `off` keeps every unit and closes the session when its history fills |
+| `window.high_tokens` / `window.low_tokens` | 8000 / 6000 | History length that starts a drop, and the length the drop goes down to |
 
 While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them.
 
-A session holds at most 8192 tokens of history, which is the model's trained context length. When that fills, the server sends `context_exhausted` and closes the session.
+A session holds at most 8192 tokens of history, which is the model's trained context length. With the default `window.mode basic`, once the history passes `window.high_tokens` the server drops the oldest one-second units until at most `window.low_tokens` tokens remain, and it also drops units early when the next unit would not fit; the system prompt and the reference audio always stay. With `--window.mode off`, the server sends `context_exhausted` and closes the session when the history fills.
 
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:
 
