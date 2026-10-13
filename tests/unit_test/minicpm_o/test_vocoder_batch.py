@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sglang.srt import utils as sglang_utils
 
 from sglang_omni.models.minicpm_o.components.code2wav import OUTPUT_SAMPLE_RATE
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
@@ -17,6 +18,8 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     CHUNK_GRAPH_MAX_STREAMS,
     CODEC_CHUNK_SIZE,
+    FORWARD_CACHE_COPIES,
+    OTHER_STAGES_HEADROOM_BYTES,
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
 )
@@ -27,6 +30,7 @@ from sglang_omni.models.minicpm_o.native_config import (
 from sglang_omni.models.minicpm_o.native_stages import SpeechHooks
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.session import SessionAppend, SessionContext
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 PRE_LOOKAHEAD = 3
 UP_RATE = 2
@@ -35,9 +39,9 @@ OPENED_HISTORY_FRAMES = 8192
 
 
 class FakeToken2Wav:
-    def __init__(self) -> None:
+    def __init__(self, device: torch.device) -> None:
         self.flow = SimpleNamespace(pre_lookahead_len=PRE_LOOKAHEAD, up_rate=UP_RATE)
-        self.device = torch.device("cpu")
+        self.device = device
         self.forward_sizes: list[int] = []
         self.captured_graphs: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
         self.vocoder_warm_ups: list[tuple[int, int]] = []
@@ -78,9 +82,9 @@ class FakeToken2Wav:
 
 
 class FakeCode2Wav:
-    def __init__(self) -> None:
-        self.token2wav = FakeToken2Wav()
-        self.decode_stream = torch.cpu.Stream()
+    def __init__(self, device: torch.device = torch.device("cpu")) -> None:
+        self.token2wav = FakeToken2Wav(device)
+        self.decode_stream = torch.get_device_module(device).Stream()
 
     def resolve_reference_key(self, reference: bytes) -> tuple[str, bytes]:
         return reference.decode(), reference
@@ -92,9 +96,10 @@ class FakeCode2Wav:
 def open_runtime(
     session_ids: list[str],
     max_state_bytes_per_session: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
+    device: torch.device = torch.device("cpu"),
 ) -> MiniCPMOVocoderRuntime:
     runtime = MiniCPMOVocoderRuntime(
-        FakeCode2Wav(),
+        FakeCode2Wav(device),
         max_state_bytes_per_session=max_state_bytes_per_session,
         max_open_sessions=DEFAULT_MAX_SESSIONS,
     )
@@ -159,19 +164,106 @@ def test_units_synthesized_together_match_units_synthesized_alone() -> None:
     assert max(together.token2wav.forward_sizes) > 1
 
 
-def test_forward_width_follows_the_unheld_state_budget() -> None:
-    session_ids = [str(index) for index in range(48)]
+@pytest.mark.parametrize(
+    ("idle_sessions", "state_cap", "free_stream_caches", "forward_sizes"),
+    [
+        (0, 1, 5, [2, 2]),
+        (12, 1 << 30, 5, [2, 2]),
+        (0, 1 << 30, 2, [1, 1, 1, 1]),
+        (0, 1 << 30, 9, [4]),
+    ],
+)
+def test_forward_width_uses_free_memory_past_the_headroom_not_session_caps(
+    idle_sessions: int,
+    state_cap: int,
+    free_stream_caches: int,
+    forward_sizes: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_ids = [str(index) for index in range(4)]
+    requests = [
+        request(session_id, list(range(CODEC_CHUNK_SIZE)), is_turn_start=True)
+        for session_id in session_ids
+    ]
+    runtime = open_runtime(session_ids, max_state_bytes_per_session=state_cap)
+    for index in range(idle_sessions):
+        runtime.open_session(f"idle-{index}", reference_audio=b"voice")
+    free_bytes = (
+        OTHER_STAGES_HEADROOM_BYTES
+        + free_stream_caches * OPENED_HISTORY_FRAMES * torch.float32.itemsize
+    )
+    monkeypatch.setattr(
+        sglang_utils,
+        "get_available_gpu_memory",
+        lambda device, gpu_id, empty_cache: free_bytes / (1 << 30),
+    )
+
+    list(runtime.synthesize_batch(requests))
+
+    assert runtime.token2wav.forward_sizes == forward_sizes
+
+
+def test_forward_width_is_rechecked_before_every_forward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_ids = [str(index) for index in range(4)]
     requests = [
         request(session_id, list(range(CODEC_CHUNK_SIZE)), is_turn_start=True)
         for session_id in session_ids
     ]
     runtime = open_runtime(session_ids)
-    list(runtime.synthesize_batch(requests))
-    assert runtime.token2wav.forward_sizes == [len(session_ids)]
+    free_stream_caches = iter([5, 2, 2])
+    monkeypatch.setattr(
+        sglang_utils,
+        "get_available_gpu_memory",
+        lambda device, gpu_id, empty_cache: (
+            OTHER_STAGES_HEADROOM_BYTES
+            + next(free_stream_caches) * OPENED_HISTORY_FRAMES * torch.float32.itemsize
+        )
+        / (1 << 30),
+    )
 
-    runtime = open_runtime(session_ids, max_state_bytes_per_session=1)
     list(runtime.synthesize_batch(requests))
-    assert runtime.token2wav.forward_sizes == [1] * len(session_ids)
+
+    assert runtime.token2wav.forward_sizes == [
+        2,
+        1,
+        1,
+    ], "each forward is sized from the free memory when it starts"
+
+
+@pytest.mark.accelerator
+def test_forward_width_counts_the_speech_process_cached_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    session_ids = [str(index) for index in range(4)]
+    requests = [
+        request(session_id, list(range(CODEC_CHUNK_SIZE)), is_turn_start=True)
+        for session_id in session_ids
+    ]
+    runtime = open_runtime(session_ids, device=device)
+    monkeypatch.setattr(
+        sglang_utils,
+        "get_available_gpu_memory",
+        lambda device, gpu_id, empty_cache: OTHER_STAGES_HEADROOM_BYTES / (1 << 30),
+    )
+    torch.cuda.empty_cache()
+    torch.empty(
+        len(session_ids)
+        * FORWARD_CACHE_COPIES
+        * OPENED_HISTORY_FRAMES
+        * torch.float32.itemsize,
+        dtype=torch.uint8,
+        device=device,
+    )
+
+    list(runtime.synthesize_batch(requests))
+
+    assert runtime.token2wav.forward_sizes == [
+        len(session_ids)
+    ], "cached blocks hold every stream while the card has only the headroom free"
 
 
 def test_units_finish_before_later_rounds_in_request_order() -> None:

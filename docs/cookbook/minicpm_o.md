@@ -69,7 +69,7 @@ For repeatable output in regression and parity recordings, add `--sampling.greed
 |---|---|---|
 | `max_sessions` | 2 | Conversations at the same time. Further connections get HTTP 503. The thinker and talker reserve GPU memory for this many full-length conversations, so raise it only as far as the GPU has room. Startup warms up perception at each batch size up to this value |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
-| `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running |
+| `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running. The cap reserves no GPU memory: each speech forward decodes as many conversations together as the free GPU memory and the speech stage's cached blocks can hold, leaving 2 GiB for the other stages |
 | `speech.dtype` | `float32` | Precision of the voice decoder's flow model: `float32`, `float16` or `bfloat16`; the lower precisions change the voice slightly |
 | `speech.enable_dit_torch_compile` | `false` | Compile the voice decoder's flow model with `torch.compile` while the server starts; CUDA only |
 | `speech.n_timesteps` | 10 | Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality |
