@@ -254,6 +254,7 @@ class CosyVoice3PreparedRequest:
     # token ids avoids loading a duplicate Torch Qwen2 model.
     text_token_ids: list[int] = field(default_factory=list)
     llm_prompt_speech_token_ids: list[int] = field(default_factory=list)
+    ready_event: torch.cuda.Event | None = None
 
 
 @dataclass(frozen=True)
@@ -422,6 +423,7 @@ class CosyVoice3PreprocessingContext:
         CosyVoice3ReferenceArtifact,
         CosyVoice3StoredReference,
     ]
+    stream: torch.cuda.Stream | None
 
 
 _PREPROCESSING_CONTEXT: CosyVoice3PreprocessingContext | None = None
@@ -436,6 +438,7 @@ def set_cosyvoice3_preprocessing_context(
     tokenizer: CosyVoice3Tokenizer,
     speech_tokenizer: SpeechTokenizerV3,
     speaker_encoder: SpeakerEncoder,
+    device: torch.device,
     use_mlx: bool = False,
     model_revision: str | None = None,
 ) -> None:
@@ -449,6 +452,7 @@ def set_cosyvoice3_preprocessing_context(
         speech_tokenizer=speech_tokenizer,
         speaker_encoder=speaker_encoder,
     )
+    stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
     with _PREPARED_REQUESTS_LOCK:
         _PREPROCESSING_CONTEXT = CosyVoice3PreprocessingContext(
             model=model,
@@ -463,6 +467,7 @@ def set_cosyvoice3_preprocessing_context(
                 timeout_s=130.0,
                 log_prefix="Fun-CosyVoice3",
             ),
+            stream=stream,
         )
         _PREPARED_REQUESTS.clear()
 
@@ -769,6 +774,7 @@ def prepare_cosyvoice3_request(
     state: FunCosyVoice3State,
     reference_artifact: CosyVoice3ReferenceArtifact | None,
     use_mlx: bool = False,
+    stream: torch.cuda.Stream | None,
 ) -> CosyVoice3PreparedRequest:
     gen_kwargs = state.generation_kwargs
 
@@ -810,6 +816,7 @@ def prepare_cosyvoice3_request(
     llm_prompt_speech_token_ids = [
         int(token_id) for token_id in llm_prompt_speech_token[0].tolist()
     ]
+    ready_event = None
     if use_mlx:
         # Note (yexiaodong): MLX constructs the actual prompt embeddings; the
         # scheduler needs only a length-matched placeholder with radix cache off.
@@ -822,27 +829,53 @@ def prepare_cosyvoice3_request(
         else:
             pass
         device = next(model.parameters()).device
-        dtype = next(model.parameters()).dtype
-        with torch.no_grad():
-            text_embed = model.text_embed_tokens(text_token.to(device=device))
+        if stream is not None:
+            text_token_count = len(text_token_ids)
+            with torch.cuda.stream(stream), torch.no_grad():
+                prompt_token_ids = torch.tensor(
+                    text_token_ids + [SOS_ID, TASK_ID] + llm_prompt_speech_token_ids,
+                    dtype=torch.long,
+                    pin_memory=True,
+                ).to(device=device, non_blocking=True)
+                text_rows = model.text_embed_tokens(prompt_token_ids[:text_token_count])
+                speech_rows = model.speech_embedding(
+                    prompt_token_ids[text_token_count:]
+                )
+                prompt_input_embeds = torch.cat(
+                    [speech_rows[:1], text_rows, speech_rows[1:]]
+                )
+                ready_event = torch.cuda.Event()
+                ready_event.record(stream)
+            # note (ratish): every prompt row is a lookup by one id, so the ids are exact
+            # radix keys, text ids shifted past the speech table.
+            input_ids_list = (
+                [SOS_ID]
+                + [TOTAL_VOCAB_SIZE + token_id for token_id in text_token_ids]
+                + [TASK_ID]
+                + llm_prompt_speech_token_ids
+            )
+        else:
+            dtype = next(model.parameters()).dtype
+            with torch.no_grad():
+                text_embed = model.text_embed_tokens(text_token.to(device=device))
 
-        prompt_input_embeds = build_llm_prompt_embeddings(
-            text_token=text_token.to(device=device),
-            text_embed=text_embed,
-            prompt_speech_token=llm_prompt_speech_token.to(device=device),
-            speech_embed=model.speech_embedding,
-            embedding=spk_embedding,
-            sos_id=SOS_ID,
-            task_id=TASK_ID,
-            hidden_size=model.config.hidden_size,
-            device=device,
-            dtype=dtype,
-        )
+            prompt_input_embeds = build_llm_prompt_embeddings(
+                text_token=text_token.to(device=device),
+                text_embed=text_embed,
+                prompt_speech_token=llm_prompt_speech_token.to(device=device),
+                speech_embed=model.speech_embedding,
+                embedding=spk_embedding,
+                sos_id=SOS_ID,
+                task_id=TASK_ID,
+                hidden_size=model.config.hidden_size,
+                device=device,
+                dtype=dtype,
+            )
 
-        prompt_input_embeds = (
-            prompt_input_embeds.squeeze(0).detach().to(device=device, dtype=dtype)
-        )
-        input_ids_list = build_embedding_cache_key_ids(prompt_input_embeds)
+            prompt_input_embeds = (
+                prompt_input_embeds.squeeze(0).detach().to(device=device, dtype=dtype)
+            )
+            input_ids_list = build_embedding_cache_key_ids(prompt_input_embeds)
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
 
     return CosyVoice3PreparedRequest(
@@ -858,6 +891,7 @@ def prepare_cosyvoice3_request(
         flow_embedding=flow_embedding,
         gen_kwargs=gen_kwargs,
         target_text_token_count=target_text_token_count,
+        ready_event=ready_event,
     )
 
 
@@ -886,6 +920,7 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
             state=state,
             reference_artifact=reference_artifact,
             use_mlx=context.use_mlx,
+            stream=context.stream,
         )
 
     prepared.state.flow_embedding = prepared.flow_embedding
@@ -915,6 +950,12 @@ def build_sglang_cosyvoice3_request(
             "CosyVoice3 AR request builder requires a payload prepared by "
             "preprocess_cosyvoice3_payload"
         )
+    else:
+        pass
+    if prepared.ready_event is not None:
+        stream = torch.cuda.current_stream(prepared.prompt_input_embeds.device)
+        stream.wait_event(prepared.ready_event)
+        prepared.prompt_input_embeds.record_stream(stream)
     else:
         pass
 
