@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 
 import torch
@@ -38,7 +39,8 @@ class MiniCPMOThinkerSessionState:
         """test only (xp): choose finished units to drop until the next unit starts at or below target_start.
 
         basic drops the oldest; quiet drops quiet units first; knorm / keydiff drop the highest-scored units
-        first. Units starting within protect_tokens of the next unit go only in the oldest-first fallback.
+        first; random drops eligible units in a shuffled order seeded by next_unit_start (the control for the
+        scored policies). Units starting within protect_tokens of the next unit go only in the oldest-first fallback.
         """
         count = len(self.unit_starts)
         need = next_unit_start - target_start
@@ -61,6 +63,9 @@ class MiniCPMOThinkerSessionState:
             order = [index for index in eligible if self.unit_kinds[index] == 0] + [
                 index for index in eligible if self.unit_kinds[index] == 1
             ]
+        elif policy == "random":
+            order = list(eligible)
+            random.Random(next_unit_start).shuffle(order)
         elif policy in ("knorm", "keydiff") and unit_scores is not None:
             order = sorted(eligible, key=lambda index: -unit_scores[index])
         elif policy in ("quietkd", "quietkn") and unit_scores is not None:

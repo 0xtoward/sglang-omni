@@ -25,7 +25,8 @@ UNITS = [CUT_UNITS[index % len(CUT_UNITS)] for index in range(8)]
 
 
 @pytest.mark.parametrize(
-    "policy", ["basic", "quiet", "user", "knorm", "keydiff", "quietkd", "quietkn"]
+    "policy",
+    ["basic", "quiet", "user", "knorm", "keydiff", "quietkd", "quietkn", "random"],
 )
 def test_xp_policy_cut_keeps_ids_spans_and_kv(perception, monkeypatch, policy) -> None:
     monkeypatch.setattr(session_adapters, "XP_WINDOW_POLICY", policy)
