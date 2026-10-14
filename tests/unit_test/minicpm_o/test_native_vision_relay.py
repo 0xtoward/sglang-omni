@@ -470,7 +470,9 @@ KEPT_KEY_START = 300
 class WindowScheduler:
     """The bridge's scheduler surface over real SGLang session, request-row and KV pools."""
 
-    def __init__(self, device: str, max_req_len: int) -> None:
+    def __init__(
+        self, device: str, max_req_len: int, kv_dtype: torch.dtype = torch.bfloat16
+    ) -> None:
         self.req_to_token_pool = ReqToTokenPool(
             size=1,
             max_context_len=WINDOW_CONTEXT_LENGTH,
@@ -480,7 +482,7 @@ class WindowScheduler:
         self.kv_cache = MHATokenToKVPool(
             size=KV_POOL_TOKENS,
             page_size=1,
-            dtype=torch.bfloat16,
+            dtype=kv_dtype,
             head_num=KV_HEAD_COUNT,
             head_dim=HEAD_DIM,
             layer_num=KV_LAYER_COUNT,
@@ -489,7 +491,7 @@ class WindowScheduler:
         )
         self.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
             size=KV_POOL_TOKENS,
-            dtype=torch.bfloat16,
+            dtype=kv_dtype,
             device=device,
             kvcache=self.kv_cache,
             need_sort=False,
@@ -545,9 +547,11 @@ class WindowScheduler:
                 self.kv_cache.get_key_buffer(layer_id),
                 self.kv_cache.get_value_buffer(layer_id),
             ):
-                buffer[slots] = torch.randn(
-                    (len(slots), KV_HEAD_COUNT, HEAD_DIM), generator=self.generator
-                ).to(buffer)
+                storage_rows(buffer)[slots] = storage_rows(
+                    torch.randn(
+                        (len(slots), KV_HEAD_COUNT, HEAD_DIM), generator=self.generator
+                    ).to(buffer)
+                )
         request.kv.kv_allocated_len = kv_length
         request.kv.kv_committed_len = kv_length
         request.output_ids.extend(generated_token_ids)
@@ -556,19 +560,25 @@ class WindowScheduler:
         return reused_length
 
 
+def storage_rows(buffer: torch.Tensor) -> torch.Tensor:
+    """The rows SGLang stores: uint8 behind an FP8 cache's float8 view, which indexing ops do not all take."""
+    return buffer.view(torch.uint8) if buffer.dtype.itemsize == 1 else buffer
+
+
 def open_window_session(
     perception: MiniCPMOPerceptionState,
     window: MiniCPMODuplexWindow,
     *,
     device: str = "cpu",
     max_req_len: int = WINDOW_CONTEXT_LENGTH - 1,
+    kv_dtype: torch.dtype = torch.bfloat16,
 ) -> tuple[WindowScheduler, ARSessionBridge, ThinkerAdapter]:
     perception.prefix_token_ids = list(PREFIX_TOKEN_IDS)
     perception.prefix_schema = list(PREFIX_SCHEMA)
     perception.prefix_embeds = torch.full(
         (REFERENCE_ROWS, EMBEDDING_WIDTH), REFERENCE_EMBEDDING
     )
-    scheduler = WindowScheduler(device, max_req_len)
+    scheduler = WindowScheduler(device, max_req_len, kv_dtype)
     adapter = make_thinker_adapter(
         perception.tokenizer, VOCAB_SIZE, window=window, device=device
     )
@@ -722,6 +732,12 @@ def rotate_keys_exactly(keys: torch.Tensor, distance: int) -> torch.Tensor:
     )
 
 
+def same_bits(values: torch.Tensor, reference: torch.Tensor) -> bool:
+    return torch.equal(
+        values.contiguous().view(torch.uint8), reference.contiguous().view(torch.uint8)
+    )
+
+
 def relative_error(values: torch.Tensor, reference: torch.Tensor) -> float:
     return float((values.to(torch.float64) - reference).norm() / reference.norm())
 
@@ -733,19 +749,17 @@ def read_session_kv(
     slots = scheduler.req_to_token_pool.req_to_token[
         scheduler.tree_cache.slots[IDENTITY.id].kv.req_pool_idx, :length
     ].to(torch.int64)
-    return (
+    return tuple(
         torch.stack(
             [
-                scheduler.kv_cache.get_key_buffer(layer_id)[slots]
+                storage_rows(buffer(layer_id))[slots].view(buffer(layer_id).dtype)
                 for layer_id in range(KV_LAYER_COUNT)
             ]
-        ).cpu(),
-        torch.stack(
-            [
-                scheduler.kv_cache.get_value_buffer(layer_id)[slots]
-                for layer_id in range(KV_LAYER_COUNT)
-            ]
-        ).cpu(),
+        ).cpu()
+        for buffer in (
+            scheduler.kv_cache.get_key_buffer,
+            scheduler.kv_cache.get_value_buffer,
+        )
     )
 
 
@@ -873,8 +887,11 @@ def test_window_key_shift_rounds_the_exact_rotation_once(
 @pytest.mark.parametrize(
     "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
 )
+@pytest.mark.parametrize(
+    "kv_dtype", [torch.bfloat16, torch.float8_e4m3fn], ids=["bf16", "fp8"]
+)
 def test_window_cut_moves_retained_kv_ids_spans_and_unit_starts(
-    perception: MiniCPMOPerceptionState, device: str
+    perception: MiniCPMOPerceptionState, device: str, kv_dtype: torch.dtype
 ) -> None:
     """A cut drops the oldest units' slots in place and moves every later position down by the cut length."""
     if device == "cuda":
@@ -882,7 +899,7 @@ def test_window_cut_moves_retained_kv_ids_spans_and_unit_starts(
     else:
         pass
     scheduler, bridge, adapter = open_window_session(
-        perception, CUT_WINDOW, device=device
+        perception, CUT_WINDOW, device=device, kv_dtype=kv_dtype
     )
     finish_window_units(
         perception, scheduler, bridge, adapter, CUT_UNITS[:CUT_UNIT_INDEX]
@@ -924,16 +941,16 @@ def test_window_cut_moves_retained_kv_ids_spans_and_unit_starts(
         free_slots_after_cut == free_slots_before + CUT_LENGTH
     ), "the cut returns one slot per dropped token"
     assert reused_length == kept_kv_end - CUT_LENGTH, "the prefill reuses all kept KV"
-    assert torch.equal(keys_after[:, :CUT_START], keys_before[:, :CUT_START])
-    assert torch.equal(values_after[:, :CUT_START], values_before[:, :CUT_START])
-    assert torch.equal(
+    assert same_bits(keys_after[:, :CUT_START], keys_before[:, :CUT_START])
+    assert same_bits(values_after[:, :CUT_START], values_before[:, :CUT_START])
+    assert same_bits(
         values_after[:, CUT_START:], values_before[:, CUT_START + CUT_LENGTH :]
     ), "kept values move down unchanged"
     exact_keys = rotate_keys_exactly(
         keys_before[:, CUT_START + CUT_LENGTH :], CUT_LENGTH
     )
     assert relative_error(keys_after[:, CUT_START:], exact_keys) <= 2 * relative_error(
-        exact_keys.to(torch.bfloat16), exact_keys
+        exact_keys.to(kv_dtype), exact_keys
     ), "kept keys move down rotated by the cut length"
     assert (
         kv_buffer_addresses(scheduler) == buffer_addresses
