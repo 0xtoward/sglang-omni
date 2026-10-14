@@ -197,8 +197,14 @@ class ThinkerAdapter(ARSessionAdapter):
             if not ranges:
                 return None
             else:
+                spans: list[list[int]] = []
+                for number in state.last_dropped_numbers:
+                    if spans and spans[-1][1] + 1 == number:
+                        spans[-1][1] = number
+                    else:
+                        spans.append([number, number])
                 logger.info(
-                    "XP_CUT policy=%s next=%d units_dropped=%d quiet_dropped=%d quiet_left=%d units_left=%d ranges=%d",
+                    "XP_CUT policy=%s next=%d units_dropped=%d quiet_dropped=%d quiet_left=%d units_left=%d ranges=%d at_unit=%d dropped_units=%s",
                     XP_WINDOW_POLICY,
                     next_unit_start,
                     units_before - len(state.unit_starts),
@@ -206,6 +212,8 @@ class ThinkerAdapter(ARSessionAdapter):
                     sum(state.unit_quiet),
                     len(state.unit_starts),
                     len(ranges),
+                    state.finished_unit_count,
+                    ",".join(f"{first}-{last}" for first, last in spans),
                 )
                 return HistoryCut(
                     start=ranges[0][0], end=ranges[0][1], more=tuple(ranges[1:])
@@ -250,6 +258,8 @@ class ThinkerAdapter(ARSessionAdapter):
         state.unit_kinds.append(
             2 if input_rms >= XP_QUIET_RMS else (0 if is_listen_unit else 1)
         )
+        state.unit_numbers.append(state.finished_unit_count)
+        state.finished_unit_count += 1
         data.stage_payload.data = dict(
             talker_conditions=data.talker_conditions,
             text=self.tokenizer.decode(

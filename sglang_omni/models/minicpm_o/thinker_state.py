@@ -26,6 +26,10 @@ class MiniCPMOThinkerSessionState:
     unit_quiet: list[bool] = field(default_factory=list)
     # test only (xp): 0 user quiet and model listening, 1 model speaking while the user is quiet, 2 user speaking
     unit_kinds: list[int] = field(default_factory=list)
+    # test only (xp): session ordinal of each retained finished unit (about its input second), and of the last cut's drops
+    unit_numbers: list[int] = field(default_factory=list)
+    finished_unit_count: int = 0
+    last_dropped_numbers: list[int] = field(default_factory=list)
 
     def drop_units(
         self,
@@ -99,6 +103,7 @@ class MiniCPMOThinkerSessionState:
         starts: list[int] = []
         quiet: list[bool] = []
         kinds: list[int] = []
+        numbers: list[int] = []
         shift = 0
         for index in range(count):
             if index in dropped:
@@ -107,9 +112,14 @@ class MiniCPMOThinkerSessionState:
                 starts.append(self.unit_starts[index] - shift)
                 quiet.append(self.unit_quiet[index])
                 kinds.append(self.unit_kinds[index])
+                numbers.append(self.unit_numbers[index])
+        self.last_dropped_numbers = sorted(
+            self.unit_numbers[index] for index in dropped
+        )
         self.unit_starts = starts
         self.unit_quiet = quiet
         self.unit_kinds = kinds
+        self.unit_numbers = numbers
         return ranges
 
     def drop_oldest_units(
