@@ -263,6 +263,10 @@ class MiniCPMOPerceptionState:
 
         Only the new frames are computed; the clipping peak is kept per frame.
         """
+        # test only (xp): the unit's input level, for the quiet-first thinker window
+        self.last_input_rms = (
+            float(np.sqrt(np.mean(np.square(waveform)))) if waveform.size else 0.0
+        )
         # note (Junnan Li): The checkpoint front-pads the first chunk to 1035 ms so the encoder's CNN context is full.
         if self.audio_chunk_index == 0:
             chunk_samples = FIRST_CHUNK_SAMPLES

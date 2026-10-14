@@ -211,6 +211,10 @@ class PerceptionHooks(BatchedSessionHooks):
                 unit.payload.data = unit.state.build_step_plan(
                     audio_embeds, unit.image_embeds
                 )
+                # test only (xp)
+                unit.payload.data["input_rms"] = getattr(
+                    unit.state, "last_input_rms", 1.0
+                )
         return [append.payload for append in appends]
 
     def warm_up(self, max_batch_size: int) -> None:

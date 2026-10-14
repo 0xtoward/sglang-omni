@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from array import array
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -149,12 +150,27 @@ class HistoryCut:
 
     start: int
     end: int
+    # test only (xp): further disjoint ranges after [start, end), ascending
+    more: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
         if not 0 <= self.start < self.end:
             raise ValueError(f"invalid history cut [{self.start}, {self.end})")
         else:
             pass
+        for (_, previous_end), (start, end) in zip(self.ranges, self.ranges[1:]):
+            if not previous_end < start < end:
+                raise ValueError(f"invalid history cut ranges {self.ranges}")
+            else:
+                pass
+
+    @property
+    def ranges(self) -> list[tuple[int, int]]:
+        return [(self.start, self.end), *self.more]
+
+    @property
+    def length(self) -> int:
+        return sum(end - start for start, end in self.ranges)
 
 
 class ARSessionAdapter:
@@ -407,6 +423,10 @@ class ARSessionBridge:
             - len(adapter_request.origin_input_ids)
             - int(adapter_request.sampling_params.max_new_tokens or 0)
         )
+        # test only (xp): key statistics of retained units for the knorm / keydiff windows
+        self.adapter.xp_scorer = lambda bounds, policy: self.score_history_units(
+            native_session, bounds, policy
+        )
         history_cut = self.adapter.plan_history_cut(
             unit.session_identity, request_data, history_length, history_capacity
         )
@@ -485,15 +505,17 @@ class ARSessionBridge:
     def drop_history(
         self, session: BridgeSession, native_session: Session, cut: HistoryCut
     ) -> None:
-        """Drop retained positions [cut.start, cut.end) of an idle session; later ones move down by the cut length."""
-        dropped_length = cut.end - cut.start
+        """Drop the retained position ranges of cut from an idle session; later positions move down."""
+        started = time.perf_counter()
+        ranges = cut.ranges
+        dropped_length = cut.length
         [last_node] = native_session.req_nodes.values()
         last_request = last_node.req
-        assert cut.end <= min(
+        assert ranges[-1][1] <= min(
             native_session.committed_origin_len,
             native_session.committed_unpadded_len,
             native_session.committed_fill_len,
-        ), f"history cut [{cut.start}, {cut.end}) leaves the committed token ids"
+        ), f"history cut {ranges} leaves the committed token ids"
         slot = self.bridge_scheduler.tree_cache.slots.get(native_session.session_id)
         # note (0xtoward): After an abort the slot is gone and the next unit re-prefills the shortened ids.
         if slot is not None and slot.kv.holds_kv:
@@ -510,70 +532,127 @@ class ARSessionBridge:
             )
         }
         for token_ids in token_id_arrays.values():
-            del token_ids[cut.start : cut.end]
+            for range_start, range_end in reversed(ranges):
+                del token_ids[range_start:range_end]
         native_session.committed_origin_len -= dropped_length
         native_session.committed_unpadded_len -= dropped_length
         native_session.committed_fill_len -= dropped_length
         kept_spans: list[EmbeddingSpan] = []
         for span in session.embedding_spans:
-            assert not (
-                span.start < cut.start < span.end or span.start < cut.end < span.end
-            ), f"embedding span [{span.start}, {span.end}) crosses the history cut"
-            if span.end <= cut.start:
-                kept_spans.append(span)
-            elif span.start >= cut.end:
+            shift = 0
+            is_dropped = False
+            for range_start, range_end in ranges:
+                assert not (
+                    span.start < range_start < span.end
+                    or span.start < range_end < span.end
+                ), f"embedding span [{span.start}, {span.end}) crosses the history cut"
+                if span.start >= range_end:
+                    shift += range_end - range_start
+                elif span.start >= range_start and span.end <= range_end:
+                    is_dropped = True
+                else:
+                    pass
+            if is_dropped:
+                pass
+            elif shift:
                 kept_spans.append(
                     EmbeddingSpan(
-                        start=span.start - dropped_length,
-                        end=span.end - dropped_length,
+                        start=span.start - shift,
+                        end=span.end - shift,
                         input_embeds=span.input_embeds,
                     )
                 )
             else:
-                pass
+                kept_spans.append(span)
         session.embedding_spans = kept_spans
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        else:
+            pass
         logger.info(
-            "Session %s: dropped history [%d, %d), %d tokens kept",
+            "Session %s: dropped history [%d, %d), %d tokens kept; xp ranges=%d dropped=%d ms=%.1f",
             native_session.session_id,
-            cut.start,
-            cut.end,
+            ranges[0][0],
+            ranges[-1][1],
             native_session.committed_origin_len,
+            len(ranges),
+            dropped_length,
+            (time.perf_counter() - started) * 1000,
         )
 
     def drop_retained_kv(self, kv: SessionKV, cut: HistoryCut) -> None:
-        """Move the KV after the cut down inside the session row and free the row tail."""
+        """Move the KV kept after the cut down inside the session row and free the row tail."""
         tree_cache = self.bridge_scheduler.tree_cache
+        ranges = cut.ranges
         assert (
-            cut.start >= kv.cache_protected_len
-        ), f"history cut at {cut.start} reaches the tree-owned prefix of {kv.cache_protected_len} tokens"
+            ranges[0][0] >= kv.cache_protected_len
+        ), f"history cut at {ranges[0][0]} reaches the tree-owned prefix of {kv.cache_protected_len} tokens"
         assert (
-            cut.end <= kv.kv_committed_len
-        ), f"history cut ends at {cut.end}, past the committed KV of {kv.kv_committed_len} tokens"
-        dropped_length = cut.end - cut.start
-        kept_length = kv.kv_committed_len - dropped_length
+            ranges[-1][1] <= kv.kv_committed_len
+        ), f"history cut ends at {ranges[-1][1]}, past the committed KV of {kv.kv_committed_len} tokens"
+        kept_length = kv.kv_committed_len - cut.length
         row = tree_cache.req_to_token_pool.req_to_token[kv.req_pool_idx]
-        source_slots = row[cut.end : kv.kv_committed_len].to(torch.int64)
-        target_slots = row[cut.start : kept_length].to(torch.int64)
-        kv_cache = self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache()
-        # note (0xtoward): Rows keep their slots, so pages stay whole and captured graphs keep their buffers; only the KV moves.
-        for layer_id in range(
-            kv_cache.start_layer, kv_cache.start_layer + kv_cache.layer_num
-        ):
-            key_buffer = kv_cache.get_key_buffer(layer_id)
-            value_buffer = kv_cache.get_value_buffer(layer_id)
-            assert (
-                key_buffer.shape[0] == kv_cache.size + kv_cache.page_size
-            ), "history cut needs one KV row per token slot"
-            key_buffer.index_copy_(
-                0,
-                target_slots,
-                self.adapter.shift_key_positions(
-                    key_buffer.index_select(0, source_slots), dropped_length
-                ),
+        # (source start, source end, positions it moves down)
+        segments: list[tuple[int, int, int]] = []
+        cursor, distance = ranges[0][0], 0
+        for range_start, range_end in ranges:
+            if range_start > cursor:
+                segments.append((cursor, range_start, distance))
+            else:
+                pass
+            distance += range_end - range_start
+            cursor = range_end
+        if kv.kv_committed_len > cursor:
+            segments.append((cursor, kv.kv_committed_len, distance))
+        else:
+            pass
+        if segments:
+            source_positions = torch.cat(
+                [
+                    torch.arange(start, end, device=row.device)
+                    for start, end, _ in segments
+                ]
             )
-            value_buffer.index_copy_(
-                0, target_slots, value_buffer.index_select(0, source_slots)
+            distances: int | torch.Tensor = (
+                segments[0][2]
+                if len(segments) == 1
+                else torch.cat(
+                    [
+                        torch.full(
+                            (end - start,),
+                            shift,
+                            dtype=torch.int64,
+                            device=row.device,
+                        )
+                        for start, end, shift in segments
+                    ]
+                )
             )
+            source_slots = row[source_positions].to(torch.int64)
+            target_slots = row[ranges[0][0] : kept_length].to(torch.int64)
+            assert source_slots.numel() == target_slots.numel()
+            kv_cache = self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache()
+            # note (0xtoward): Rows keep their slots, so pages stay whole and captured graphs keep their buffers; only the KV moves.
+            for layer_id in range(
+                kv_cache.start_layer, kv_cache.start_layer + kv_cache.layer_num
+            ):
+                key_buffer = kv_cache.get_key_buffer(layer_id)
+                value_buffer = kv_cache.get_value_buffer(layer_id)
+                assert (
+                    key_buffer.shape[0] == kv_cache.size + kv_cache.page_size
+                ), "history cut needs one KV row per token slot"
+                key_buffer.index_copy_(
+                    0,
+                    target_slots,
+                    self.adapter.shift_key_positions(
+                        key_buffer.index_select(0, source_slots), distances
+                    ),
+                )
+                value_buffer.index_copy_(
+                    0, target_slots, value_buffer.index_select(0, source_slots)
+                )
+        else:
+            pass
         tail_start = ceil_align(kept_length, tree_cache.page_size)
         if tail_start < kv.kv_allocated_len:
             tree_cache.free_kv_row(kv, [(tail_start, kv.kv_allocated_len)])
@@ -581,6 +660,48 @@ class ARSessionBridge:
             pass
         kv.kv_allocated_len = kept_length
         kv.kv_committed_len = kept_length
+
+    def score_history_units(
+        self, native_session: Session, bounds: list[tuple[int, int]], policy: str
+    ) -> list[float]:
+        """test only (xp): one score per retained unit [start, end) from its cached keys, every fourth layer.
+
+        knorm is the mean key L2 norm; keydiff is the mean cosine similarity of the position-free keys to their mean.
+        A higher score drops first.
+        """
+        slot = self.bridge_scheduler.tree_cache.slots.get(native_session.session_id)
+        if not bounds or slot is None or not slot.kv.holds_kv:
+            return [0.0] * len(bounds)
+        else:
+            pass
+        first, last = bounds[0][0], bounds[-1][1]
+        row = self.bridge_scheduler.tree_cache.req_to_token_pool.req_to_token[
+            slot.kv.req_pool_idx
+        ]
+        slots = row[first:last].to(torch.int64)
+        positions = torch.arange(first, last, device=row.device)
+        kv_cache = self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache()
+        layers = range(
+            kv_cache.start_layer, kv_cache.start_layer + kv_cache.layer_num, 4
+        )
+        token_scores = torch.zeros(last - first, device=row.device, dtype=torch.float32)
+        for layer_id in layers:
+            keys = (
+                kv_cache.get_key_buffer(layer_id)
+                .index_select(0, slots)
+                .to(torch.float32)
+            )
+            if policy == "knorm":
+                token_scores += keys.norm(dim=-1).mean(dim=-1)
+            else:
+                keys = self.adapter.shift_key_positions(keys, positions)
+                token_scores += torch.nn.functional.cosine_similarity(
+                    keys, keys.mean(dim=0, keepdim=True), dim=-1
+                ).mean(dim=-1)
+        token_scores /= len(layers)
+        return torch.stack(
+            [token_scores[start - first : end - first].mean() for start, end in bounds]
+        ).tolist()
 
     def release_append_unit(self, request_id: str) -> None:
         unit = self.units_by_request_id.pop(request_id, None)

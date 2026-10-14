@@ -21,6 +21,77 @@ class MiniCPMOThinkerSessionState:
     generated_history: list[int] = field(default_factory=list)
     # note (0xtoward): Session position of each retained finished unit's <unit>; the first one ends the system prompt and reference audio.
     unit_starts: list[int] = field(default_factory=list)
+    # test only (xp): per retained finished unit, whether the user was quiet and the model listened
+    unit_quiet: list[bool] = field(default_factory=list)
+
+    def drop_units(
+        self,
+        next_unit_start: int,
+        target_start: int,
+        *,
+        policy: str,
+        protect_tokens: int,
+        unit_scores: list[float] | None = None,
+    ) -> list[tuple[int, int]] | None:
+        """test only (xp): choose finished units to drop until the next unit starts at or below target_start.
+
+        basic drops the oldest; quiet drops quiet units first; knorm / keydiff drop the highest-scored units
+        first. Units starting within protect_tokens of the next unit go only in the oldest-first fallback.
+        """
+        count = len(self.unit_starts)
+        need = next_unit_start - target_start
+        if count < 2 or need <= 0:
+            return None
+        else:
+            pass
+        lengths = [
+            self.unit_starts[index + 1] - self.unit_starts[index]
+            for index in range(count - 1)
+        ]
+        eligible = [
+            index
+            for index in range(count - 1)
+            if self.unit_starts[index] < next_unit_start - protect_tokens
+        ]
+        if policy == "quiet":
+            order = [index for index in eligible if self.unit_quiet[index]]
+        elif policy in ("knorm", "keydiff") and unit_scores is not None:
+            order = sorted(eligible, key=lambda index: -unit_scores[index])
+        else:
+            order = []
+        dropped: set[int] = set()
+        total = 0
+        for index in [*order, *range(count - 1)]:
+            if total >= need:
+                break
+            elif index not in dropped:
+                dropped.add(index)
+                total += lengths[index]
+            else:
+                pass
+        if not dropped:
+            return None
+        else:
+            pass
+        ranges: list[tuple[int, int]] = []
+        for index in sorted(dropped):
+            start, end = self.unit_starts[index], self.unit_starts[index + 1]
+            if ranges and ranges[-1][1] == start:
+                ranges[-1] = (ranges[-1][0], end)
+            else:
+                ranges.append((start, end))
+        starts: list[int] = []
+        quiet: list[bool] = []
+        shift = 0
+        for index in range(count):
+            if index in dropped:
+                shift += lengths[index]
+            else:
+                starts.append(self.unit_starts[index] - shift)
+                quiet.append(self.unit_quiet[index])
+        self.unit_starts = starts
+        self.unit_quiet = quiet
+        return ranges
 
     def drop_oldest_units(
         self, next_unit_start: int, target_start: int

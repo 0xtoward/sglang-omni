@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """MiniCPM-o unit conversion for the shared session runtime."""
 
+import logging
+import os
 from array import array
 
 import torch
@@ -47,6 +49,12 @@ from sglang_omni.serve.realtime.output import (
     TextFinished,
 )
 from sglang_omni.serve.realtime.types import Capabilities
+
+logger = logging.getLogger(__name__)
+# test only (xp): thinker window variants for the long-conversation study
+XP_WINDOW_POLICY = os.environ.get("SGLANG_OMNI_XP_WINDOW_POLICY", "basic")
+XP_PROTECT_TOKENS = int(os.environ.get("SGLANG_OMNI_XP_PROTECT_TOKENS", "2000"))
+XP_QUIET_RMS = float(os.environ.get("SGLANG_OMNI_XP_QUIET_RMS", "0.003"))
 
 
 class ThinkerAdapter(ARSessionAdapter):
@@ -165,14 +173,54 @@ class ThinkerAdapter(ARSessionAdapter):
         ):
             return None
         else:
-            return self.states[session_identity].drop_oldest_units(
-                next_unit_start, min(self.window.low_tokens, fitting_start)
+            state = self.states[session_identity]
+            scores = None
+            if XP_WINDOW_POLICY in ("knorm", "keydiff") and len(state.unit_starts) > 1:
+                scores = self.xp_scorer(
+                    list(zip(state.unit_starts[:-1], state.unit_starts[1:])),
+                    XP_WINDOW_POLICY,
+                )
+            else:
+                pass
+            quiet_before = sum(state.unit_quiet)
+            units_before = len(state.unit_starts)
+            ranges = state.drop_units(
+                next_unit_start,
+                min(self.window.low_tokens, fitting_start),
+                policy=XP_WINDOW_POLICY,
+                protect_tokens=XP_PROTECT_TOKENS,
+                unit_scores=scores,
             )
+            if not ranges:
+                return None
+            else:
+                logger.info(
+                    "XP_CUT policy=%s next=%d units_dropped=%d quiet_dropped=%d quiet_left=%d units_left=%d ranges=%d",
+                    XP_WINDOW_POLICY,
+                    next_unit_start,
+                    units_before - len(state.unit_starts),
+                    quiet_before - sum(state.unit_quiet),
+                    sum(state.unit_quiet),
+                    len(state.unit_starts),
+                    len(ranges),
+                )
+                return HistoryCut(
+                    start=ranges[0][0], end=ranges[0][1], more=tuple(ranges[1:])
+                )
 
-    def shift_key_positions(self, keys: torch.Tensor, distance: int) -> torch.Tensor:
-        cosine, sine = (
-            self.rotary_embedding.cos_sin_cache[distance].to(torch.float32).chunk(2)
-        )
+    def shift_key_positions(
+        self, keys: torch.Tensor, distance: int | torch.Tensor
+    ) -> torch.Tensor:
+        cache = self.rotary_embedding.cos_sin_cache
+        if isinstance(distance, torch.Tensor):
+            # test only (xp): one distance per row, shared by its heads
+            cosine, sine = (
+                cache[distance.to(cache.device)]
+                .to(torch.float32)[:, None]
+                .chunk(2, dim=-1)
+            )
+        else:
+            cosine, sine = cache[distance].to(torch.float32).chunk(2)
         first_half, second_half = keys.to(torch.float32).chunk(2, dim=-1)
         return torch.cat(
             (
@@ -189,6 +237,13 @@ class ThinkerAdapter(ARSessionAdapter):
         state.is_prefix_pending = False
         state.unit_starts.append(data.session_history_length + data.unit_token_index)
         output_token_ids = [int(token_id) for token_id in data.output_ids]
+        # test only (xp)
+        plan = data.stage_payload.data
+        input_rms = float(plan.get("input_rms", 1.0)) if isinstance(plan, dict) else 1.0
+        state.unit_quiet.append(
+            bool(output_token_ids and output_token_ids[0] == self.special.listen)
+            and input_rms < XP_QUIET_RMS
+        )
         data.stage_payload.data = dict(
             talker_conditions=data.talker_conditions,
             text=self.tokenizer.decode(

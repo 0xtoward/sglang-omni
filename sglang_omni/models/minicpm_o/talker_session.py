@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Incremental speech conditions over the shared SGLang talker and native KV."""
 
+import logging
+import os
 from dataclasses import dataclass, field
 
 import torch
@@ -24,6 +26,11 @@ from sglang_omni.scheduling.sglang_backend.request_data import (
     SGLangARRequestData,
 )
 
+logger = logging.getLogger(__name__)
+# test only (xp): what a talker rollover carries: half (newest units in half the limit), sink (the turn's first unit
+# plus the newest), one (the newest unit only)
+XP_TALKER_CARRY = os.environ.get("SGLANG_OMNI_XP_TALKER_CARRY", "half")
+
 # note (Junnan Li): One 1 s unit of codec tokens plus one, as in the checkpoint's duplex TTS.
 TALKER_TOKENS_PER_UNIT = CODEC_CHUNK_SIZE + 1
 
@@ -36,6 +43,8 @@ class TalkerSessionState:
     # note (0xtoward): Tokens the turn's talker history holds, and the turn's newest finished units (condition, codes) that a rollover can keep.
     history_length: int = 0
     recent_units: list[tuple[torch.Tensor, list[int]]] = field(default_factory=list)
+    # test only (xp): the turn's first unit
+    sink_unit: tuple[torch.Tensor, list[int]] | None = None
 
 
 @dataclass(kw_only=True)
@@ -90,6 +99,7 @@ class TalkerAdapter(ARSessionAdapter):
             state.is_reset_pending = False
             state.history_length = 0
             state.recent_units.clear()
+            state.sink_unit = None
         else:
             pass
         thinker_result = payload.data
@@ -163,8 +173,33 @@ class TalkerAdapter(ARSessionAdapter):
                 state.recent_units
             ), "a rollover keeps the newest finished unit of the turn"
             # note (0xtoward): Like the thinker's window, a rollover keeps the turn's newest units, here as many as fit with the new unit in half the request limit.
-            state.recent_units = self.units_to_carry(
-                state.recent_units, condition_rows + TALKER_TOKENS_PER_UNIT
+            history_length = state.history_length
+            sink = state.sink_unit
+            if XP_TALKER_CARRY == "one":
+                state.recent_units = state.recent_units[-1:]
+            elif (
+                XP_TALKER_CARRY == "sink"
+                and sink is not None
+                and sink is not state.recent_units[-1]
+            ):
+                newest = self.units_to_carry(
+                    [unit for unit in state.recent_units if unit is not sink],
+                    condition_rows
+                    + TALKER_TOKENS_PER_UNIT
+                    + int(sink[0].shape[0])
+                    + len(sink[1]),
+                )
+                state.recent_units = [sink, *newest]
+            else:
+                state.recent_units = self.units_to_carry(
+                    state.recent_units, condition_rows + TALKER_TOKENS_PER_UNIT
+                )
+            logger.info(
+                "TALKER_ROLLOVER carry=%s history=%d carried_units=%d carried_tokens=%d",
+                XP_TALKER_CARRY,
+                history_length,
+                len(state.recent_units),
+                sum(int(c.shape[0]) + len(t) for c, t in state.recent_units),
             )
             for condition, codec_tokens in state.recent_units:
                 rows = int(condition.shape[0])
@@ -224,5 +259,9 @@ class TalkerAdapter(ARSessionAdapter):
                 list(request_data.output_ids),
             )
         )
+        if state.sink_unit is None:
+            state.sink_unit = state.recent_units[-1]
+        else:
+            pass
         state.recent_units = self.units_to_carry(state.recent_units, 0)
         return payload
