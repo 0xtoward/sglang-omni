@@ -564,15 +564,19 @@ class ARSessionBridge:
             assert (
                 key_buffer.shape[0] == kv_cache.size + kv_cache.page_size
             ), "history cut needs one KV row per token slot"
-            key_buffer.index_copy_(
-                0,
-                target_slots,
-                self.adapter.shift_key_positions(
-                    key_buffer.index_select(0, source_slots), dropped_length
-                ),
+            # note (0xtoward): An FP8 cache is uint8 storage behind float8 views, and CUDA index_copy_ takes no float8, so its rows move as bytes.
+            key_rows, value_rows = (
+                (key_buffer.view(torch.uint8), value_buffer.view(torch.uint8))
+                if key_buffer.dtype.itemsize == 1
+                else (key_buffer, value_buffer)
             )
-            value_buffer.index_copy_(
-                0, target_slots, value_buffer.index_select(0, source_slots)
+            shifted_keys = self.adapter.shift_key_positions(
+                key_rows.index_select(0, source_slots).view(key_buffer.dtype),
+                dropped_length,
+            )
+            key_rows.index_copy_(0, target_slots, shifted_keys.view(key_rows.dtype))
+            value_rows.index_copy_(
+                0, target_slots, value_rows.index_select(0, source_slots)
             )
         tail_start = ceil_align(kept_length, tree_cache.page_size)
         if tail_start < kv.kv_allocated_len:
