@@ -49,7 +49,7 @@ from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_SPEECH_SETTINGS,
     DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 )
-from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.cache_key import hash_bytes
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -440,12 +440,9 @@ def create_thinker_scheduler(
     else:
         text_config = MiniCPMOConfig.from_pretrained(model_path).get_text_config()
         overrides = server_args_overrides or {}
-        effective_dtype = overrides.get("dtype", dtype)
-        if effective_dtype == "auto":
-            register_minicpm_o_hf_config()
-            model_dtype = ModelConfig(model_path, dtype="auto").dtype
-        else:
-            model_dtype = resolve_dtype(effective_dtype)
+        register_minicpm_o_hf_config()
+        # note (0xtoward): SGLang's ModelConfig resolves the engine dtype and its aliases (auto, half, float), so the budget sizes the same elements the engine allocates.
+        model_dtype = ModelConfig(model_path, dtype=overrides.get("dtype", dtype)).dtype
         cache_format = overrides.get("kv_cache_dtype", "auto")
         if cache_format in BLOCK_QUANTIZED_KV_CACHE_DTYPES:
             raise ValueError(
