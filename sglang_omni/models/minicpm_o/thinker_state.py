@@ -63,6 +63,11 @@ class MiniCPMOThinkerSessionState:
             ]
         elif policy in ("knorm", "keydiff") and unit_scores is not None:
             order = sorted(eligible, key=lambda index: -unit_scores[index])
+        elif policy in ("quietkd", "quietkn") and unit_scores is not None:
+            order = [index for index in eligible if self.unit_quiet[index]] + sorted(
+                (index for index in eligible if not self.unit_quiet[index]),
+                key=lambda index: -unit_scores[index],
+            )
         else:
             order = []
         dropped: set[int] = set()

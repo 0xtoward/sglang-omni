@@ -175,10 +175,13 @@ class ThinkerAdapter(ARSessionAdapter):
         else:
             state = self.states[session_identity]
             scores = None
-            if XP_WINDOW_POLICY in ("knorm", "keydiff") and len(state.unit_starts) > 1:
+            if (
+                XP_WINDOW_POLICY in ("knorm", "keydiff", "quietkd", "quietkn")
+                and len(state.unit_starts) > 1
+            ):
                 scores = self.xp_scorer(
                     list(zip(state.unit_starts[:-1], state.unit_starts[1:])),
-                    XP_WINDOW_POLICY,
+                    "knorm" if XP_WINDOW_POLICY in ("knorm", "quietkn") else "keydiff",
                 )
             else:
                 pass
