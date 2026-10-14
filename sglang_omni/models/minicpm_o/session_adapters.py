@@ -204,7 +204,8 @@ class ThinkerAdapter(ARSessionAdapter):
                     else:
                         spans.append([number, number])
                 logger.info(
-                    "XP_CUT policy=%s next=%d units_dropped=%d quiet_dropped=%d quiet_left=%d units_left=%d ranges=%d at_unit=%d dropped_units=%s",
+                    "XP_CUT session=%s policy=%s next=%d units_dropped=%d quiet_dropped=%d quiet_left=%d units_left=%d ranges=%d at_unit=%d dropped_units=%s",
+                    session_identity.id,
                     XP_WINDOW_POLICY,
                     next_unit_start,
                     units_before - len(state.unit_starts),
