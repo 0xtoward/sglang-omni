@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -30,6 +31,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
+    DEFAULT_PREFILL_INTERVAL_POLICY,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
@@ -58,6 +60,12 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     PHILOX_SEED_MODULUS,
     CodebookSampler,
     triton_sampling_unsupported_reason,
+)
+from sglang_omni.models.fishaudio_drama3.scheduler import (
+    AUDIO_FRAME_SECONDS,
+    Drama3Scheduler,
+    PrefillCadence,
+    critical_step_fraction,
 )
 from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
@@ -111,6 +119,9 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        prefill_interval_policy: Literal["fixed", "adaptive"] = (
+            DEFAULT_PREFILL_INTERVAL_POLICY
+        ),
     ) -> None:
         self.context_length = context_length
         self.max_running_requests = max_running_requests
@@ -125,6 +136,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.tower_fused_layers = tower_fused_layers
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.prefill_interval_policy = prefill_interval_policy
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
 
@@ -378,6 +390,46 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             ),
             Drama3ResultAdapter(eos_token_id=model.config.eos_token_id),
         )
+
+    def make_scheduler(self, **kwargs: object) -> Drama3Scheduler:
+        """The base scheduler arguments, on the Drama 3 subclass that can pace prefills by load."""
+        extra_scheduler_kwargs = kwargs.pop("extra_scheduler_kwargs")
+        return Drama3Scheduler(
+            tp_worker=kwargs.pop("model_worker"),
+            abort_callback=self.make_abort_callback(),
+            request_finished_callback=self.make_request_finished_callback(),
+            **kwargs,
+            **self.extra_scheduler_callbacks(),
+            **extra_scheduler_kwargs,
+        )
+
+    def post_scheduler_setup(
+        self, scheduler: Drama3Scheduler, model_runner: Drama3ModelRunner
+    ) -> None:
+        del model_runner
+        if (
+            self.prefill_interval_policy == "adaptive"
+            and scheduler.prefill_decode_interval > 0
+        ):
+            scheduler.cadence = PrefillCadence(
+                max_interval=scheduler.prefill_decode_interval,
+                critical_step_s=AUDIO_FRAME_SECONDS
+                * critical_step_fraction(
+                    self.stream_stride,
+                    self.stream_followup_stride_ramp,
+                    self.stream_followup_stride,
+                ),
+            )
+            logger.info(
+                f"Drama 3 prefill interval: adaptive, up to "
+                f"{scheduler.prefill_decode_interval} decode steps, critical step "
+                f"{scheduler.cadence.critical_step_s * 1000:.1f} ms"
+            )
+        else:
+            logger.info(
+                f"Drama 3 prefill interval: fixed at "
+                f"{scheduler.prefill_decode_interval} decode steps"
+            )
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Drama3RequestData]:
         """The frame streamer make_adapters created, which build calls first."""
