@@ -411,7 +411,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             self.prefill_interval_policy == "adaptive"
             and scheduler.prefill_decode_interval > 0
         ):
-            scheduler.cadence = PrefillCadence(
+            cadence = PrefillCadence(
                 max_interval=scheduler.prefill_decode_interval,
                 critical_step_s=AUDIO_FRAME_SECONDS
                 * critical_step_fraction(
@@ -420,10 +420,11 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                     self.stream_followup_stride,
                 ),
             )
+            scheduler.install_cadence(cadence)
             logger.info(
                 f"Drama 3 prefill interval: adaptive, up to "
                 f"{scheduler.prefill_decode_interval} decode steps, critical step "
-                f"{scheduler.cadence.critical_step_s * 1000:.1f} ms"
+                f"{cadence.critical_step_s * 1000:.1f} ms"
             )
         else:
             logger.info(

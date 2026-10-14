@@ -27,6 +27,16 @@ def forward_mode(*, extend: bool) -> SimpleNamespace:
     return SimpleNamespace(is_extend=lambda: extend, is_decode=lambda: not extend)
 
 
+def launched_batch(
+    *, extend: bool, launch_s: float, after_idle_gap: bool = False
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        forward_mode=forward_mode(extend=extend),
+        launch_ts=launch_s,
+        after_idle_gap=after_idle_gap,
+    )
+
+
 def request(*, finished: bool = False, waited_s: float = 0.0) -> SimpleNamespace:
     return SimpleNamespace(
         finished=lambda: finished, _coalesce_enqueue_t=time.perf_counter() - waited_s
@@ -45,9 +55,11 @@ def scheduler(
     instance.running_batch = SimpleNamespace(reqs=list(running))
     instance.last_batch = None
     instance.waiting_queue = list(waiting)
+    if cadence is not None:
+        instance.install_cadence(cadence)
+    else:
+        pass
     instance.decode_step_s = decode_step_s
-    instance.cadence_level = 0
-    instance.cadence = cadence
     instance.prefill_decode_interval = prefill_decode_interval
     instance.require_mlp_sync = False
     instance._prefill_decode_interval_remaining = 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -67,6 +79,27 @@ def test_default_windows_starve_a_stream_above_a_25_ms_step() -> None:
     )
     assert fraction == pytest.approx(64 / 118)
     assert fraction * AUDIO_FRAME_SECONDS == pytest.approx(0.0252, abs=1e-4)
+
+
+def test_decode_step_is_the_launch_cadence_of_back_to_back_decodes() -> None:
+    """A prefill or an idle gap between two decodes is not a decode step."""
+    instance = scheduler(running=[request()], cadence=cadence())
+    for batch in [
+        launched_batch(extend=False, launch_s=1.000),
+        launched_batch(extend=False, launch_s=1.020),
+        launched_batch(extend=True, launch_s=1.030),
+        launched_batch(extend=False, launch_s=1.070),
+        launched_batch(extend=False, launch_s=1.200, after_idle_gap=True),
+        launched_batch(extend=False, launch_s=1.224),
+    ]:
+        instance.last_batch = batch
+        instance.observe_decode_step()
+        instance.observe_decode_step()  # a second look at the same launch adds nothing
+    weight = cadence().step_weight
+    assert instance.decode_step_count == 2
+    assert instance.decode_step_s == pytest.approx(
+        weight * 0.024 + (1 - weight) * 0.020
+    )
 
 
 @pytest.mark.parametrize(
@@ -145,6 +178,7 @@ def test_with_a_cadence_a_prefill_arms_the_chosen_interval() -> None:
     assert (
         instance._prefill_decode_interval_remaining == 2
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    assert instance.prefills_by_interval == {2: 1}
     instance._arm_prefill_decode_interval(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         SimpleNamespace(forward_mode=forward_mode(extend=False))
     )

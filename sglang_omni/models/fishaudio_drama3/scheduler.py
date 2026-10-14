@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import logging
 import time
+from collections import Counter
 from dataclasses import dataclass
 
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
@@ -11,6 +13,8 @@ from sglang.srt.managers.scheduler import Scheduler as UpstreamScheduler
 
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+logger = logging.getLogger(__name__)
 
 # note (0xtoward): The S2-Pro codec decodes one frame from 2048 samples at 44.1 kHz.
 AUDIO_FRAME_SECONDS = 2048 / 44100
@@ -51,13 +55,22 @@ class PrefillCadence:
     load_intervals: tuple[int, ...] = (0, 1, 2, 4)
     hysteresis: float = 0.05
     step_weight: float = 0.25
+    report_period_s: float = 30.0
 
 
 class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
     # note (0xtoward): Drama3EngineBuilder.post_scheduler_setup installs a cadence; without one the scheduler keeps upstream's fixed countdown.
     cadence: PrefillCadence | None = None
     decode_step_s: float | None = None
+    decode_launch_s: float | None = None
     cadence_level: int = 0
+
+    def install_cadence(self, cadence: PrefillCadence) -> None:
+        self.cadence = cadence
+        self.prefills_by_interval: Counter[int] = Counter()
+        self.decode_step_total_s = 0.0
+        self.decode_step_count = 0
+        self.cadence_reported_s = time.monotonic()
 
     def decoding_requests(self) -> list[Req]:
         """The requests the next decode advances.
@@ -97,29 +110,68 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
             pass
 
     def observe_decode_step(self) -> None:
-        """Fold the wall time of the step that just finished into the decode-step EWMA."""
+        """Fold the launch-to-launch time of back-to-back decode steps into the decode-step EWMA."""
         last_batch = self.last_batch
         if (
             self.cadence is None
             or last_batch is None
-            or not last_batch.forward_mode.is_decode()
-            or getattr(last_batch, "launch_ts", None) is None
+            or last_batch.launch_ts == self.decode_launch_s
+        ):
+            return
+        elif not last_batch.forward_mode.is_decode():
+            self.decode_launch_s = None
+            return
+        else:
+            pass
+        previous_launch_s, self.decode_launch_s = (
+            self.decode_launch_s,
+            last_batch.launch_ts,
+        )
+        if previous_launch_s is None or last_batch.after_idle_gap:
+            return
+        else:
+            pass
+        step_s = last_batch.launch_ts - previous_launch_s
+        previous_step_s = self.decode_step_s
+        weight = self.cadence.step_weight
+        self.decode_step_s = (
+            step_s
+            if previous_step_s is None
+            else weight * step_s + (1 - weight) * previous_step_s
+        )
+        self.decode_step_total_s += step_s
+        self.decode_step_count += 1
+
+    def report_cadence(self) -> None:
+        cadence = self.cadence
+        now_s = time.monotonic()
+        if (
+            cadence is None
+            or now_s - self.cadence_reported_s < cadence.report_period_s
+            or not self.prefills_by_interval
         ):
             return
         else:
             pass
-        step_s = time.monotonic() - last_batch.launch_ts
-        previous_s = self.decode_step_s
-        weight = self.cadence.step_weight
-        self.decode_step_s = (
-            step_s
-            if previous_s is None
-            else weight * step_s + (1 - weight) * previous_s
+        mean_step_ms = (
+            1000 * self.decode_step_total_s / self.decode_step_count
+            if self.decode_step_count
+            else float("nan")
         )
+        logger.info(
+            f"Drama 3 prefill cadence: {self.decode_step_count} decode steps, mean "
+            f"{mean_step_ms:.1f} ms against {cadence.critical_step_s * 1000:.1f} ms; "
+            f"prefills by interval {dict(sorted(self.prefills_by_interval.items()))}"
+        )
+        self.prefills_by_interval.clear()
+        self.decode_step_total_s = 0.0
+        self.decode_step_count = 0
+        self.cadence_reported_s = now_s
 
     def get_next_batch_to_run(self):
         self.observe_decode_step()
         self.release_interval_if_due()
+        self.report_cadence()
         return super().get_next_batch_to_run()
 
     def is_prefill_expected(self) -> bool:
@@ -139,9 +191,9 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
             if self.require_mlp_sync
             else batch.forward_mode.is_extend()
         ):
-            self._prefill_decode_interval_remaining = (  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-                self.choose_interval()
-            )
+            interval = self.choose_interval()
+            self.prefills_by_interval[interval] += 1
+            self._prefill_decode_interval_remaining = interval  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         else:
             pass
 
