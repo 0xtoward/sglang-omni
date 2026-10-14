@@ -23,6 +23,8 @@ class MiniCPMOThinkerSessionState:
     unit_starts: list[int] = field(default_factory=list)
     # test only (xp): per retained finished unit, whether the user was quiet and the model listened
     unit_quiet: list[bool] = field(default_factory=list)
+    # test only (xp): 0 user quiet and model listening, 1 model speaking while the user is quiet, 2 user speaking
+    unit_kinds: list[int] = field(default_factory=list)
 
     def drop_units(
         self,
@@ -55,6 +57,10 @@ class MiniCPMOThinkerSessionState:
         ]
         if policy == "quiet":
             order = [index for index in eligible if self.unit_quiet[index]]
+        elif policy == "user":
+            order = [index for index in eligible if self.unit_kinds[index] == 0] + [
+                index for index in eligible if self.unit_kinds[index] == 1
+            ]
         elif policy in ("knorm", "keydiff") and unit_scores is not None:
             order = sorted(eligible, key=lambda index: -unit_scores[index])
         else:
@@ -82,6 +88,7 @@ class MiniCPMOThinkerSessionState:
                 ranges.append((start, end))
         starts: list[int] = []
         quiet: list[bool] = []
+        kinds: list[int] = []
         shift = 0
         for index in range(count):
             if index in dropped:
@@ -89,8 +96,10 @@ class MiniCPMOThinkerSessionState:
             else:
                 starts.append(self.unit_starts[index] - shift)
                 quiet.append(self.unit_quiet[index])
+                kinds.append(self.unit_kinds[index])
         self.unit_starts = starts
         self.unit_quiet = quiet
+        self.unit_kinds = kinds
         return ranges
 
     def drop_oldest_units(

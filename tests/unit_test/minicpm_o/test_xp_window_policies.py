@@ -24,7 +24,7 @@ from tests.unit_test.minicpm_o.test_native_vision_relay import (  # noqa: F401
 UNITS = [CUT_UNITS[index % len(CUT_UNITS)] for index in range(8)]
 
 
-@pytest.mark.parametrize("policy", ["basic", "quiet", "knorm", "keydiff"])
+@pytest.mark.parametrize("policy", ["basic", "quiet", "user", "knorm", "keydiff"])
 def test_xp_policy_cut_keeps_ids_spans_and_kv(perception, monkeypatch, policy) -> None:
     monkeypatch.setattr(session_adapters, "XP_WINDOW_POLICY", policy)
     monkeypatch.setattr(session_adapters, "XP_PROTECT_TOKENS", 0)
@@ -34,6 +34,7 @@ def test_xp_policy_cut_keeps_ids_spans_and_kv(perception, monkeypatch, policy) -
     finish_window_units(perception, scheduler, bridge, adapter, UNITS[:7])
     state = adapter.states[IDENTITY]
     state.unit_quiet = [False, True, False, True, False, True, False]
+    state.unit_kinds = [2, 0, 1, 0, 2, 1, 2]
     starts = list(state.unit_starts)
     lengths = [len(unit_token_ids(unit)) for unit in UNITS[:7]]
     next_unit_start = starts[6] + lengths[6]
@@ -59,7 +60,7 @@ def test_xp_policy_cut_keeps_ids_spans_and_kv(perception, monkeypatch, policy) -
         for index in range(7)
         if any(start <= starts[index] < end for start, end in ranges)
     }
-    if policy == "quiet":
+    if policy in ("quiet", "user"):
         assert dropped == {1, 3} and len(ranges) == 2, (dropped, ranges)
     elif policy == "basic":
         assert dropped == {0, 1, 2} or dropped == {0, 1}, dropped

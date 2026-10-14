@@ -240,9 +240,12 @@ class ThinkerAdapter(ARSessionAdapter):
         # test only (xp)
         plan = data.stage_payload.data
         input_rms = float(plan.get("input_rms", 1.0)) if isinstance(plan, dict) else 1.0
-        state.unit_quiet.append(
-            bool(output_token_ids and output_token_ids[0] == self.special.listen)
-            and input_rms < XP_QUIET_RMS
+        is_listen_unit = bool(
+            output_token_ids and output_token_ids[0] == self.special.listen
+        )
+        state.unit_quiet.append(is_listen_unit and input_rms < XP_QUIET_RMS)
+        state.unit_kinds.append(
+            2 if input_rms >= XP_QUIET_RMS else (0 if is_listen_unit else 1)
         )
         data.stage_payload.data = dict(
             talker_conditions=data.talker_conditions,
