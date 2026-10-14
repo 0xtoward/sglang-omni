@@ -143,11 +143,12 @@ def test_frame_period_steps_the_interval_one_rung_per_hold() -> None:
 def test_a_decode_bound_frame_period_does_not_climb() -> None:
     """Batching prefills cannot shorten a frame period that decode steps fill."""
     instance = scheduler(running=[request()], cadence=cadence(follow_frame_period=True))
-    instance.cadence_level = 2
     measure(instance, period_fraction=1.1, prefill_share=0.15)
-    assert instance.choose_interval() == 2, "a middling prefill share holds the rung"
+    assert instance.choose_interval() == 0, "a small prefill share does not climb"
+    measure(instance, period_fraction=1.1, prefill_share=0.4)
+    assert instance.choose_interval() == 1
     measure(instance, period_fraction=1.1, prefill_share=0.05)
-    assert instance.choose_interval() == 1, "a small prefill share steps down"
+    assert instance.choose_interval() == 1, "a rung that batched the prefills stays"
 
 
 @pytest.mark.parametrize(

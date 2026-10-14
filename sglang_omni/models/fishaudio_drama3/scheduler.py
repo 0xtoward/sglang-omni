@@ -48,9 +48,8 @@ class PrefillCadence:
     With it on, the frame period (decode steps plus the prefills between them) moves the
     interval one rung up when it passes period_target of the critical step while prefills
     take at least climb_prefill_share of it, and one rung down when it falls period_band
-    below that or prefills take less than drop_prefill_share, at most once per
-    level_hold_steps steps. A waiting request older than wait_cap_s, or an idle decode,
-    releases the countdown.
+    below that, at most once per level_hold_steps steps. A waiting request older than
+    wait_cap_s, or an idle decode, releases the countdown.
     """
 
     max_interval: int
@@ -65,7 +64,6 @@ class PrefillCadence:
     period_band: float = 0.15
     period_weight: float = 0.05
     climb_prefill_share: float = 0.20
-    drop_prefill_share: float = 0.10
     level_hold_steps: int = 32
     report_period_s: float = 30.0
 
@@ -267,7 +265,7 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
             ):
                 pass
             else:
-                # note (0xtoward): A longer interval only batches prefills; when they are a small share of the frame period it adds TTFA and buys no continuity.
+                # note (0xtoward): A longer interval only batches prefills; when they are a small share of the frame period it adds TTFA and buys no continuity. Stepping down still follows the period alone, since a high rung shrinks the prefill share it is judged by.
                 prefill_share = 1 - self.slow_decode_step_s / self.frame_period_s
                 if (
                     self.frame_period_s > target_s
@@ -278,8 +276,8 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
                     self.decode_steps_at_level = 0
                 elif (
                     self.frame_period_s < target_s * (1 - cadence.period_band)
-                    or prefill_share < cadence.drop_prefill_share
-                ) and self.cadence_level > 0:
+                    and self.cadence_level > 0
+                ):
                     self.cadence_level -= 1
                     self.decode_steps_at_level = 0
                 else:
