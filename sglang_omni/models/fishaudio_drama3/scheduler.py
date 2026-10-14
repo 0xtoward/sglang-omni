@@ -63,7 +63,7 @@ class PrefillCadence:
     period_target: float = 0.90
     period_band: float = 0.15
     period_weight: float = 0.05
-    climb_prefill_share: float = 0.20
+    climb_prefill_share: float = 0.15
     level_hold_steps: int = 32
     report_period_s: float = 30.0
 

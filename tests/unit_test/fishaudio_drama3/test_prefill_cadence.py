@@ -143,7 +143,7 @@ def test_frame_period_steps_the_interval_one_rung_per_hold() -> None:
 def test_a_decode_bound_frame_period_does_not_climb() -> None:
     """Batching prefills cannot shorten a frame period that decode steps fill."""
     instance = scheduler(running=[request()], cadence=cadence(follow_frame_period=True))
-    measure(instance, period_fraction=1.1, prefill_share=0.15)
+    measure(instance, period_fraction=1.1, prefill_share=0.10)
     assert instance.choose_interval() == 0, "a small prefill share does not climb"
     measure(instance, period_fraction=1.1, prefill_share=0.4)
     assert instance.choose_interval() == 1
