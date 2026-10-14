@@ -32,6 +32,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_STREAM_STRIDE,
     DEFAULT_TOWER_FUSED_LAYERS,
     DEFAULT_TRITON_SAMPLING,
+    PrefillIntervalPolicy,
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
@@ -163,9 +164,7 @@ def create_tts_engine_executor(
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
-    prefill_interval_policy: Literal["fixed", "adaptive"] = (
-        DEFAULT_PREFILL_INTERVAL_POLICY
-    ),
+    prefill_interval_policy: PrefillIntervalPolicy = DEFAULT_PREFILL_INTERVAL_POLICY,
 ) -> OmniScheduler[Drama3RequestData]:
     overrides = dict(server_args_overrides or {})
     mem_fraction_static = overrides.get("mem_fraction_static")

@@ -66,8 +66,12 @@ def scheduler(
     return instance
 
 
-def cadence() -> PrefillCadence:
-    return PrefillCadence(max_interval=8, critical_step_s=CRITICAL_STEP_S)
+def cadence(*, follow_frame_period: bool = False) -> PrefillCadence:
+    return PrefillCadence(
+        max_interval=8,
+        critical_step_s=CRITICAL_STEP_S,
+        follow_frame_period=follow_frame_period,
+    )
 
 
 def test_default_windows_starve_a_stream_above_a_25_ms_step() -> None:
@@ -100,6 +104,34 @@ def test_decode_step_is_the_launch_cadence_of_back_to_back_decodes() -> None:
     assert instance.decode_step_s == pytest.approx(
         weight * 0.024 + (1 - weight) * 0.020
     )
+    period_weight = cadence().period_weight
+    assert (
+        instance.frame_period_count == 3
+    ), "the prefill gap counts, the idle gap does not"
+    assert instance.frame_period_s == pytest.approx(
+        period_weight * 0.024
+        + (1 - period_weight) * (period_weight * 0.050 + (1 - period_weight) * 0.020)
+    )
+
+
+def test_frame_period_steps_the_interval_one_rung_per_hold() -> None:
+    instance = scheduler(running=[request()], cadence=cadence(follow_frame_period=True))
+    hold = instance.cadence.level_hold_steps
+    target_s = instance.cadence.period_target * CRITICAL_STEP_S
+    instance.frame_period_s = 1.1 * target_s
+    instance.decode_steps_at_level = hold
+    assert instance.choose_interval() == 1
+    assert instance.choose_interval() == 1, "no second rung before the hold passes"
+    instance.decode_steps_at_level = hold
+    assert instance.choose_interval() == 2
+    instance.frame_period_s = 0.95 * target_s
+    instance.decode_steps_at_level = hold
+    assert instance.choose_interval() == 2, "inside the band the rung stays"
+    instance.frame_period_s = 0.80 * target_s
+    assert instance.choose_interval() == 1
+    instance.running_batch.reqs = [request(finished=True)]
+    assert instance.choose_interval() == 0, "nothing decoding, nothing to defer"
+    assert instance.cadence_level == 1, "the rung survives an idle decode"
 
 
 @pytest.mark.parametrize(

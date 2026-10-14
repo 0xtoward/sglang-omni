@@ -41,20 +41,28 @@ def critical_step_fraction(
 
 @dataclass(frozen=True, kw_only=True)
 class PrefillCadence:
-    """Decode steps between prefills by how close the decode step is to the critical one.
+    """Decode steps between prefills, chosen from the measured step against the critical one.
 
-    Above load_bounds[i] the interval is load_intervals[i + 1]; above the last bound it
-    is max_interval. A waiting request older than wait_cap_s, or an idle decode,
-    releases the countdown.
+    With follow_frame_period off, the decode-only step picks the interval from a table:
+    above load_bounds[i] it is load_intervals[i + 1], above the last bound max_interval.
+    With it on, the frame period (decode steps plus the prefills between them) moves the
+    interval one rung up when it passes period_target of the critical step and one rung
+    down when it falls period_band below that, at most once per level_hold_steps steps.
+    A waiting request older than wait_cap_s, or an idle decode, releases the countdown.
     """
 
     max_interval: int
     critical_step_s: float
+    follow_frame_period: bool = False
     wait_cap_s: float = 0.30
     load_bounds: tuple[float, ...] = (0.45, 0.65, 0.80, 0.92)
     load_intervals: tuple[int, ...] = (0, 1, 2, 4)
     hysteresis: float = 0.05
     step_weight: float = 0.25
+    period_target: float = 0.90
+    period_band: float = 0.15
+    period_weight: float = 0.05
+    level_hold_steps: int = 32
     report_period_s: float = 30.0
 
 
@@ -62,14 +70,20 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
     # note (0xtoward): Drama3EngineBuilder.post_scheduler_setup installs a cadence; without one the scheduler keeps upstream's fixed countdown.
     cadence: PrefillCadence | None = None
     decode_step_s: float | None = None
+    frame_period_s: float | None = None
+    observed_launch_s: float | None = None
     decode_launch_s: float | None = None
+    frame_launch_s: float | None = None
     cadence_level: int = 0
+    decode_steps_at_level: int = 0
 
     def install_cadence(self, cadence: PrefillCadence) -> None:
         self.cadence = cadence
         self.prefills_by_interval: Counter[int] = Counter()
         self.decode_step_total_s = 0.0
         self.decode_step_count = 0
+        self.frame_period_total_s = 0.0
+        self.frame_period_count = 0
         self.cadence_reported_s = time.monotonic()
 
     def decoding_requests(self) -> list[Req]:
@@ -110,37 +124,60 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
             pass
 
     def observe_decode_step(self) -> None:
-        """Fold the launch-to-launch time of back-to-back decode steps into the decode-step EWMA."""
+        """Fold the batch that just ran into the decode-step and frame-period EWMAs.
+
+        The decode step is the launch-to-launch time of back-to-back decodes; the frame
+        period also spans the prefills between two decodes. An idle gap starts both over.
+        """
         last_batch = self.last_batch
+        cadence = self.cadence
         if (
-            self.cadence is None
+            cadence is None
             or last_batch is None
-            or last_batch.launch_ts == self.decode_launch_s
+            or last_batch.launch_ts == self.observed_launch_s
         ):
             return
-        elif not last_batch.forward_mode.is_decode():
+        else:
+            pass
+        self.observed_launch_s = last_batch.launch_ts
+        if last_batch.after_idle_gap:
+            self.decode_launch_s = None
+            self.frame_launch_s = None
+        else:
+            pass
+        if not last_batch.forward_mode.is_decode():
             self.decode_launch_s = None
             return
         else:
             pass
-        previous_launch_s, self.decode_launch_s = (
-            self.decode_launch_s,
-            last_batch.launch_ts,
-        )
-        if previous_launch_s is None or last_batch.after_idle_gap:
-            return
+        launch_s = last_batch.launch_ts
+        if self.decode_launch_s is not None:
+            step_s = launch_s - self.decode_launch_s
+            self.decode_step_s = (
+                step_s
+                if self.decode_step_s is None
+                else cadence.step_weight * step_s
+                + (1 - cadence.step_weight) * self.decode_step_s
+            )
+            self.decode_step_total_s += step_s
+            self.decode_step_count += 1
         else:
             pass
-        step_s = last_batch.launch_ts - previous_launch_s
-        previous_step_s = self.decode_step_s
-        weight = self.cadence.step_weight
-        self.decode_step_s = (
-            step_s
-            if previous_step_s is None
-            else weight * step_s + (1 - weight) * previous_step_s
-        )
-        self.decode_step_total_s += step_s
-        self.decode_step_count += 1
+        if self.frame_launch_s is not None:
+            period_s = launch_s - self.frame_launch_s
+            self.frame_period_s = (
+                period_s
+                if self.frame_period_s is None
+                else cadence.period_weight * period_s
+                + (1 - cadence.period_weight) * self.frame_period_s
+            )
+            self.frame_period_total_s += period_s
+            self.frame_period_count += 1
+        else:
+            pass
+        self.decode_launch_s = launch_s
+        self.frame_launch_s = launch_s
+        self.decode_steps_at_level += 1
 
     def report_cadence(self) -> None:
         cadence = self.cadence
@@ -158,14 +195,22 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
             if self.decode_step_count
             else float("nan")
         )
+        mean_period_ms = (
+            1000 * self.frame_period_total_s / self.frame_period_count
+            if self.frame_period_count
+            else float("nan")
+        )
         logger.info(
             f"Drama 3 prefill cadence: {self.decode_step_count} decode steps, mean "
-            f"{mean_step_ms:.1f} ms against {cadence.critical_step_s * 1000:.1f} ms; "
-            f"prefills by interval {dict(sorted(self.prefills_by_interval.items()))}"
+            f"{mean_step_ms:.1f} ms, frame period {mean_period_ms:.1f} ms against "
+            f"{cadence.critical_step_s * 1000:.1f} ms; prefills by interval "
+            f"{dict(sorted(self.prefills_by_interval.items()))}"
         )
         self.prefills_by_interval.clear()
         self.decode_step_total_s = 0.0
         self.decode_step_count = 0
+        self.frame_period_total_s = 0.0
+        self.frame_period_count = 0
         self.cadence_reported_s = now_s
 
     def get_next_batch_to_run(self):
@@ -200,21 +245,45 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
     def choose_interval(self) -> int:
         cadence = self.cadence
         assert cadence is not None
-        if not self.decoding_requests() or self.decode_step_s is None:
+        decoding = bool(self.decoding_requests())
+        target_s = cadence.period_target * cadence.critical_step_s
+        if cadence.follow_frame_period:
+            # note (0xtoward): A rung change waits level_hold_steps decode steps, so the frame-period EWMA shows one change before the next.
+            if (
+                self.frame_period_s is None
+                or self.decode_steps_at_level < cadence.level_hold_steps
+            ):
+                pass
+            elif self.frame_period_s > target_s and self.cadence_level < len(
+                cadence.load_intervals
+            ):
+                self.cadence_level += 1
+                self.decode_steps_at_level = 0
+            elif (
+                self.frame_period_s < target_s * (1 - cadence.period_band)
+                and self.cadence_level > 0
+            ):
+                self.cadence_level -= 1
+                self.decode_steps_at_level = 0
+            else:
+                pass
+        elif not decoding or self.decode_step_s is None:
             self.cadence_level = 0
-            return 0
         else:
-            pass
-        load = self.decode_step_s / cadence.critical_step_s
-        level = sum(load >= bound for bound in cadence.load_bounds)
-        # note (0xtoward): Stepping down waits for the load to clear the band below the current bound, so the interval does not flap.
-        if level < self.cadence_level:
-            lower_bound = (
-                cadence.load_bounds[self.cadence_level - 1] - cadence.hysteresis
-            )
-            level = self.cadence_level - 1 if load < lower_bound else self.cadence_level
-        else:
-            pass
-        self.cadence_level = level
+            load = self.decode_step_s / cadence.critical_step_s
+            level = sum(load >= bound for bound in cadence.load_bounds)
+            # note (0xtoward): Stepping down waits for the load to clear the band below the current bound, so the interval does not flap.
+            if level < self.cadence_level:
+                lower_bound = (
+                    cadence.load_bounds[self.cadence_level - 1] - cadence.hysteresis
+                )
+                level = (
+                    self.cadence_level - 1 if load < lower_bound else self.cadence_level
+                )
+            else:
+                pass
+            self.cadence_level = level
         intervals = (*cadence.load_intervals, cadence.max_interval)
-        return min(intervals[level], cadence.max_interval)
+        return (
+            min(intervals[self.cadence_level], cadence.max_interval) if decoding else 0
+        )

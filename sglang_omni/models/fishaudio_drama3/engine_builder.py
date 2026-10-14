@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -37,6 +36,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_STREAM_STRIDE,
     DEFAULT_TOWER_FUSED_LAYERS,
     DEFAULT_TRITON_SAMPLING,
+    PrefillIntervalPolicy,
 )
 from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
@@ -119,9 +119,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
-        prefill_interval_policy: Literal["fixed", "adaptive"] = (
-            DEFAULT_PREFILL_INTERVAL_POLICY
-        ),
+        prefill_interval_policy: PrefillIntervalPolicy = DEFAULT_PREFILL_INTERVAL_POLICY,
     ) -> None:
         self.context_length = context_length
         self.max_running_requests = max_running_requests
@@ -408,7 +406,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
     ) -> None:
         del model_runner
         if (
-            self.prefill_interval_policy == "adaptive"
+            self.prefill_interval_policy != "fixed"
             and scheduler.prefill_decode_interval > 0
         ):
             cadence = PrefillCadence(
@@ -419,10 +417,11 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                     self.stream_followup_stride_ramp,
                     self.stream_followup_stride,
                 ),
+                follow_frame_period=self.prefill_interval_policy == "period",
             )
             scheduler.install_cadence(cadence)
             logger.info(
-                f"Drama 3 prefill interval: adaptive, up to "
+                f"Drama 3 prefill interval: {self.prefill_interval_policy}, up to "
                 f"{scheduler.prefill_decode_interval} decode steps, critical step "
                 f"{cadence.critical_step_s * 1000:.1f} ms"
             )
