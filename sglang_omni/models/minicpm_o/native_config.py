@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage placement and deployment configuration for native duplex inference."""
 
+import os
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -18,7 +19,8 @@ DEFAULT_MAX_SESSIONS = 2
 DEFAULT_SPEECH_STATE_BYTES_PER_SESSION = 2 << 30
 THINKER_CONTEXT_LENGTH = 8192
 THINKER_GPU_MEMORY_FRACTION = 0.52
-TALKER_CONTEXT_LENGTH = 4096
+# test only (xp): a smaller talker context makes rollovers frequent
+TALKER_CONTEXT_LENGTH = int(os.environ.get("SGLANG_OMNI_XP_TALKER_CONTEXT", "4096"))
 # note (0xtoward): A unit holds <unit> and </unit>, 64 rows between two markers per image tile, and 10 audio rows per second (stride-2 convolution, 5-frame pooling).
 IMAGE_TOKENS = 64
 IMAGE_TILE_MARKER_TOKENS = 2
