@@ -109,6 +109,8 @@ class PlaybackProcessor extends AudioWorkletProcessor {
         this.trim(data.keepSamples || 0);
       } else if (data.type === "open") {
         this.responseOpen = true;
+        // note (0xtoward): an underrun belongs to its own reply, so the next reply waits the prebuffer again.
+        this.stalled = false;
       } else if (data.type === "clear") {
         this.queue = [];
         this.headOffset = 0;
@@ -126,6 +128,9 @@ class PlaybackProcessor extends AudioWorkletProcessor {
         if (this.queuedSamples > 0) this.start();
       } else if (data.type === "reset") {
         this.responseOpen = false;
+        // note (0xtoward): the next session sends its own whole-unit config when the server grants its unit size.
+        this.prebufferSamples = 0;
+        this.unitSamples = 0;
         this.target = this.initialSamples;
         this.sinceUnderrun = 0;
         this.underruns = 0;
