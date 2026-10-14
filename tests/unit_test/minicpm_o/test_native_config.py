@@ -301,6 +301,8 @@ def test_duplex_engine_memory_follows_max_sessions(
     [
         ({}, 2),
         ({"dtype": "float32"}, 4),
+        ({"dtype": "float"}, 4),
+        ({"dtype": "half"}, 2),
         ({"dtype": "auto"}, 2),
         ({"kv_cache_dtype": "fp8_e4m3"}, 1),
     ],
