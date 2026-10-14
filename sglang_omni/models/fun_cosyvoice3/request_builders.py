@@ -80,13 +80,6 @@ _GENERATION_FIELDS = (
     "max_new_tokens",
 )
 
-_IMPLICIT_SAMPLING_DEFAULTS = {
-    "temperature": {1.0, 0.8, 0.7},
-    "top_p": {1.0, 0.8},
-    "top_k": {-1, 20, 25, 30},
-    "repetition_penalty": {1.0, 1.05, 1.1, 1.21},
-}
-
 _COSYVOICE3_PREPARED_MARKER = "_cosyvoice3_prepared_request"
 
 
@@ -583,7 +576,7 @@ def build_cosyvoice3_state(payload: StagePayload) -> FunCosyVoice3State:
         stream=stream,
         speed=speed,
         seed=seed,
-        generation_kwargs=build_generation_kwargs(params, tts_params=tts_params),
+        generation_kwargs=build_generation_kwargs(params),
     )
 
 
@@ -707,33 +700,7 @@ def align_flow_prompt(
     )
 
 
-def build_generation_kwargs(
-    params: Mapping[str, object],
-    *,
-    tts_params: Mapping[str, object],
-) -> dict[str, object]:
-    explicit_generation_params = tts_params.get("explicit_generation_params")
-    if isinstance(explicit_generation_params, (list, tuple, set)):
-        explicit_fields = {str(field) for field in explicit_generation_params}
-    else:
-        explicit_fields = set()
-
-    selected_fields = set()
-    for field in _GENERATION_FIELDS:
-        value = params.get(field)
-        if value is None:
-            continue
-        else:
-            pass
-        if field in _IMPLICIT_SAMPLING_DEFAULTS and field not in explicit_fields:
-            if value in _IMPLICIT_SAMPLING_DEFAULTS[field]:
-                continue
-            else:
-                pass
-        else:
-            pass
-        selected_fields.add(field)
-
+def build_generation_kwargs(params: Mapping[str, object]) -> dict[str, object]:
     # note: max_new_tokens is intentionally left out of generation_kwargs
     # unless the caller explicitly passed one. CosyVoice3's own generation
     # contract derives max_new_tokens (and the minimum length before stop
@@ -751,7 +718,7 @@ def build_generation_kwargs(
             continue
         else:
             pass
-        if field in selected_fields and params.get(field) is not None:
+        if params.get(field) is not None:
             generation_kwargs[field] = params[field]
         else:
             pass
