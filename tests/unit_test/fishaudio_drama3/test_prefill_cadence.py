@@ -114,24 +114,40 @@ def test_decode_step_is_the_launch_cadence_of_back_to_back_decodes() -> None:
     )
 
 
+def measure(
+    instance: Drama3Scheduler, *, period_fraction: float, prefill_share: float
+) -> None:
+    """A frame period at period_fraction of the target, prefill_share of it prefills."""
+    period_s = period_fraction * instance.cadence.period_target * CRITICAL_STEP_S
+    instance.frame_period_s = period_s
+    instance.slow_decode_step_s = (1 - prefill_share) * period_s
+    instance.decode_steps_at_level = instance.cadence.level_hold_steps
+
+
 def test_frame_period_steps_the_interval_one_rung_per_hold() -> None:
     instance = scheduler(running=[request()], cadence=cadence(follow_frame_period=True))
-    hold = instance.cadence.level_hold_steps
-    target_s = instance.cadence.period_target * CRITICAL_STEP_S
-    instance.frame_period_s = 1.1 * target_s
-    instance.decode_steps_at_level = hold
+    measure(instance, period_fraction=1.1, prefill_share=0.4)
     assert instance.choose_interval() == 1
     assert instance.choose_interval() == 1, "no second rung before the hold passes"
-    instance.decode_steps_at_level = hold
+    measure(instance, period_fraction=1.1, prefill_share=0.4)
     assert instance.choose_interval() == 2
-    instance.frame_period_s = 0.95 * target_s
-    instance.decode_steps_at_level = hold
+    measure(instance, period_fraction=0.95, prefill_share=0.4)
     assert instance.choose_interval() == 2, "inside the band the rung stays"
-    instance.frame_period_s = 0.80 * target_s
+    measure(instance, period_fraction=0.80, prefill_share=0.4)
     assert instance.choose_interval() == 1
     instance.running_batch.reqs = [request(finished=True)]
     assert instance.choose_interval() == 0, "nothing decoding, nothing to defer"
     assert instance.cadence_level == 1, "the rung survives an idle decode"
+
+
+def test_a_decode_bound_frame_period_does_not_climb() -> None:
+    """Batching prefills cannot shorten a frame period that decode steps fill."""
+    instance = scheduler(running=[request()], cadence=cadence(follow_frame_period=True))
+    instance.cadence_level = 2
+    measure(instance, period_fraction=1.1, prefill_share=0.15)
+    assert instance.choose_interval() == 2, "a middling prefill share holds the rung"
+    measure(instance, period_fraction=1.1, prefill_share=0.05)
+    assert instance.choose_interval() == 1, "a small prefill share steps down"
 
 
 @pytest.mark.parametrize(
