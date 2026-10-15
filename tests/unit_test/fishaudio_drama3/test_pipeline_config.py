@@ -112,6 +112,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "tower_fused_layers": True,
         "enable_async_decode": False,
         "async_decode_min_batch_size": 1,
+        "prefill_interval_policy": "fixed",
         "stream_stride": 10,
         "stream_followup_stride_ramp": (10, 12, 32),
         "stream_followup_stride": 64,

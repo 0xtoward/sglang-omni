@@ -30,6 +30,10 @@ DEFAULT_TRITON_SAMPLING = True
 DEFAULT_TOWER_FUSED_LAYERS = True
 DEFAULT_ENABLE_ASYNC_DECODE = False
 DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
+# fixed keeps prefill_decode_interval constant; adaptive sizes it from the decode step against the streaming window budget;
+# period steps it with the frame period, decode plus the prefills between decodes.
+PrefillIntervalPolicy = Literal["fixed", "adaptive", "period", "laxity"]
+DEFAULT_PREFILL_INTERVAL_POLICY: PrefillIntervalPolicy = "fixed"
 # The codec of the public S2-Pro release, pinned to an immutable commit.
 DEFAULT_CODEC_PATH = "fishaudio/s2-pro@1de9996b6be38b745688de084d87a5633f714e4e"
 PREPROCESSING_TOTAL_RESERVE_BYTES = "6GiB"
@@ -72,6 +76,7 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     async_decode_min_batch_size: int = Field(
         default=DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE, ge=1
     )
+    prefill_interval_policy: PrefillIntervalPolicy = DEFAULT_PREFILL_INTERVAL_POLICY
 
 
 class Drama3EngineStageConfig(EngineStageConfig):
