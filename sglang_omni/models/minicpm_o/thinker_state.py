@@ -70,7 +70,10 @@ class MiniCPMOThinkerSessionState:
         elif policy == "random":
             order = list(eligible)
             random.Random(next_unit_start).shuffle(order)
-        elif policy in ("knorm", "keydiff") and unit_scores is not None:
+        elif (
+            policy in ("knorm", "keydiff", "keydiffn", "lagkv", "redn")
+            and unit_scores is not None
+        ):
             order = sorted(eligible, key=lambda index: -unit_scores[index])
         elif policy in ("quietkd", "quietkn") and unit_scores is not None:
             order = [index for index in eligible if self.unit_quiet[index]] + sorted(

@@ -44,6 +44,8 @@ SESSION_STRING_LENGTH_LIMIT_CHARACTERS = 0
 
 
 logger = logging.getLogger(__name__)
+# test only (xp): window policies scored by score_history_units_kvpress
+XP_KVPRESS_POLICIES = ("keydiffn", "lagkv", "redn")
 
 
 class SessionKV(Protocol):
@@ -672,6 +674,8 @@ class ARSessionBridge:
         slot = self.bridge_scheduler.tree_cache.slots.get(native_session.session_id)
         if not bounds or slot is None or not slot.kv.holds_kv:
             return [0.0] * len(bounds)
+        elif policy in XP_KVPRESS_POLICIES:
+            return self.score_history_units_kvpress(slot, bounds, policy)
         else:
             pass
         first, last = bounds[0][0], bounds[-1][1]
@@ -702,6 +706,91 @@ class ARSessionBridge:
         return torch.stack(
             [token_scores[start - first : end - first].mean() for start, end in bounds]
         ).tolist()
+
+    def score_history_units_kvpress(
+        self, slot: SessionSlot, bounds: list[tuple[int, int]], policy: str
+    ) -> list[float]:
+        """test only (xp): kvpress-style unit scores from position-free keys (and values), every fourth layer; higher drops first.
+
+        keydiffn: cosine to the mean of the normalized keys (kvpress KeyDiffPress anchor; also R-KV's mean redundancy).
+        lagkv: minus the channel std of a unit's keys and values min-max scaled by the next unit's (kvpress LagKVPress with one
+        unit per lag chunk). redn: cosine of a unit's mean key to its neighbours' mean keys. The newest finished unit is never
+        scored; it is the last scored unit's next neighbour.
+        """
+        newest_end = max(bounds[-1][1] + 1, slot.kv.kv_committed_len)
+        span = [*bounds, (bounds[-1][1], newest_end)]
+        first, last, scored_end = span[0][0], span[-1][1], bounds[-1][1]
+        row = self.bridge_scheduler.tree_cache.req_to_token_pool.req_to_token[
+            slot.kv.req_pool_idx
+        ]
+        slots = row[first:last].to(torch.int64)
+        positions = torch.arange(first, last, device=row.device)
+        lengths = torch.tensor([end - start for start, end in span], device=row.device)
+        unit_ids = torch.repeat_interleave(
+            torch.arange(len(span), device=row.device), lengths
+        )
+        scored_count = scored_end - first
+        kv_cache = self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache()
+        layers = range(
+            kv_cache.start_layer, kv_cache.start_layer + kv_cache.layer_num, 4
+        )
+        token_scores = torch.zeros(scored_count, device=row.device, dtype=torch.float32)
+        unit_scores = torch.zeros(len(bounds), device=row.device, dtype=torch.float32)
+        for layer_id in layers:
+            keys = self.adapter.shift_key_positions(
+                kv_cache.get_key_buffer(layer_id)
+                .index_select(0, slots)
+                .to(torch.float32),
+                positions,
+            )
+            if policy == "keydiffn":
+                scored_keys = keys[:scored_count]
+                anchor = torch.nn.functional.normalize(scored_keys, dim=-1).mean(
+                    dim=0, keepdim=True
+                )
+                token_scores += torch.nn.functional.cosine_similarity(
+                    scored_keys, anchor, dim=-1
+                ).mean(dim=-1)
+            elif policy == "lagkv":
+                values = (
+                    kv_cache.get_value_buffer(layer_id)
+                    .index_select(0, slots)
+                    .to(torch.float32)
+                )
+                reference_ids = unit_ids[:scored_count] + 1
+                for states in (keys, values):
+                    index = unit_ids.view(-1, 1, 1).expand_as(states)
+                    shape = (len(span), *states.shape[1:])
+                    low = torch.full(shape, float("inf"), device=states.device)
+                    low = low.scatter_reduce(0, index, states, reduce="amin")
+                    high = torch.full(shape, float("-inf"), device=states.device)
+                    high = high.scatter_reduce(0, index, states, reduce="amax")
+                    scaled = (states[:scored_count] - low[reference_ids]) / (
+                        high[reference_ids] - low[reference_ids]
+                    ).clamp_min(1e-6)
+                    token_scores -= scaled.std(dim=-1).mean(dim=-1) / 2
+            else:
+                sums = torch.zeros(
+                    (len(span), *keys.shape[1:]), device=keys.device
+                ).index_add_(0, unit_ids, keys)
+                means = torch.nn.functional.normalize(
+                    sums / lengths.view(-1, 1, 1), dim=-1
+                )
+                neighbour = (means[1:] * means[:-1]).sum(dim=-1).mean(dim=-1)
+                previous = torch.cat([neighbour[:1], neighbour[: len(bounds) - 1]])
+                unit_scores += (neighbour[: len(bounds)] + previous) / 2
+        if policy == "redn":
+            unit_scores /= len(layers)
+        else:
+            token_scores /= len(layers)
+            unit_scores = torch.zeros(
+                len(bounds), device=row.device, dtype=torch.float32
+            ).index_add_(0, unit_ids[:scored_count], token_scores) / lengths[
+                : len(bounds)
+            ].to(
+                torch.float32
+            )
+        return unit_scores.tolist()
 
     def release_append_unit(self, request_id: str) -> None:
         unit = self.units_by_request_id.pop(request_id, None)
