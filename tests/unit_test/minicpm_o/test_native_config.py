@@ -500,6 +500,7 @@ def test_duplex_speech_settings_reach_the_vocoder(
             {
                 "speech.dtype": "float16",
                 "speech.enable_dit_torch_compile": "true",
+                "speech.enable_hift_torch_compile": "true",
                 "speech.n_timesteps": "6",
             }
         )
