@@ -492,7 +492,16 @@ class ARSessionBridge:
                     continue
                 else:
                     active_session_request = active_append_unit.session_request
-                    allocated_kv_tokens = active_session_request.kv.kv_allocated_len
+                    active_slot = cache.slots.get(
+                        active_append_unit.session_identity.id
+                    )
+                    # note (0xtoward): Until a unit takes its slot's KV, its retained history is still allocated in the slot.
+                    allocated_kv_tokens = active_session_request.kv.kv_allocated_len + (
+                        active_slot.kv.kv_allocated_len
+                        if active_slot is not None
+                        and not active_session_request.kv.holds_kv
+                        else 0
+                    )
                     reserved_kv_tokens += max(
                         0,
                         len(active_session_request.origin_input_ids)
