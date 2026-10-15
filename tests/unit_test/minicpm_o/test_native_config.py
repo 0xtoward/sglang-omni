@@ -42,6 +42,7 @@ from sglang_omni.models.minicpm_o.native_config import (
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
 from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
 from sglang_omni.scheduling.session import BatchedSessionHooks
+from sglang_omni.scheduling.sglang_backend.unit_scorers import KeyDiffUnitScorer
 from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
 from sglang_omni.utils.gpu_memory import GpuDeviceInfo
 
@@ -368,8 +369,13 @@ def build_without_engine(
             ],
             MiniCPMODuplexWindow(mode="off", high_tokens=7000, low_tokens=5000),
         ),
+        (
+            "",
+            ["--window.mode", "keydiff", "--window.protect_tokens", "1500"],
+            MiniCPMODuplexWindow(mode="keydiff", protect_tokens=1500),
+        ),
     ],
-    ids=["default", "yaml", "cli"],
+    ids=["default", "yaml", "cli", "keydiff"],
 )
 def test_duplex_window_settings_reach_the_thinker_adapter(
     yaml_settings: str,
@@ -419,6 +425,9 @@ def test_duplex_window_settings_reach_the_thinker_adapter(
 
     assert builder.adapter.window == window
     assert builder.adapter.rotary_embedding is rotary_embedding
+    assert isinstance(builder.adapter.unit_scorer, KeyDiffUnitScorer) == (
+        window.mode == "keydiff"
+    ), "only the keydiff window scores units"
 
 
 @pytest.mark.parametrize(
@@ -432,6 +441,11 @@ def test_duplex_window_settings_reach_the_thinker_adapter(
             None,
         ),
         (["--window.low_tokens", "8000"], "below window.high_tokens"),
+        (["--window.low_tokens", "7500", "--window.mode", "keydiff"], "leaves no room"),
+        (
+            ["--window.low_tokens", "2000", "--window.mode", "keydiff"],
+            "below window.low_tokens",
+        ),
     ],
 )
 def test_duplex_window_low_tokens_leave_room_for_the_largest_unit(

@@ -40,13 +40,67 @@ class MiniCPMOThinkerSessionState:
             return None
         else:
             cut = HistoryCut(
-                start=self.unit_starts[0], end=self.unit_starts[dropped_unit_count]
+                ranges=((self.unit_starts[0], self.unit_starts[dropped_unit_count]),)
             )
             self.unit_starts = [
-                unit_start - (cut.end - cut.start)
+                unit_start - cut.length
                 for unit_start in self.unit_starts[dropped_unit_count:]
             ]
             return cut
+
+    def scoreable_unit_count(self, next_unit_start: int, protect_tokens: int) -> int:
+        """How many finished units, oldest first, a scored cut chooses among.
+
+        The newest finished unit and every unit starting within protect_tokens of the next unit stay out.
+        """
+        return sum(
+            1
+            for unit_start in self.unit_starts[:-1]
+            if unit_start < next_unit_start - protect_tokens
+        )
+
+    def drop_scored_units(
+        self, next_unit_start: int, target_start: int, unit_importance: list[float]
+    ) -> HistoryCut | None:
+        """Drop finished units, least important first, until the next unit starts at or below target_start.
+
+        unit_importance covers the scoreable units, oldest first. When they do not free enough, the
+        oldest of the newer finished units go next; the newest finished unit always stays.
+        """
+        unit_lengths = [
+            end - start for start, end in zip(self.unit_starts, self.unit_starts[1:])
+        ]
+        drop_order = sorted(
+            range(len(unit_importance)), key=lambda index: unit_importance[index]
+        ) + list(range(len(unit_importance), len(unit_lengths)))
+        needed_length = next_unit_start - target_start
+        dropped_indices: set[int] = set()
+        dropped_length = 0
+        for index in drop_order:
+            if dropped_length >= needed_length:
+                break
+            else:
+                dropped_indices.add(index)
+                dropped_length += unit_lengths[index]
+        if not dropped_indices:
+            return None
+        else:
+            ranges: list[tuple[int, int]] = []
+            for index in sorted(dropped_indices):
+                start, end = self.unit_starts[index], self.unit_starts[index + 1]
+                if ranges and ranges[-1][1] == start:
+                    ranges[-1] = (ranges[-1][0], end)
+                else:
+                    ranges.append((start, end))
+            kept_starts: list[int] = []
+            dropped_before = 0
+            for index, unit_start in enumerate(self.unit_starts):
+                if index in dropped_indices:
+                    dropped_before += unit_lengths[index]
+                else:
+                    kept_starts.append(unit_start - dropped_before)
+            self.unit_starts = kept_starts
+            return HistoryCut(ranges=tuple(ranges))
 
 
 @dataclass(kw_only=True)
