@@ -41,7 +41,7 @@ We provide two demonstrative config files.
 
 While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them.
 
-A session holds at most 8192 tokens of history, which is the model's trained context length. With the default `window.mode basic`, once the history passes `window.high_tokens` the server drops the oldest one-second units until at most `window.low_tokens` tokens remain, and it also drops units early when the next unit would not fit; the system prompt and the reference audio always stay. With `--window.mode off`, the server sends `context_exhausted` and closes the session when the history fills.
+A session holds at most 8192 tokens of history, which is the model's trained context length. With the default `window.mode basic`, once the history passes `window.high_tokens` the server drops the oldest one-second units until at most `window.low_tokens` tokens remain, and it also drops units early when the next unit would not fit; the system prompt and the reference audio always stay. With `--window.mode off`, the server sends `context_exhausted` and closes the session when the history fills. A cut moves the retained KV in place, so the window needs the default bf16 or an fp8 KV cache; with an FP4 KV recipe or an HND KV layout, the server refuses to start unless `--window.mode off` is set.
 
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:
 

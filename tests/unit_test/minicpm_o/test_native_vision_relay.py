@@ -20,7 +20,11 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.common import release_kv_cache
-from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import (
+    MHATokenToKVPool,
+    NoOpMHATokenToKVPool,
+    ReqToTokenPool,
+)
 from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.session.streaming_session import StreamingSession
@@ -29,6 +33,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     MiniCPMOPerceptionState,
     PerceptionStepPlan,
 )
+from sglang_omni.models.minicpm_o.engine_builder import check_window_kv_cache
 from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_WINDOW_SETTINGS,
     IMAGE_TOKENS,
@@ -1022,3 +1027,48 @@ def test_window_cuts_below_high_tokens_when_the_next_unit_would_not_fit(
         + request_data.req.sampling_params.max_new_tokens
         <= FIT_MAX_REQUEST_LENGTH - 1
     ) is fits
+
+
+@pytest.mark.parametrize(
+    ("window", "pool_type", "kv_dtype", "use_hnd", "error"),
+    [
+        (CUT_WINDOW, MHATokenToKVPool, torch.bfloat16, False, None),
+        (CUT_WINDOW, MHATokenToKVPool, torch.float8_e4m3fn, False, None),
+        (CUT_WINDOW, MHATokenToKVPool, torch.bfloat16, True, "NHD KV cache"),
+        (CUT_WINDOW, NoOpMHATokenToKVPool, torch.bfloat16, False, "token-row KV cache"),
+        (
+            MiniCPMODuplexWindow(mode="off"),
+            MHATokenToKVPool,
+            torch.bfloat16,
+            True,
+            None,
+        ),
+    ],
+    ids=["bf16", "fp8", "hnd", "subclass", "hnd-window-off"],
+)
+def test_window_refuses_a_kv_cache_whose_rows_it_cannot_move(
+    monkeypatch: pytest.MonkeyPatch,
+    window: MiniCPMODuplexWindow,
+    pool_type: type[MHATokenToKVPool],
+    kv_dtype: torch.dtype,
+    use_hnd: bool,
+    error: str | None,
+) -> None:
+    """A cut moves rows through get_key_buffer, so only the plain NHD pool qualifies; window off takes any cache."""
+    monkeypatch.setenv("SGLANG_USE_HND_KVCACHE", "true" if use_hnd else "false")
+    kv_cache = pool_type(
+        size=KV_POOL_TOKENS,
+        page_size=1,
+        dtype=kv_dtype,
+        head_num=KV_HEAD_COUNT,
+        head_dim=HEAD_DIM,
+        layer_num=KV_LAYER_COUNT,
+        device="cpu",
+        enable_memory_saver=False,
+    )
+
+    if error is None:
+        check_window_kv_cache(window, kv_cache)
+    else:
+        with pytest.raises(ValueError, match=error):
+            check_window_kv_cache(window, kv_cache)
