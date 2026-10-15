@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -66,6 +67,8 @@ from sglang_omni.models.fishaudio_drama3.scheduler import (
     Drama3Scheduler,
     PrefillCadence,
     critical_step_fraction,
+    critical_window_end,
+    stream_window_ends,
 )
 from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
@@ -409,15 +412,31 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             self.prefill_interval_policy != "fixed"
             and scheduler.prefill_decode_interval > 0
         ):
+            window_table = (
+                self.stream_stride,
+                self.stream_followup_stride_ramp,
+                self.stream_followup_stride,
+            )
+            # test only (laxity): the cap on starting streams and the margins come from the environment
             cadence = PrefillCadence(
                 max_interval=scheduler.prefill_decode_interval,
                 critical_step_s=AUDIO_FRAME_SECONDS
-                * critical_step_fraction(
-                    self.stream_stride,
-                    self.stream_followup_stride_ramp,
-                    self.stream_followup_stride,
-                ),
+                * critical_step_fraction(*window_table),
                 follow_frame_period=self.prefill_interval_policy == "period",
+                follow_laxity=self.prefill_interval_policy == "laxity",
+                window_ends=stream_window_ends(*window_table),
+                startup_frames=critical_window_end(*window_table),
+                startup_cap=int(
+                    os.environ.get("SGLANG_OMNI_XP_DRAMA_STARTUP_CAP", "0")
+                ),
+                laxity_margin_s=float(
+                    os.environ.get("SGLANG_OMNI_XP_DRAMA_LAXITY_MARGIN_MS", "20")
+                )
+                / 1000,
+                wait_cap_s=float(
+                    os.environ.get("SGLANG_OMNI_XP_DRAMA_WAIT_CAP_MS", "300")
+                )
+                / 1000,
             )
             scheduler.install_cadence(cadence)
             logger.info(

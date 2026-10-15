@@ -18,6 +18,8 @@ from sglang_omni.models.fishaudio_drama3.scheduler import (
     Drama3Scheduler,
     PrefillCadence,
     critical_step_fraction,
+    critical_window_end,
+    stream_window_ends,
 )
 
 CRITICAL_STEP_S = 0.025
@@ -234,3 +236,99 @@ def test_with_a_cadence_a_prefill_arms_the_chosen_interval() -> None:
     assert (
         instance._prefill_decode_interval_remaining == 2
     ), "a decode batch does not re-arm"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+
+
+RAMP_TABLE = (10, (10, 12, 16, 24, 32, 48), 64)
+
+
+def test_ramp_table_has_its_tightest_window_at_frames_104_to_152() -> None:
+    fraction = critical_step_fraction(*RAMP_TABLE)
+
+    assert critical_window_end(*RAMP_TABLE) == 152, "window 7 ends at frame 152"
+    assert fraction == pytest.approx(104 / 142), "104 frames cover 142 steps"
+
+
+def playing(*, streamed: int, sampled: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        rid=f"stream-{streamed}-{sampled}",
+        finished=lambda: False,
+        omni_data=SimpleNamespace(
+            streamed_frame_count=streamed,
+            frame_rows=[[0]] * (4 + sampled),
+            prompt_row_count=4,
+        ),
+    )
+
+
+def laxity_cadence(*, startup_cap: int = 0) -> PrefillCadence:
+    return PrefillCadence(
+        max_interval=4,
+        critical_step_s=CRITICAL_STEP_S,
+        follow_laxity=True,
+        window_ends=stream_window_ends(*RAMP_TABLE),
+        startup_frames=critical_window_end(*RAMP_TABLE),
+        startup_cap=startup_cap,
+        vocoder_margin_s=0.0,
+        laxity_margin_s=0.0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("prefill_s", "remaining"),
+    [(0.10, 0), (0.30, 1)],
+    ids=["prefill-fits", "prefill-starves-a-stream"],
+)
+def test_laxity_gate_admits_a_prefill_only_within_the_tightest_stream(
+    prefill_s: float, remaining: int
+) -> None:
+    """The tightest stream is 0.2 s ahead and one 10 ms step short of its next window: 0.19 s of laxity."""
+    instance = scheduler(
+        running=[playing(streamed=200, sampled=210), playing(streamed=20, sampled=31)],
+        waiting=[request()],
+        decode_step_s=0.010,
+        cadence=laxity_cadence(),
+    )
+    instance.first_window_s = {
+        "stream-200-210": time.perf_counter() - 200 * AUDIO_FRAME_SECONDS + 0.5,
+        "stream-20-31": time.perf_counter() - 20 * AUDIO_FRAME_SECONDS + 0.2,
+    }
+    instance.prefill_s = prefill_s
+
+    instance.release_interval_if_due()
+
+    assert (
+        instance._prefill_decode_interval_remaining == remaining
+    ), "the prefill waits only when it would outlast the tightest stream's laxity"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+
+
+def test_laxity_gate_holds_prefills_once_the_starting_streams_reach_the_cap() -> None:
+    instance = scheduler(
+        running=[playing(streamed=10, sampled=11), playing(streamed=20, sampled=21)],
+        waiting=[request()],
+        decode_step_s=0.010,
+        cadence=laxity_cadence(startup_cap=2),
+    )
+    instance.prefill_s = 0.0
+
+    instance.release_interval_if_due()
+
+    assert (
+        instance._prefill_decode_interval_remaining == 1
+    ), "two streams before frame 152 hold the next prefill"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    assert instance.gate_states["startup_cap"] == 1, "the hold is the startup cap"
+
+
+def test_laxity_gate_opens_for_a_request_past_the_wait_cap() -> None:
+    instance = scheduler(
+        running=[playing(streamed=20, sampled=31)],
+        waiting=[request(waited_s=1.0)],
+        decode_step_s=0.010,
+        cadence=laxity_cadence(startup_cap=1),
+    )
+    instance.prefill_s = 10.0
+
+    instance.release_interval_if_due()
+
+    assert (
+        instance._prefill_decode_interval_remaining == 0
+    ), "a request waiting past the cap opens the gate"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
