@@ -126,19 +126,29 @@ class MiniCPMODuplexSpeech(BaseModel):
 DEFAULT_SPEECH_SETTINGS = MiniCPMODuplexSpeech()
 
 
+WindowMode = Literal["off", "basic", "keydiff"]
+
+
 class MiniCPMODuplexWindow(BaseModel):
-    """Thinker history window: once history passes high_tokens, the oldest units go until at most low_tokens remain."""
+    """Thinker history window: once history passes high_tokens, units go until at most low_tokens remain.
+
+    basic drops the oldest units, as the checkpoint's duplex loop does. keydiff drops the units whose
+    cached keys sit closest to the mean key, choosing among units older than the newest protect_tokens.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["off", "basic"] = "basic"
+    mode: WindowMode = "basic"
     high_tokens: int = Field(default=8000, ge=1)
     low_tokens: int = Field(default=6000, ge=1)
+    protect_tokens: int = Field(default=2000, ge=0)
 
     @model_validator(mode="after")
     def check_watermarks(self) -> "MiniCPMODuplexWindow":
         if self.low_tokens >= self.high_tokens:
             raise ValueError("window.low_tokens must be below window.high_tokens")
+        elif self.mode == "keydiff" and self.protect_tokens >= self.low_tokens:
+            raise ValueError("window.protect_tokens must be below window.low_tokens")
         else:
             return self
 
@@ -181,7 +191,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
         context_length = self.thinker_context_length()
         # note (0xtoward): A request finishes only within context_length - 1 tokens, so the largest unit must fit after a cut to low_tokens.
         if (
-            self.window.mode == "basic"
+            self.window.mode != "off"
             and self.window.low_tokens + largest_unit_tokens > context_length - 1
         ):
             raise ValueError(
@@ -229,6 +239,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 "window_mode": self.window.mode,
                 "window_high_tokens": self.window.high_tokens,
                 "window_low_tokens": self.window.low_tokens,
+                "window_protect_tokens": self.window.protect_tokens,
             }
             stage = self.stage_named(stage_name)
             # note (Junnan Li): A thinker memory size the deployment writes wins; a fraction counts as written when it differs from the default.
