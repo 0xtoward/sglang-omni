@@ -14,9 +14,13 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.session.streaming_session import SessionSlot, StreamingSession
 
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling import omni_scheduler
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
+from sglang_omni.scheduling.sglang_backend.ar_session import (
+    ARSessionBridge,
+    SessionUnit,
+)
 
 CONTEXT_LENGTH = 64
 RETAINED_TOKEN_COUNT = 8
@@ -26,12 +30,13 @@ UNIT_TOKEN_IDS = list(range(1, RETAINED_TOKEN_COUNT + 4))
 class KVAllocator:
     device = "cpu"
     page_size = 1
+    free_token_count = 1 << 20
 
     def free(self, free_index: torch.Tensor) -> None:
         pass
 
     def available_size(self) -> int:
-        return 1 << 20
+        return self.free_token_count
 
 
 class AdmissionScheduler:
@@ -178,3 +183,33 @@ def test_session_units_stay_within_the_per_batch_limit(
         )
         == 4
     )
+
+
+@pytest.mark.parametrize(
+    ("spare_tokens", "capacity_message"),
+    [(0, None), (-1, "session KV capacity exhausted")],
+    ids=["fits", "one-token-short"],
+)
+def test_kv_check_counts_a_pending_unit_once_against_its_retained_history(
+    spare_tokens: int, capacity_message: str | None
+) -> None:
+    """Two pending units need only their tokens past the history their slots already hold."""
+    scheduler = AdmissionScheduler(request_rows=4)
+    bridge = scheduler.session_bridge
+    for session_id in ("session-a", "session-b"):
+        scheduler.open_session(session_id, holds_row=True)
+        bridge.units_by_request_id[f"unit-{session_id}"] = SessionUnit(
+            request_id=f"unit-{session_id}",
+            session_identity=SessionIdentity(session_id),
+            stages=("thinker",),
+            chunk=TimedChunk("audio", 0, 20, 0, b"x"),
+            session_request=scheduler.queue_request(f"unit-{session_id}", session_id),
+        )
+    tokens_past_history = len(UNIT_TOKEN_IDS) + 1 - RETAINED_TOKEN_COUNT
+    scheduler.token_to_kv_pool_allocator.free_token_count = (
+        2 * tokens_past_history + spare_tokens
+    )
+
+    message = bridge.check_session_capacity("unit-session-a")
+
+    assert message == capacity_message, "the other unit's retained history counts once"
