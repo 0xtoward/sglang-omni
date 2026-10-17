@@ -43,7 +43,6 @@ from sglang_omni.scheduling.types import StreamOutputBuilder
 
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSModel
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.qwen3_tts.prompt_frontend import Qwen3TTSPromptFrontend
     from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
@@ -258,7 +257,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
     def before_memory_pool(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -375,7 +374,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> Qwen3TTSModelRunner:
         model_runner_mod = importlib.import_module(

@@ -25,7 +25,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
 from itertools import islice
-from typing import TYPE_CHECKING, Callable, Generic
+from typing import Callable, Generic
 
 import torch
 from sglang.srt.configs.model_config import ModelConfig
@@ -64,7 +64,6 @@ from sglang_omni.admission import (
     QueueFullError,
 )
 from sglang_omni.model_runner.base import ModelRunner, PendingStep
-from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerPendingStep
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.weight_checker import WeightCheckResult
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -112,12 +111,6 @@ from sglang_omni.scheduling.types import (
     StreamOutputBuilder,
 )
 
-if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
-
-else:
-    pass
-
 logger = logging.getLogger(__name__)
 
 
@@ -155,7 +148,7 @@ class PendingDecode:
 
     batch: ScheduleBatch
     scheduler_output: SchedulerOutput
-    device_step: PendingStep | MlxSchedulerPendingStep
+    device_step: PendingStep
 
 
 class PendingStreamIngress:
@@ -258,7 +251,7 @@ _REQUEST_BUILD_ADMISSION_WAIT_S = 0.002
 
 
 class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
-    tp_worker: ModelWorker | MlxTpModelWorker
+    tp_worker: ModelWorker
     tree_cache: BasePrefixCache
     req_to_token_pool: ReqToTokenPool
     token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator
@@ -313,7 +306,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def __init__(
         self,
-        tp_worker: ModelWorker | MlxTpModelWorker,
+        tp_worker: ModelWorker,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,
         token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
@@ -938,7 +931,7 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         return attr
 
-    def init_parallel_state(self, tp_worker: ModelWorker | MlxTpModelWorker) -> None:
+    def init_parallel_state(self, tp_worker: ModelWorker) -> None:
         from sglang.srt.runtime_context import get_parallel
 
         enable_dp_attention = get_parallel().enable_dp_attention
