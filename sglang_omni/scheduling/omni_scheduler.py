@@ -2804,6 +2804,10 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def admin_model_info(self) -> AdminActionResult:
         info = self.model_worker.model_info()
+        if self.model_runner is not None:
+            info.update(self.model_runner.model_info())
+        else:
+            pass
         with self.request_admission_lock:
             request_build_pending = len(self.pending_request_builds)
             request_admission_pending = len(self.pending_request_admissions)

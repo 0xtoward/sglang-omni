@@ -12,7 +12,7 @@ import time
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from itertools import count
-from typing import TYPE_CHECKING, Literal, Mapping, TypeVar, overload
+from typing import TYPE_CHECKING, Literal, Mapping, TypedDict, TypeVar, overload
 
 import numpy as np
 import torch
@@ -39,6 +39,7 @@ from sglang_omni.profiler.event_recorder import (
     get_recorder,
 )
 from sglang_omni.proto import StagePayload
+from sglang_omni.proto.admin import ADMIN_MODEL_INFO
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import (
@@ -120,6 +121,21 @@ def decode_graph_frame_counts(
     for fresh in range(1, steady_stride + 1):
         counts.add(left_context + fresh)
     return tuple(sorted(counts))
+
+
+class VocoderModelInfo(TypedDict):
+    codec_state: CodecStateStats
+
+
+class UnsupportedAdminData(TypedDict):
+    skipped: bool
+    unsupported: bool
+
+
+class VocoderAdminResult(TypedDict):
+    success: bool
+    message: str
+    data: VocoderModelInfo | UnsupportedAdminData
 
 
 @dataclass
@@ -1219,6 +1235,24 @@ class Qwen3TTSStreamingVocoderScheduler(
                 pass
             self.codec_stats_last_log_s = now
         logger.info("Qwen3-TTS incremental Codec state: %s", self.codec_state_stats())
+
+    def admin(
+        self, action: str, payload: dict[str, object] | None = None
+    ) -> VocoderAdminResult:
+        """Report the Codec state for model_info; skip every other action."""
+        # note (Haoling Pu): payload is part of the stage admin contract.
+        if action == ADMIN_MODEL_INFO:
+            return {
+                "success": True,
+                "message": "ok",
+                "data": {"codec_state": self.codec_state_stats()},
+            }
+        else:
+            return {
+                "success": True,
+                "message": f"unsupported admin action: {action}",
+                "data": {"skipped": True, "unsupported": True},
+            }
 
     def start(self) -> None:
         try:
