@@ -419,6 +419,12 @@ class StageConfig(BaseModel):
     )
 
     def model_post_init(self, __context: object = None) -> None:
+        if self.http_routes:
+            self.http_routes = list(
+                normalize_route_prefixes(self.name, self.http_routes)
+            )
+        else:
+            pass
         if self.runtime_gpu_ids is not None:
             if not self.allow_child_processes or self.tp_size != 1:
                 raise ValueError(
