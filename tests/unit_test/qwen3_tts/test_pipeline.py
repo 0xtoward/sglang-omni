@@ -21,6 +21,8 @@ from typing import Literal
 import numpy as np
 import pytest
 import torch
+from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
+from sglang.kernels.spec import KernelBackend
 from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
@@ -28,11 +30,22 @@ from sglang.srt.arg_groups.model_override_base import (
     attention_backends_of,
     resolved_view,
 )
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
+from sglang.srt.model_executor.cuda_graph_config import (
+    Backend,
+    CudaGraphConfig,
+    PhaseConfig,
+)
+from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 from sglang.srt.runtime_context import get_context, override_platform
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.models.qwen3_omni.components.thinker_model import (
+    Qwen3OmniMoeThinkerTextAttention,
+)
 from sglang_omni.models.qwen3_tts import config as qwen3_tts_config
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
@@ -105,6 +118,7 @@ from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.serve.openai_api import extract_model_info_stage_data
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import cuda_staging
+from sglang_omni.vendor.sglang.layers import RMSNorm
 from tests.unit_test.fakes import FakeExecutionBridge
 from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 
@@ -893,74 +907,108 @@ def test_qwen3_tts_full_prefill_is_scoped_to_base_and_custom_voice(
         assert "cuda_graph_bs_prefill" not in resolved, model_type
 
 
-def test_qwen3_tts_before_prefill_mirrors_positions_into_mrope() -> None:
-    from sglang_omni.models.qwen3_tts.model_runner import ensure_mrope_positions
+def test_qwen3_tts_talker_config_rotates_as_text_rope() -> None:
+    qwen3_stages.register_qwen3_tts_hf_config()
+    from qwen_tts.core.models import Qwen3TTSConfig
 
-    batch = SimpleNamespace(
-        positions=torch.arange(7, dtype=torch.int64),
-        mrope_positions=None,
+    config = Qwen3TTSConfig(
+        talker_config={
+            "rope_scaling": {
+                "interleaved": True,
+                "mrope_section": [24, 20, 20],
+                "rope_type": "default",
+                "type": "default",
+            },
+            "rope_theta": 1_000_000,
+        }
     )
-    ensure_mrope_positions(
-        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
+
+    assert config.text_config is config.talker_config
+    assert config.text_config.rope_scaling == {
+        "rope_type": "default",
+        "type": "default",
+    }
+
+
+def test_qwen3_tts_default_config_builds_without_rope_parameters() -> None:
+    qwen3_stages.register_qwen3_tts_hf_config()
+    from qwen_tts.core.models import Qwen3TTSConfig
+
+    assert Qwen3TTSConfig().text_config.rope_parameters is None
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("backend", [None, KernelBackend.TORCH], ids=["cuda", "torch"])
+def test_qwen3_tts_talker_text_rope_stores_kv_only_on_the_cuda_kernel(
+    backend: KernelBackend | None,
+) -> None:
+    device = torch.device("cuda")
+    num_heads, num_kv_heads, head_dim = 16, 8, 128
+    torch.manual_seed(0)
+    attention = SimpleNamespace(
+        use_fused_qk_norm_rope=False,
+        q_size=num_heads * head_dim,
+        kv_size=num_kv_heads * head_dim,
+        head_dim=head_dim,
+        q_norm=RMSNorm(head_dim, eps=1e-6).to(device, torch.bfloat16),
+        k_norm=RMSNorm(head_dim, eps=1e-6).to(device, torch.bfloat16),
+        alt_stream=None,
+        rotary_emb=RotaryEmbedding(
+            head_dim, head_dim, 64, 1_000_000, True, torch.bfloat16
+        ).to(device),
+        compatible_with_fused_kv_buffer=True,
+        attn=SimpleNamespace(layer_id=0, k_scale=None, v_scale=None),
     )
-
-    assert batch.mrope_positions.shape == (3, 7)
-    assert torch.equal(batch.mrope_positions[0], batch.positions)
-    assert torch.equal(batch.mrope_positions[1], batch.positions)
-    assert torch.equal(batch.mrope_positions[2], batch.positions)
-
-
-def test_qwen3_tts_mrope_mirror_is_scoped_to_the_graphed_path() -> None:
-    """A 2-D positions tensor picks a different CUDA kernel.
-
-    ``MRotaryEmbedding.forward_cuda`` dispatches 1-D positions to
-    ``forward_native`` and 2-D positions to the fused ``forward_triton``, so
-    mirroring an eager prefill would move it to another kernel for no reason.
-    """
-    from sglang_omni.models.qwen3_tts.model_runner import ensure_mrope_positions
-
-    def make_batch():
-        return SimpleNamespace(
-            positions=torch.arange(7, dtype=torch.int64),
-            mrope_positions=None,
+    cache_slots = torch.tensor([3, 7], device=device)
+    batch = SimpleNamespace(out_cache_loc=cache_slots, dcp_kv_mask=None)
+    positions = torch.tensor([17, 43], device=device)
+    qkv = torch.randn(
+        2,
+        (num_heads + 2 * num_kv_heads) * head_dim,
+        device=device,
+        dtype=torch.bfloat16,
+    )
+    previous_backend = get_fused_op_backend()
+    with get_context().override_server_args(
+        cuda_graph_config=CudaGraphConfig(prefill=PhaseConfig(backend=Backend.DISABLED))
+    ):
+        pool = MHATokenToKVPool(
+            size=32,
+            page_size=1,
+            dtype=torch.bfloat16,
+            head_num=num_kv_heads,
+            head_dim=head_dim,
+            layer_num=1,
+            device="cuda",
+            enable_memory_saver=False,
         )
+        k_before = pool.get_key_buffer(0).clone()
+        v_before = pool.get_value_buffer(0).clone()
+        set_fused_op_backend(backend)
+        try:
+            with forward_context(
+                ForwardContext(SimpleNamespace(token_to_kv_pool=pool))
+            ):
+                _, k, v = Qwen3OmniMoeThinkerTextAttention.apply_qk_norm_rope(
+                    attention, qkv, positions, batch
+                )
+        finally:
+            set_fused_op_backend(previous_backend)
 
-    # note (luojiaxuan): SGLang hands out an EagerRunner rather than None when
-    # prefill graphs are disabled, so the runner's own verdict is what scopes
-    # the mirror.
-    batch = make_batch()
-    ensure_mrope_positions(
-        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: False)
-    )
-    assert batch.mrope_positions is None
-
-    batch = make_batch()
-    ensure_mrope_positions(batch, prefill_graph_runner=None)
-    assert batch.mrope_positions is None
-
-    batch = make_batch()
-    ensure_mrope_positions(
-        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
-    )
-    assert batch.mrope_positions is not None
-    assert batch.mrope_positions.shape == (3, 7)
-    assert torch.equal(batch.mrope_positions[0], batch.positions)
-
-
-def test_qwen3_tts_mrope_mirror_leaves_real_positions_alone() -> None:
-    """A batch that already carries mrope positions owns them."""
-    from sglang_omni.models.qwen3_tts.model_runner import ensure_mrope_positions
-
-    supplied = torch.arange(21, dtype=torch.int64).reshape(3, 7)
-    batch = SimpleNamespace(
-        positions=torch.zeros(7, dtype=torch.int64),
-        mrope_positions=supplied,
-    )
-    ensure_mrope_positions(
-        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
-    )
-
-    assert batch.mrope_positions is supplied
+    if backend is None:
+        assert attention.used_fused_set_kv_buffer_last_call is True
+        assert torch.equal(
+            pool.get_key_buffer(0)[cache_slots], k.reshape(2, num_kv_heads, head_dim)
+        )
+        assert torch.equal(
+            pool.get_value_buffer(0)[cache_slots],
+            v.reshape(2, num_kv_heads, head_dim),
+        )
+    else:
+        assert attention.used_fused_set_kv_buffer_last_call is False
+        assert torch.equal(pool.get_key_buffer(0), k_before)
+        assert torch.equal(pool.get_value_buffer(0), v_before)
 
 
 def test_qwen3_tts_factory_forwards_coalescing_params_to_builder(
@@ -7649,23 +7697,16 @@ def test_qwen3_tts_prefill_attaches_runner_composed_embeddings_to_sidecar(
     runner.model = SimpleNamespace(
         prepare_decode_buffers=lambda requests: calls.append("prepare")
     )
-    # note (luojiaxuan): the runner accepts this batch, so the mirror applies.
-    runner.tp_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(
-            prefill_cuda_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
-        )
-    )
     runner.build_prefill_input_embeds = (
         lambda forward_batch, requests: calls.append("embeds") or input_embeds
     )
     mm_inputs = [object()]
-    positions = torch.arange(3)
     forward_batch = SimpleNamespace(
         input_ids=torch.zeros(3, dtype=torch.long),
         input_embeds=None,
         replace_embeds=None,
         mm_inputs=mm_inputs,
-        positions=positions,
+        positions=torch.arange(3),
         mrope_positions=None,
     )
 
@@ -7677,9 +7718,7 @@ def test_qwen3_tts_prefill_attaches_runner_composed_embeddings_to_sidecar(
     assert forward_batch.input_embeds is None
     assert forward_batch.mm_inputs is mm_inputs
     assert calls == ["prepare", "embeds"]
-    assert forward_batch.mrope_positions.shape == (3, 3)
-    for row in forward_batch.mrope_positions:
-        assert torch.equal(row, positions)
+    assert forward_batch.mrope_positions is None
 
 
 def test_qwen3_tts_prefill_uses_shared_late_bound_forward_transport(
@@ -8791,7 +8830,6 @@ def test_qwen3_tts_talker_forward_accepts_shared_prefill_request_ids(
     )
 
     assert received["input_embeds"] is input_embeds
-    assert Qwen3TTSTalker.is_mrope_enabled is True
     torch.testing.assert_close(
         result.next_token_logits,
         input_embeds[-1:] + 1,

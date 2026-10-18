@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import ScheduleBatch
     from sglang.srt.managers.scheduler import GenerationBatchResult
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-    from sglang.srt.model_executor.runner.base_runner import BaseRunner
 
     from sglang_omni.models.qwen3_tts.request_builders import Qwen3TTSSGLangRequestData
     from sglang_omni.models.qwen3_tts.sglang_model import (
@@ -39,40 +38,6 @@ if TYPE_CHECKING:
     )
 else:
     pass
-
-
-def ensure_mrope_positions(
-    forward_batch: ForwardBatch | None, *, prefill_graph_runner: BaseRunner | None
-) -> None:
-    """Give a graph-replayed batch MRoPE positions mirroring its plain ones.
-
-    The Talker declares ``is_mrope_enabled``, so a captured prefill graph binds
-    the runner's ``mrope_positions`` slot, and that slot is only refreshed at
-    replay when the live batch carries mrope positions. A TTS request has no
-    multimodal inputs to provide them, so a replay would otherwise rotate on
-    whatever positions capture happened to leave behind.
-
-    All three MRoPE rows are equal for the Talker, and ``MRotaryEmbedding``
-    selects row ``i`` of each mrope section, so a mirrored ``[3, T]`` collapses
-    to exactly the 1-D result. It is not the same kernel though: on CUDA a 1-D
-    positions tensor runs ``forward_native`` while a 2-D one runs the fused
-    ``forward_triton``. Mirroring only the batches that replay keeps every
-    other prefill on the kernel it already used: SGLang hands out an
-    ``EagerRunner`` when prefill graphs are off, and a runner that holds graphs
-    still declines batches outside its captured shapes.
-    """
-    if prefill_graph_runner is None or not prefill_graph_runner.can_run_graph(
-        forward_batch
-    ):
-        return
-    else:
-        pass
-    if forward_batch.mrope_positions is None:
-        forward_batch.mrope_positions = (
-            forward_batch.positions.unsqueeze(0).expand(3, -1).contiguous()
-        )
-    else:
-        pass
 
 
 class Qwen3TTSModelInfo(TypedDict):
@@ -117,10 +82,6 @@ class Qwen3TTSModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
-        ensure_mrope_positions(
-            forward_batch,
-            prefill_graph_runner=self.tp_worker.model_runner.prefill_cuda_graph_runner,
-        )
         self.model.prepare_decode_buffers(requests)
         attach_omni_prefill_inputs(
             forward_batch,

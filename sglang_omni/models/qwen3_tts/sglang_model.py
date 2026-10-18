@@ -963,11 +963,6 @@ class Qwen3TTSPromptBuilderMixin:
 class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     """Qwen3-TTS Base talker with SGLang-managed KV cache for the main AR loop."""
 
-    # The outer forward substitutes ForwardBatch.mrope_positions whenever they
-    # are present. Prefill CUDA graph runners capture the inner text model
-    # directly and use this marker to preserve that position contract.
-    is_mrope_enabled = True
-
     def __init__(
         self,
         config: "Qwen3TTSConfig",
@@ -1284,11 +1279,6 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         omni_prefill_rids: list[str] | None = None,
     ) -> LogitsProcessorOutput:
         del input_embeds_are_projected, omni_prefill_rids
-        if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
-        else:
-            pass
-
         hidden_states = self.model(
             input_ids=input_ids,
             positions=positions,
