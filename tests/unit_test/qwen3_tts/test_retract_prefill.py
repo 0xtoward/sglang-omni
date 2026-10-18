@@ -57,6 +57,7 @@ def make_sched_req(
 def test_write_feedback_buffers_records_decode_input_history() -> None:
     embedding = torch.nn.Embedding(4, 2)
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.row_ids_cache = None
     runner.model = SimpleNamespace(
         decode_feedback_embedding=embedding,
         get_input_embeddings=lambda: embedding,
@@ -90,6 +91,7 @@ def test_write_feedback_buffers_batches_staged_rows_and_embeds_the_rest() -> Non
     with torch.no_grad():
         embedding.weight.copy_(torch.arange(8, dtype=torch.float32).reshape(4, 2))
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.row_ids_cache = None
     runner.model = SimpleNamespace(
         decode_feedback_embedding=embedding,
         get_input_embeddings=lambda: embedding,
@@ -302,6 +304,7 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
             return self.embed
 
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.row_ids_cache = None
     runner.model = Model()
     generated = n_decode + 1
     sched_req = make_sched_req(prompt=prompt, extend_len=prompt_len)

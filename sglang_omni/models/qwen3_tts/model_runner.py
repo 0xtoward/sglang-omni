@@ -327,36 +327,13 @@ class Qwen3TTSModelRunner(ModelRunner):
             sched_req.data.pending_feedback_queue.append(embeds_snap[row_idx])
 
     def sample_positions(
-        self, forward_batch: "ForwardBatch | None", device: torch.device
+        self, forward_batch: ForwardBatch, device: torch.device
     ) -> torch.Tensor:
-        forward_mode = getattr(forward_batch, "forward_mode", None)
-        is_decode = (
-            forward_mode is not None
-            and hasattr(forward_mode, "is_decode")
-            and bool(forward_mode.is_decode())
-        )
-        if is_decode:
-            positions = getattr(forward_batch, "positions", None)
-            if positions is not None:
-                return positions.to(device=device, dtype=torch.long)
-            else:
-                pass
+        if forward_batch.forward_mode.is_decode():
+            return forward_batch.positions.to(device=device, dtype=torch.long)
         else:
-            pass
-
-        seq_lens = getattr(forward_batch, "seq_lens", None)
-        if seq_lens is not None:
-            return (seq_lens.to(device=device, dtype=torch.long) - 1).clamp_min(0)
-        else:
-            pass
-
-        positions = getattr(forward_batch, "positions", None)
-        if positions is not None:
-            return positions.to(device=device, dtype=torch.long)
-        else:
-            pass
-
-        raise RuntimeError("Qwen3-TTS subtalker sampling requires semantic positions")
+            seq_lens = forward_batch.seq_lens.to(device=device, dtype=torch.long)
+            return (seq_lens - 1).clamp_min(0)
 
     def write_feedback_buffers(
         self, forward_batch: ForwardBatch | None, requests: list[SchedulerRequest]
@@ -433,7 +410,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         input_ids[:batch_size].copy_(row_ids)
 
     def decode_row_ids(self, batch_size: int, input_ids: torch.Tensor) -> torch.Tensor:
-        cached = getattr(self, "row_ids_cache", None)
+        cached = self.row_ids_cache
         if (
             cached is None
             or cached.numel() < batch_size
