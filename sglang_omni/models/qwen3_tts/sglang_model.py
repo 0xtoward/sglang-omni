@@ -404,17 +404,53 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         return hidden_states
 
 
+def load_codec_table(
+    param: nn.Parameter, loaded_weight: torch.Tensor, codebook_index: int
+) -> None:
+    param.data[codebook_index].copy_(loaded_weight)
+
+
+class Qwen3TTSCodecTables(nn.Module):
+    """The residual codebooks' embedding tables as one (codebooks, vocab, hidden) weight;
+    each checkpoint table loads into its codebook's slice."""
+
+    def __init__(self, num_codebooks: int, vocab_size: int, hidden_size: int) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(
+            torch.randn(num_codebooks, vocab_size, hidden_size), requires_grad=False
+        )
+        self.weight.weight_loader = load_codec_table
+        self.register_buffer(
+            "row_offsets", torch.arange(num_codebooks) * vocab_size, persistent=False
+        )
+
+    def forward(self, codes: torch.Tensor) -> torch.Tensor:
+        """Embed (..., codebooks) codes as (..., codebooks, hidden) rows in one lookup."""
+        return torch.nn.functional.embedding(
+            codes + self.row_offsets, self.weight.flatten(0, 1)
+        )
+
+    @staticmethod
+    def make_params_mapping(num_codebooks: int) -> dict[str, tuple[str, int]]:
+        """Each codebook's checkpoint table name -> the stacked weight's name and the codebook."""
+        module_name = "code_predictor.model.codec_embedding"
+        return {
+            f"{module_name}.{codebook_index}.weight": (
+                f"{module_name}.weight",
+                codebook_index,
+            )
+            for codebook_index in range(num_codebooks)
+        }
+
+
 class Qwen3TTSCodePredictor(nn.Module):
     def __init__(self, config: "Qwen3TTSTalkerConfig", prefix: str = "") -> None:
         super().__init__()
         self.config = config
         cp_config = config.code_predictor_config
         self.model = nn.Module()
-        self.model.codec_embedding = nn.ModuleList(
-            [
-                nn.Embedding(cp_config.vocab_size, config.hidden_size)
-                for _ in range(config.num_code_groups - 1)
-            ]
+        self.model.codec_embedding = Qwen3TTSCodecTables(
+            config.num_code_groups - 1, cp_config.vocab_size, config.hidden_size
         )
         self.model.layers = nn.ModuleList(
             [
@@ -891,17 +927,16 @@ class Qwen3TTSPromptBuilderMixin:
             self.get_text_embeddings()(torch.cat([ref_id, text_id], dim=-1))
         )
         text_embed = torch.cat([text_embed, prompt_constants.tts_eos_embed], dim=1)
-        codec_embed = []
-        for idx in range(self.config.num_code_groups):
-            if idx == 0:
-                codec_embed.append(self.get_input_embeddings()(ref_code[:, :1]))
-            else:
-                codec_embed.append(
-                    self.code_predictor.model.codec_embedding[idx - 1](
-                        ref_code[:, idx : idx + 1]
-                    )
-                )
-        codec_embed = torch.cat(codec_embed, dim=1).sum(1).unsqueeze(0)
+        codec_embed = torch.cat(
+            [
+                self.get_input_embeddings()(ref_code[:, :1]),
+                self.code_predictor.model.codec_embedding(
+                    ref_code[:, 1 : self.config.num_code_groups]
+                ),
+            ],
+            dim=1,
+        )
+        codec_embed = codec_embed.sum(1).unsqueeze(0)
         codec_embed = torch.cat([codec_pad_bos_embed[:, 1:], codec_embed], dim=1)
         text_lens = text_embed.shape[1]
         codec_lens = codec_embed.shape[1]
@@ -969,6 +1004,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.code_predictor = Qwen3TTSCodePredictor(
             config,
             prefix=add_prefix("code_predictor", prefix),
+        )
+        self.codec_table_params_mapping = Qwen3TTSCodecTables.make_params_mapping(
+            config.num_code_groups - 1
         )
 
         if self.tts_model_type == "base":
@@ -1796,7 +1834,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     ),
                 )
                 pos_codes[:, layer_idx + 1].copy_(next_code)
-                codec_embedding = self.code_predictor.model.codec_embedding[layer_idx]
+                codec_table = self.code_predictor.model.codec_embedding.weight[
+                    layer_idx
+                ]
                 has_next_step = layer_idx < num_groups - 2
                 should_gather_projection = (
                     projected_tables is not None and has_next_step
@@ -1806,7 +1846,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     and embedding_buffer.dtype == predictor_dtype
                     and gather_codec_embedding_and_add(
                         next_code,
-                        codec_embedding.weight,
+                        codec_table,
                         embedding_buffer,
                         pos_summed,
                         projected_weight=(
@@ -1822,9 +1862,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 if fused_embedding:
                     new_embed = embedding_buffer.unsqueeze(1)
                 else:
-                    new_embed = codec_embedding(next_code.unsqueeze(1)).to(
-                        dtype=predictor_dtype
-                    )
+                    new_embed = torch.nn.functional.embedding(
+                        next_code.unsqueeze(1), codec_table
+                    ).to(dtype=predictor_dtype)
                     pos_summed.add_(new_embed[:, 0, :])
                 if has_next_step:
                     if projected_tables is None:
@@ -2234,6 +2274,15 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             else:
                 continue
 
+            codec_table_slot = self.codec_table_params_mapping.get(target)
+            if codec_table_slot is not None:
+                param_name, codebook_index = codec_table_slot
+                param = params_dict[param_name]
+                param.weight_loader(param, loaded_weight, codebook_index)
+                continue
+            else:
+                pass
+
             handled = False
             for param_name, weight_name, shard_id in stacked_params:
                 if weight_name in target:
@@ -2264,11 +2313,11 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         if self.predictor_projected_embeddings is None:
             pass
         else:
-            for table, embedding in zip(
+            for table, codec_table in zip(
                 self.predictor_projected_embeddings,
-                self.code_predictor.model.codec_embedding,
+                self.code_predictor.model.codec_embedding.weight,
             ):
-                table.copy_(self.code_predictor.project_input(embedding.weight))
+                table.copy_(self.code_predictor.project_input(codec_table))
 
 
 EntryClass = Qwen3TTSTalker

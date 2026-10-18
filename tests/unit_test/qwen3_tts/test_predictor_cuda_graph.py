@@ -35,7 +35,10 @@ from sglang.srt.runtime_context import get_context
 from torch import nn
 
 import sglang_omni.models.qwen3_tts.sglang_model as sglang_model_module
-from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+from sglang_omni.models.qwen3_tts.sglang_model import (
+    Qwen3TTSCodecTables,
+    Qwen3TTSTalker,
+)
 from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.layers import RMSNorm
 from sglang_omni.vendor.sglang.models import apply_qk_norm
@@ -202,12 +205,9 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
         model=SimpleNamespace(
             layers=[layer],
             norm=RMSNorm(HIDDEN, eps=1e-6).to(device, DTYPE),
-            codec_embedding=nn.ModuleList(
-                [
-                    nn.Embedding(PRED_VOCAB, HIDDEN).to(device, DTYPE)
-                    for _ in range(NUM_CODE_GROUPS - 1)
-                ]
-            ),
+            codec_embedding=Qwen3TTSCodecTables(
+                NUM_CODE_GROUPS - 1, PRED_VOCAB, HIDDEN
+            ).to(device, DTYPE),
         ),
         lm_head=nn.ModuleList(
             [
@@ -452,16 +452,13 @@ def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
     projection = nn.Linear(
         CHECKPOINT_HIDDEN, CHECKPOINT_PREDICTOR_HIDDEN, bias=True
     ).to(device, DTYPE)
-    embeddings = nn.ModuleList(
-        [
-            nn.Embedding(CHECKPOINT_VOCAB, CHECKPOINT_HIDDEN).to(device, DTYPE)
-            for _ in range(3)
-        ]
+    codec_tables = Qwen3TTSCodecTables(3, CHECKPOINT_VOCAB, CHECKPOINT_HIDDEN).to(
+        device, DTYPE
     )
-    talker.code_predictor.model.codec_embedding = embeddings
+    talker.code_predictor.model.codec_embedding = codec_tables
     talker.code_predictor.project_input = projection
     talker.predictor_projected_embeddings = torch.empty(
-        len(embeddings) - 1,
+        codec_tables.weight.shape[0] - 1,
         CHECKPOINT_VOCAB,
         CHECKPOINT_PREDICTOR_HIDDEN,
         device=device,
@@ -475,7 +472,7 @@ def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
     accumulation = (CHECKPOINT_HIDDEN + 1) * FP32_UNIT_ROUNDOFF
     accumulation = accumulation / (1 - accumulation)
     for index, table in enumerate(talker.predictor_projected_embeddings):
-        rows = embeddings[index].weight[codes].float()
+        rows = codec_tables.weight[index][codes].float()
         reference = torch.nn.functional.linear(rows, weight, bias)
         magnitude = rows.abs() @ weight.abs().T + bias.abs()
         rounding_bound = (

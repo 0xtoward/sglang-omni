@@ -58,7 +58,11 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     build_sglang_qwen3_tts_request,
     derive_qwen3_tts_sampling_seeds,
 )
-from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSPromptConstants
+from sglang_omni.models.qwen3_tts.sglang_model import (
+    Qwen3TTSCodecTables,
+    Qwen3TTSPromptConstants,
+    Qwen3TTSTalker,
+)
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     IncrementalDecodePlan,
@@ -2307,8 +2311,50 @@ def test_qwen3_tts_predictor_codec_embeddings_use_talker_hidden_size(
 
     predictor = sglang_model.Qwen3TTSCodePredictor(talker_config)
 
-    assert predictor.model.codec_embedding[0].weight.shape == (2048, 2048)
+    assert predictor.model.codec_embedding.weight.shape == (15, 2048, 2048)
     assert predictor.small_to_mtp_projection.weight.shape == (1024, 2048)
+
+
+def test_qwen3_tts_codec_tables_embed_each_codebook_from_its_own_table() -> None:
+    codec_tables = Qwen3TTSCodecTables(3, 5, 4)
+    codes = torch.cat(
+        [torch.tensor([[0, 4, 4], [4, 0, 1]]), torch.randint(0, 5, (6, 3))]
+    )
+
+    rows = codec_tables(codes)
+
+    assert torch.equal(
+        rows,
+        torch.stack(
+            [
+                torch.nn.functional.embedding(codes[:, codebook_index], table)
+                for codebook_index, table in enumerate(codec_tables.weight)
+            ],
+            dim=1,
+        ),
+    )
+
+
+def test_qwen3_tts_talker_loads_each_codec_table_into_its_codebook() -> None:
+    talker = object.__new__(Qwen3TTSTalker)
+    torch.nn.Module.__init__(talker)
+    talker.code_predictor = torch.nn.Module()
+    talker.code_predictor.model = torch.nn.Module()
+    talker.code_predictor.model.codec_embedding = Qwen3TTSCodecTables(3, 5, 4)
+    talker.codec_table_params_mapping = Qwen3TTSCodecTables.make_params_mapping(3)
+    talker.cached_params_dict = dict(talker.named_parameters())
+    talker.predictor_projected_embeddings = None
+    tables = [torch.randn(5, 4) for _ in range(3)]
+
+    talker.load_weights(
+        (f"talker.code_predictor.model.codec_embedding.{codebook_index}.weight", table)
+        for codebook_index, table in reversed(list(enumerate(tables)))
+    )
+
+    for codebook_index, table in enumerate(tables):
+        assert torch.equal(
+            talker.code_predictor.model.codec_embedding.weight[codebook_index], table
+        )
 
 
 def test_qwen3_tts_cpu_seeded_sampling_skips_npu_sampler(
@@ -9471,8 +9517,8 @@ def test_qwen3_tts_icl_prompts_match_fresh_embeddings() -> None:
     frontend = make_prompt_frontend()
     prompt_constants = frontend.build_prompt_constants()
     code_tables = [
-        frontend.get_input_embeddings(),
-        *frontend.code_predictor.model.codec_embedding,
+        frontend.get_input_embeddings().weight,
+        *frontend.code_predictor.model.codec_embedding.weight,
     ]
     input_ids = [3, 4, 5, 6, 7, 8, 9, 10, 11, 3, 4]
     ref_ids = [3, 4, 5, 10, 11, 9, 10]
@@ -9496,7 +9542,8 @@ def test_qwen3_tts_icl_prompts_match_fresh_embeddings() -> None:
             prompt_constants=prompt_constants,
         )
         frame_rows = sum(
-            table(ref_code[:, group]) for group, table in enumerate(code_tables)
+            torch.nn.functional.embedding(ref_code[:, group], table)
+            for group, table in enumerate(code_tables)
         )
         expected = torch.cat(
             [
@@ -9561,9 +9608,12 @@ def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
         "talker.code_predictor.model.codec_embedding.0.weight",
         "talker.code_predictor.model.codec_embedding.1.weight",
     }
+    params = dict(frontend.named_parameters())
     tensors = {
         name: torch.randn(
-            dict(frontend.named_parameters())[name[len("talker.") :]].shape
+            params[name[len("talker.") :]].shape
+            if name[len("talker.") :] in params
+            else frontend.code_predictor.model.codec_embedding.weight.shape[1:]
         )
         for name in names
     }
@@ -9575,10 +9625,13 @@ def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
         frontend.model.text_embedding.weight,
         tensors["talker.model.text_embedding.weight"],
     )
-    assert torch.equal(
-        frontend.code_predictor.model.codec_embedding[1].weight,
-        tensors["talker.code_predictor.model.codec_embedding.1.weight"],
-    )
+    for codebook_index in range(2):
+        assert torch.equal(
+            frontend.code_predictor.model.codec_embedding.weight[codebook_index],
+            tensors[
+                f"talker.code_predictor.model.codec_embedding.{codebook_index}.weight"
+            ],
+        )
     hidden = torch.randn(1, 2, 3)
     fc1 = tensors["talker.text_projection.linear_fc1.weight"]
     fc2 = tensors["talker.text_projection.linear_fc2.weight"]
@@ -9591,12 +9644,14 @@ def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
     )
     assert torch.allclose(frontend.text_projection(hidden), expected)
 
-    with pytest.raises(RuntimeError, match="missing 1 weights"):
-        frontend.load_weights(
-            prompt_frontend.iter_checkpoint_tensors(
-                str(tmp_path), names - {"talker.model.text_embedding.weight"}
+    for absent in (
+        "talker.model.text_embedding.weight",
+        "talker.code_predictor.model.codec_embedding.1.weight",
+    ):
+        with pytest.raises(RuntimeError, match="missing 1 weights"):
+            frontend.load_weights(
+                prompt_frontend.iter_checkpoint_tensors(str(tmp_path), names - {absent})
             )
-        )
 
 
 def test_qwen3_tts_vocoder_in_flight_worker_commits_while_sibling_holds_collect_lock() -> (
