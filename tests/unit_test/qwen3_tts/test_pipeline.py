@@ -7804,8 +7804,18 @@ def test_qwen3_tts_collect_codes_excludes_semantic_eos(
         positions=torch.tensor([3, 3], dtype=torch.long),
     )
     requests = [
-        SimpleNamespace(request_id="active", data=Qwen3TTSSGLangRequestData()),
-        SimpleNamespace(request_id="eos", data=Qwen3TTSSGLangRequestData()),
+        SimpleNamespace(
+            request_id="active",
+            data=Qwen3TTSSGLangRequestData(
+                req=SimpleNamespace(inflight_middle_chunks=0)
+            ),
+        ),
+        SimpleNamespace(
+            request_id="eos",
+            data=Qwen3TTSSGLangRequestData(
+                req=SimpleNamespace(inflight_middle_chunks=0)
+            ),
+        ),
     ]
 
     runner.collect_codes(result, forward_batch, schedule_batch, requests)
@@ -7909,7 +7919,10 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
     runner.bind_execution_bridge(FakeExecutionBridge())
 
     data = SimpleNamespace(
-        req=SimpleNamespace(sampling_params=SimpleNamespace(repetition_penalty=1.0)),
+        req=SimpleNamespace(
+            sampling_params=SimpleNamespace(repetition_penalty=1.0),
+            inflight_middle_chunks=0,
+        ),
         output_codes=[],
         pending_feedback_queue=[torch.ones(4)],
         pending_text_queue=[torch.zeros(4)],

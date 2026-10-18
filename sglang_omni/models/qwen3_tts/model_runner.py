@@ -316,7 +316,13 @@ class Qwen3TTSModelRunner(ModelRunner):
             pass
         for row_idx, sched_req in enumerate(scheduler_output.requests):
             req_output = outputs[sched_req.request_id]
-            if req_output.data is None or int(req_output.data) == eos_id:
+            # note (ratish): a middle prefill chunk samples at a prompt row; SGLang drops
+            # that token, so it gives no frame, feedback or stream chunk either.
+            if (
+                sched_req.data.req.inflight_middle_chunks > 0
+                or req_output.data is None
+                or int(req_output.data) == eos_id
+            ):
                 continue
             else:
                 pass
@@ -325,6 +331,13 @@ class Qwen3TTSModelRunner(ModelRunner):
             sched_req.data.latest_stream_code_chunk = code_chunk
             sched_req.data.codes_ready_event = codes_ready
             sched_req.data.pending_feedback_queue.append(embeds_snap[row_idx])
+
+    def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
+        return {
+            sched_req.request_id
+            for sched_req in scheduler_output.requests
+            if sched_req.data.req.inflight_middle_chunks > 0
+        }
 
     def sample_positions(
         self, forward_batch: ForwardBatch, device: torch.device
