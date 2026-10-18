@@ -1240,7 +1240,7 @@ def create_sglang_thinker_executor_from_config(
         enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
-        sampling_backend="pytorch",
+        sampling_backend="flashinfer" if current_platform.is_cuda() else "pytorch",
         cuda_graph_backend_prefill=prefill_graph_backend,
     )
     overrides["tp_size"] = tp_size

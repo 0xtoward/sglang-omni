@@ -18,6 +18,10 @@ import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from sglang_omni.platforms import current_platform
 
 
+def thinker_sampling_backend() -> str:
+    return "flashinfer" if current_platform.is_cuda() else "pytorch"
+
+
 @pytest.fixture(autouse=True)
 def schedule_bag(monkeypatch):
     monkeypatch.setattr(
@@ -171,7 +175,7 @@ def patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
     def fake_server_args_builder(model_path, context_length, **overrides):
         assert model_path == "dummy"
         assert context_length is None
-        assert overrides["sampling_backend"] == "pytorch"
+        assert overrides["sampling_backend"] == thinker_sampling_backend()
         return SimpleNamespace(
             mem_fraction_static=overrides["mem_fraction_static"],
             sampling_backend=overrides["sampling_backend"],
@@ -466,7 +470,7 @@ def test_qwen_colocated_thinker_startup_threads_effective_budget(
     assert scheduler_calls == [
         {
             "mem_fraction_static": 0.70,
-            "sampling_backend": "pytorch",
+            "sampling_backend": thinker_sampling_backend(),
             "gpu_id": 0,
             "total_gpu_memory_fraction": 0.70,
         }
@@ -492,7 +496,7 @@ def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(
     assert scheduler_calls == [
         {
             "mem_fraction_static": 0.75,
-            "sampling_backend": "pytorch",
+            "sampling_backend": thinker_sampling_backend(),
             "gpu_id": 0,
             "total_gpu_memory_fraction": 0.75,
         }
