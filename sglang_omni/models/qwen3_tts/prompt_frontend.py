@@ -50,18 +50,11 @@ class PromptProjection(nn.Module):
 
 
 class PromptEmbeddings(nn.Module):
-    feedback_buffer: torch.Tensor
-
     def __init__(self, config: "Qwen3TTSTalkerConfig") -> None:
         super().__init__()
         self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.text_embedding = nn.Embedding(
             config.text_vocab_size, config.text_hidden_size
-        )
-        # Note (Jiaxin Deng): the prompt builders only read this buffer's device
-        # and dtype; the talker's real feedback buffer lives in the engine.
-        self.register_buffer(
-            "feedback_buffer", torch.zeros(1, config.hidden_size), persistent=False
         )
 
     def get_input_embeddings(self) -> nn.Embedding:

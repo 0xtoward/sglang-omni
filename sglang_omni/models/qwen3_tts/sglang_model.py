@@ -361,17 +361,6 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         max_batch_size = get_schedule().max_running_requests
-        self.feedback_buffer = torch.zeros(
-            max_batch_size,
-            config.hidden_size,
-            device=self.codec_embedding.weight.device,
-            dtype=self.codec_embedding.weight.dtype,
-        )
-        self.feedback_mask = torch.zeros(
-            max_batch_size,
-            dtype=torch.bool,
-            device=self.codec_embedding.weight.device,
-        )
         self.decode_feedback_embedding = nn.Embedding(
             max_batch_size,
             config.hidden_size,
@@ -386,19 +375,6 @@ class Qwen3TTSTalkerTextModel(nn.Module):
     def get_text_embeddings(self) -> nn.Embedding:
         return self.text_embedding
 
-    def build_input_hidden_states(
-        self,
-        input_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        hidden_states = self.codec_embedding(input_ids)
-        bs = hidden_states.shape[0]
-        feedback_mask = self.feedback_mask[:bs]
-        return torch.where(
-            feedback_mask.unsqueeze(-1),
-            self.feedback_buffer[:bs].to(hidden_states.dtype),
-            hidden_states,
-        )
-
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -406,13 +382,8 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        forward_mode = getattr(forward_batch, "forward_mode", None)
-        is_decode = forward_mode is not None and forward_mode.is_decode()
-        if input_embeds is None:
-            if is_decode:
-                hidden_states = self.decode_feedback_embedding(input_ids)
-            else:
-                hidden_states = self.build_input_hidden_states(input_ids)
+        if forward_batch.forward_mode.is_decode():
+            hidden_states = self.decode_feedback_embedding(input_ids)
         else:
             hidden_states = input_embeds
 
@@ -486,7 +457,7 @@ class Qwen3TTSCodePredictor(nn.Module):
 class Qwen3TTSPromptConstants:
     """Prompt rows that depend on the checkpoint alone, each embedded once the way a
     request embeds it, as (1, rows, hidden); feedback_pad_embed is the one (hidden,)
-    row decode reads after the text ends, in the feedback buffer's dtype."""
+    row decode reads after the text ends, in the codec embedding's dtype."""
 
     tts_bos_embed: torch.Tensor
     tts_eos_embed: torch.Tensor
@@ -500,7 +471,7 @@ class Qwen3TTSPromptConstants:
 class Qwen3TTSPromptBuilderMixin:
     """Prompt construction shared by the talker and the standalone prompt frontend.
 
-    Expects model (embedding tables and the feedback buffer), text_projection,
+    Expects model (embedding tables), text_projection,
     code_predictor.model.codec_embedding, speaker_encoder, speaker_encoder_graph_runner,
     speech_tokenizer, config, root_config and speaker_encoder_sample_rate on the instance.
     """
@@ -599,7 +570,6 @@ class Qwen3TTSPromptBuilderMixin:
                 torch.tensor([codec_prefill], device=self.device, dtype=torch.long)
             )
         speaker_ids = self.config.spk_id or {}
-        feedback_buffer = self.model.feedback_buffer
         return Qwen3TTSPromptConstants(
             tts_bos_embed=tts_bos_embed,
             tts_eos_embed=tts_eos_embed,
@@ -631,7 +601,9 @@ class Qwen3TTSPromptBuilderMixin:
             )
             .squeeze(0)
             .squeeze(0)
-            .to(device=feedback_buffer.device, dtype=feedback_buffer.dtype),
+            .to(
+                device=codec_embedding.weight.device, dtype=codec_embedding.weight.dtype
+            ),
         )
 
     def resolve_language_id(
@@ -1020,8 +992,6 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         predictor_len = config.num_code_groups + 1
         device = self.model.codec_embedding.weight.device
         dtype = self.model.codec_embedding.weight.dtype
-        self.feedback_buffer = self.model.feedback_buffer
-        self.feedback_mask = self.model.feedback_mask
         self.decode_feedback_embedding = self.model.decode_feedback_embedding
         cp_layers = self.code_predictor.model.layers
         cp_attn = cp_layers[0].self_attn
