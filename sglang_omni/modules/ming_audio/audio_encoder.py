@@ -37,8 +37,21 @@ class AudioEncoderConfig(BaseModel):
         return total
 
 
+class Float32LayerNorm(nn.LayerNorm):
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return functional.layer_norm(
+            hidden.float(),
+            self.normalized_shape,
+            self.weight.float(),
+            self.bias.float(),
+            self.eps,
+        ).to(hidden.dtype)
+
+
 class WhisperEncoder(nn.Module):
-    def __init__(self, config: AudioEncoderConfig) -> None:
+    def __init__(
+        self, config: AudioEncoderConfig, *, should_upcast_layer_norm: bool
+    ) -> None:
         super().__init__()
         self.conv1: nn.Conv1d = nn.Conv1d(
             config.n_mels, config.n_audio_state, 3, padding=1
@@ -53,11 +66,16 @@ class WhisperEncoder(nn.Module):
             ResidualAttentionBlock(config.n_audio_state, config.n_audio_head)
             for _ in range(config.n_audio_layer)
         )
-        # note (Codex): Whisper's float32 LayerNorm conflicts with BF16 parameters.
+        # note (Codex): Whisper's own LayerNorm casts BF16 inputs to float32
+        # but keeps BF16 parameters, which fails; each checkpoint picks a fix.
+        if should_upcast_layer_norm:
+            layer_norm_type = Float32LayerNorm
+        else:
+            layer_norm_type = nn.LayerNorm
         for block in self.blocks:
-            block.attn_ln = nn.LayerNorm(config.n_audio_state)
-            block.mlp_ln = nn.LayerNorm(config.n_audio_state)
-        self.ln_post: nn.LayerNorm = nn.LayerNorm(config.n_audio_state)
+            block.attn_ln = layer_norm_type(config.n_audio_state)
+            block.mlp_ln = layer_norm_type(config.n_audio_state)
+        self.ln_post: nn.LayerNorm = layer_norm_type(config.n_audio_state)
 
     def forward(self, mel: torch.Tensor) -> torch.Tensor:
         hidden = functional.gelu(self.conv1(mel.transpose(1, 2)))
@@ -74,10 +92,20 @@ class Transpose(nn.Module):
 
 
 class Ming3AudioEncoder(nn.Module):
-    def __init__(self, config: AudioEncoderConfig, hidden_size: int) -> None:
+    def __init__(
+        self,
+        config: AudioEncoderConfig,
+        hidden_size: int,
+        *,
+        should_upcast_layer_norm: bool,
+        should_batch_chunks: bool,
+    ) -> None:
         super().__init__()
         self.config: AudioEncoderConfig = config
-        self.audio: WhisperEncoder = WhisperEncoder(config)
+        self.should_batch_chunks: bool = should_batch_chunks
+        self.audio: WhisperEncoder = WhisperEncoder(
+            config, should_upcast_layer_norm=should_upcast_layer_norm
+        )
         projection_layers: list[nn.Module] = []
         channels = config.n_audio_state
         for kernel, stride in zip(
@@ -105,16 +133,20 @@ class Ming3AudioEncoder(nn.Module):
 
     def forward(self, features: list[torch.Tensor]) -> torch.Tensor:
         chunks = [
-            chunk
+            chunk.to(self.audio.conv1.weight)
             for mel in features
             for chunk in mel.split(self.config.whisper_chunk_size)
         ]
-        lengths = [self.config.output_length(chunk.shape[0]) for chunk in chunks]
-        padded_mels = nn.utils.rnn.pad_sequence(chunks, batch_first=True)
-        padded_mels = padded_mels.to(self.audio.conv1.weight)
-        hidden = self.audio(padded_mels)
-        projected = self.linear_proj_audio(hidden.transpose(1, 2))
-        return functional.normalize(
-            torch.cat([row[:length] for row, length in zip(projected, lengths)]),
-            dim=-1,
-        )
+        if self.should_batch_chunks:
+            lengths = [self.config.output_length(chunk.shape[0]) for chunk in chunks]
+            padded_mels = nn.utils.rnn.pad_sequence(chunks, batch_first=True)
+            projected = self.linear_proj_audio(self.audio(padded_mels).transpose(1, 2))
+            embeddings = [row[:length] for row, length in zip(projected, lengths)]
+        else:
+            # note (Codex): Whisper attention has no padding mask, so unbatched
+            # chunks keep every chunk's output independent of its neighbors.
+            embeddings = [
+                self.linear_proj_audio(self.audio(chunk[None]).transpose(1, 2))[0]
+                for chunk in chunks
+            ]
+        return functional.normalize(torch.cat(embeddings), dim=-1)

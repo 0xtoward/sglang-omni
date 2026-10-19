@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 from pathlib import Path
 from typing import Literal, TypedDict
@@ -11,14 +10,13 @@ from typing import Literal, TypedDict
 import numpy as np
 import numpy.typing as npt
 import torch
-import torchaudio
 import whisper
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-from sglang_omni.models.ming3_audio.audio_encoder import AudioEncoderConfig
-from sglang_omni.preprocessing.audio import decode_audio_bytes_av, parse_wav_bytes
-from sglang_omni.preprocessing.base import MediaIO, is_url
+from sglang_omni.modules.ming_audio.audio_encoder import AudioEncoderConfig
+from sglang_omni.modules.ming_audio.audio_media import AudioMediaIO
+from sglang_omni.preprocessing.base import is_url
 from sglang_omni.preprocessing.resource_connector import get_global_resource_connector
 from sglang_omni.proto.request import StagePayload
 
@@ -54,27 +52,6 @@ class ContentPart(BaseModel):
     audio: str | None = None
     input_audio: InputAudio | None = None
     audio_url: AudioURL | None = None
-
-
-class AudioMediaIO(MediaIO[torch.Tensor]):
-    def load_bytes(self, data: bytes) -> torch.Tensor:
-        try:
-            waveform, sample_rate = parse_wav_bytes(data)
-        except ValueError:
-            waveform, sample_rate = decode_audio_bytes_av(data)
-        writable_waveform = np.array(waveform, dtype=np.float32, copy=True)
-        return torchaudio.functional.resample(
-            torch.from_numpy(writable_waveform),
-            sample_rate,
-            whisper.audio.SAMPLE_RATE,
-        )
-
-    def load_base64(self, media_type: str, data: str) -> torch.Tensor:
-        """Decode audio; media_type belongs to the MediaIO interface."""
-        return self.load_bytes(base64.b64decode(data, validate=True))
-
-    def load_file(self, filepath: Path) -> torch.Tensor:
-        return self.load_bytes(filepath.read_bytes())
 
 
 class ChatMessage(BaseModel):

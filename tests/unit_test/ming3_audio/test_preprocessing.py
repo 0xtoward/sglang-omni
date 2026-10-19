@@ -10,10 +10,8 @@ import soundfile
 import torch
 from whisper.audio import SAMPLE_RATE as WHISPER_SAMPLE_RATE
 
-from sglang_omni.models.ming3_audio.preprocessing import (
-    AudioMediaIO,
-    separate_asr_language_prefix,
-)
+from sglang_omni.models.ming3_audio.preprocessing import separate_asr_language_prefix
+from sglang_omni.modules.ming_audio.audio_media import AudioMediaIO
 
 STEREO_FRAME = np.array([[0.5, -0.25]], dtype=np.float32)
 STEREO_FRAME_COUNT = 1600

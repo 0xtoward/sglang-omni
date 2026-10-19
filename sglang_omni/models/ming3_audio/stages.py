@@ -15,18 +15,18 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.utils.hf_transformers.tokenizer import get_tokenizer
 from transformers import AutoConfig
 
-from sglang_omni.models.ming3_audio.audio_encoder import (
-    AudioEncoderConfig,
-    Ming3AudioEncoder,
-)
-from sglang_omni.models.ming3_audio.hf_config import Ming3AudioConfig
 from sglang_omni.models.ming3_audio.preprocessing import (
     AudioPipelineState,
     Ming3AudioPreprocessor,
     separate_asr_language_prefix,
 )
 from sglang_omni.models.ming3_audio.talker import Ming3SpeechGenerator
-from sglang_omni.models.ming3_audio.thinker import (
+from sglang_omni.modules.ming_audio.audio_encoder import (
+    AudioEncoderConfig,
+    Ming3AudioEncoder,
+)
+from sglang_omni.modules.ming_audio.hf_config import Ming3AudioConfig
+from sglang_omni.modules.ming_audio.thinker import (
     Ming3AudioModelRunner,
     Ming3AudioThinker,
 )
@@ -129,6 +129,8 @@ def create_audio_encoder_executor(
     encoder = Ming3AudioEncoder(
         AudioEncoderConfig.model_validate(configuration["audio_config"]),
         configuration["text_config"]["hidden_size"],
+        should_upcast_layer_norm=False,
+        should_batch_chunks=True,
     )
     encoder.load_checkpoint(model_path)
     encoder = encoder.eval().to(resolved_device, dtype=torch.bfloat16)
