@@ -216,7 +216,7 @@ class CFM(nn.Module):
 
 
 class FlowLoss(nn.Module):
-    """Ming-Omni-TTS flow-matching latent head."""
+    """Ming flow-matching latent head shared by Ming TTS checkpoints."""
 
     def __init__(
         self,
