@@ -16,10 +16,6 @@ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.runtime_context import get_exec, get_model, get_parallel, get_schedule
 from torch import nn
 
-from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggregator
-from sglang_omni.models.ming_omni.talker.talker_module.execution import (
-    TalkerExecutionConfig,
-)
 from sglang_omni.models.ming_omni.talker.talker_module.packed_qkv import (
     PACKED_QKV_SHARD_IDS,
     PackedQKVLinear,
@@ -48,6 +44,8 @@ from sglang_omni.models.ming_tts.weight_loading import (
     classify_ming_tts_weight,
 )
 from sglang_omni.models.weight_loader import default_weight_loader
+from sglang_omni.modules.ming_audio.flow.aggregator import Aggregator
+from sglang_omni.modules.ming_audio.flow.execution import TalkerExecutionConfig
 from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce

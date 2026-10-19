@@ -13,7 +13,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, ``/v1/audio/translations``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Nemotron 3.5 ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, MiniCPM-o, Ming-Omni), and LLaDA2.0-Uni.
+- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Nemotron 3.5 ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, MiniCPM-o, Ming-Omni, Ming-3.0-audio), and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -85,6 +85,9 @@ Supported Models
    * - `inclusionAI/Ming-flash-omni-2.0 <https://huggingface.co/inclusionAI/Ming-flash-omni-2.0>`_
      - Omni
      - Streaming TTS
+   * - `inclusionAI/Ming-3.0-audio-flash <https://huggingface.co/inclusionAI/Ming-3.0-audio-flash>`_
+     - Omni
+     - Transcription, audio chat, and 44.1 kHz speech
    * - `inclusionAI/LLaDA2.0-Uni <https://huggingface.co/inclusionAI/LLaDA2.0-Uni>`_
      - Multimodal
      - Text + image understanding and generation
@@ -127,6 +130,7 @@ Supported Models
    cookbook/qwen3_omni.md
    cookbook/minicpm_o.md
    cookbook/ming_omni.md
+   cookbook/ming3_audio.md
    cookbook/nemotron_voicechat.md
    cookbook/personaplex.md
    cookbook/llada2_uni.md
