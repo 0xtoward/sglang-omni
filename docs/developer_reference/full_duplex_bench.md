@@ -428,6 +428,28 @@ python -m benchmarks.eval.benchmark_duplex_reference export \
 - Any `error` event fails the session. A response cancelled with reason `turn_detected` is accepted only after an `input_audio_buffer.speech_started` during it.
 - Simulated playout follows the server's barge-in: it is cut at `output_audio_buffer.cleared`, or at `input_audio_buffer.speech_started` unless the session set `interrupt_response: false`. The export applies the same cut, records `barge_in_cuts`, and marks a session eligible only when its protocol verdict is `pass`.
 
+A turn-based endpoint can also speak the session protocol. It takes `turn_detection` under `session.audio.input` in `session.update`, grants `interaction: turn_based` with 200 ms units and a flushed input tail, sends the `sglang.input_audio.*` receipts and `sglang.unit.done`, detects the turns itself and streams `response.output_audio.delta` at 24 kHz. The profile `turn-based` records it, and its export takes `--trace-format realtime-turn-based-pcm16-v1`:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_v15 record \
+    --profile turn-based \
+    --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
+    --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
+    --output "$OUT/recording"
+
+python -m benchmarks.eval.benchmark_duplex_reference export \
+    --engine model --trace-format realtime-turn-based-pcm16-v1 --run "$OUT/recording" \
+    --dataset-root "$FDB_DATASET" --out "$OUT/reference-audio"
+```
+
+- `--turn-detection` is required. These endpoints accept only `server_vad`, configured by `threshold`, `prefix_padding_ms` and `silence_duration_ms`. A session fails unless `session.updated` echoes the type under `session.audio.input.turn_detection`. The manifest records the setting under `config.turn_based`.
+- The session ends like a native one: `sglang.input_audio.end` at the input end, then `session.close` after `sglang.input_audio.drained`. The server first answers the utterance still open at the input end, so `--timeout` must cover the longest input plus that answer.
+- A response may end `completed` with reason `stop` or `empty_turn`, or `cancelled` with reason `interrupted`. Each cancellation needs its own earlier `input_audio_buffer.speech_started`, but not one during the response, because the server can create the reply it cancels after that event. Any `error` fails the session. `supports_truncate` may take either value.
+- The cut point differs from the legacy rule. These endpoints send no `output_audio_buffer.cleared`, so simulated playout and the export do not cut at `speech_started`; they drop queued audio when a `response.done` with status `cancelled` arrives. As for the legacy protocol, the export records `barge_in_cuts` and marks a session eligible only when its protocol verdict is `pass`.
+- v1.0 recordings export the same way: `benchmark_duplex_v10 reference-export --trace-format realtime-turn-based-pcm16-v1` resamples the 24 kHz audio to 16 kHz and keeps only sessions whose protocol verdict is `pass`.
+
 Score:
 
 ```bash
