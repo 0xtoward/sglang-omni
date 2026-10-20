@@ -2171,17 +2171,29 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
             req_output = mr_output.outputs[rid]
             session_unit = self.active_session_unit(rid)
-            if (
-                session_unit is not None
-                and _get_active_stage() == session_unit.stages[-1]
-            ):
-                assert bridge is not None
-                messages = bridge.stream_messages(rid, sched_req.data, req_output)
-            elif self.stream_output_builder is not None:
-                messages = self.stream_output_builder(rid, sched_req.data, req_output)
+            try:
+                if (
+                    session_unit is not None
+                    and _get_active_stage() == session_unit.stages[-1]
+                ):
+                    assert bridge is not None
+                    messages = bridge.stream_messages(rid, sched_req.data, req_output)
+                elif self.stream_output_builder is not None:
+                    messages = self.stream_output_builder(
+                        rid, sched_req.data, req_output
+                    )
+                else:
+                    continue
+                messages = list(messages)
+            except Exception as error:
+                logger.exception(
+                    f"OmniScheduler stream output failed for request {rid}"
+                )
+                self.emit_request_error(rid, error)
+                self.emit_model_path_end_once(rid, status="error")
+                self.abort(rid)
             else:
-                continue
-            self.stage_stream_messages(rid, messages, step_messages)
+                self.stage_stream_messages(rid, messages, step_messages)
         put_messages(self.outbox, step_messages)
 
     def stage_stream_messages(
