@@ -5,6 +5,10 @@ diarization on sglang-omni's native runtime (`sglang_omni_mlx/native`): C++
 binaries on MLX, with no Python runtime. Voxt starts and owns the selected
 server. Other models keep their Swift backend.
 
+To add or change a model here, read the
+[MLX path policy and contribution requirements](../../docs/developer_reference/mlx.md)
+first.
+
 | Checkpoint | Runtime | Voxt behavior kept |
 | --- | --- | --- |
 | `mlx-community/Qwen3-ASR-0.6B-4bit`, `mlx-community/Qwen3-ASR-1.7B-6bit`, `mlx-community/Qwen3-ASR-1.7B-8bit` | `qwen3_asr_server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second |
@@ -60,8 +64,7 @@ and quitting stops it.
   - On stdin, `{"command":"shutdown"}` makes it reply `stopped` and exit.
   - End of stdin, which happens when Voxt quits or crashes, also stops it, and so does a termination signal.
   - It is a single process, so stopping it leaves nothing behind.
-- The server API is the same as the reference Python server
-  (`sglang_omni_mlx.qwen3_asr.server`):
+- The Qwen3-ASR server API:
   - `/health` with `request_states`;
   - `/v1/models`;
   - `/v1/audio/transcriptions` (JSON or SSE);
