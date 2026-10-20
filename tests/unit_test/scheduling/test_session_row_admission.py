@@ -202,7 +202,7 @@ def test_session_units_stay_within_the_per_batch_limit(
 def open_pending_units(
     scheduler: AdmissionScheduler, *, retained_tokens: int, token_ids: list[int]
 ) -> ARSessionBridge:
-    """Two sessions whose slots hold retained_tokens of history, each with a queued unit of token_ids."""
+    """Create two pending units with retained session KV."""
     bridge = scheduler.session_bridge
     for session_id in ("session-a", "session-b"):
         scheduler.open_session(
@@ -221,14 +221,16 @@ def open_pending_units(
 
 
 @pytest.mark.parametrize(
+    "restore_other_unit", [False, True], ids=["pending", "restored"]
+)
+@pytest.mark.parametrize(
     ("spare_tokens", "capacity_message"),
     [(0, None), (-1, "session KV capacity exhausted")],
     ids=["fits", "one-token-short"],
 )
-def test_kv_check_counts_a_pending_unit_once_against_its_retained_history(
-    spare_tokens: int, capacity_message: str | None
+def test_kv_check_counts_retained_history_once_before_and_after_restore(
+    spare_tokens: int, capacity_message: str | None, restore_other_unit: bool
 ) -> None:
-    """Two pending units need only their tokens past the history their slots already hold."""
     scheduler = AdmissionScheduler(request_rows=4)
     bridge = open_pending_units(
         scheduler, retained_tokens=RETAINED_TOKEN_COUNT, token_ids=UNIT_TOKEN_IDS
@@ -237,6 +239,12 @@ def test_kv_check_counts_a_pending_unit_once_against_its_retained_history(
     scheduler.token_to_kv_pool_allocator.free_token_count = (
         2 * tokens_past_history + spare_tokens
     )
+    if restore_other_unit:
+        other_request = bridge.units_by_request_id["unit-session-b"].session_request
+        assert other_request is not None
+        scheduler.tree_cache.slots["session-b"].restore_to_req(other_request)
+    else:
+        pass
 
     message = bridge.check_session_capacity("unit-session-a")
 
@@ -257,7 +265,6 @@ def test_kv_check_reserves_whole_pages_past_the_pages_a_unit_holds(
     free_pages: int,
     capacity_message: str | None,
 ) -> None:
-    """With 16-token pages, growth inside a held page needs no slot and growth past it needs a whole page."""
     scheduler = AdmissionScheduler(request_rows=4, page_size=PAGE_SIZE)
     bridge = open_pending_units(
         scheduler,

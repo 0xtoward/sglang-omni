@@ -99,10 +99,14 @@ class BridgeScheduler(Protocol):
         pass
 
 
-def unowned_kv_slots(final_length: int, allocated_length: int, page_size: int) -> int:
-    """KV slots a request still takes: the whole pages its final length spans past the pages its allocated KV holds."""
+def additional_kv_slots(
+    final_token_count: int, allocated_token_count: int, page_size: int
+) -> int:
+    """Return additional token slots needed in whole KV pages."""
     return max(
-        0, ceil_align(final_length, page_size) - ceil_align(allocated_length, page_size)
+        0,
+        ceil_align(final_token_count, page_size)
+        - ceil_align(allocated_token_count, page_size),
     )
 
 
@@ -562,8 +566,7 @@ class ARSessionBridge:
             )
         else:
             allocator = self.bridge_scheduler.token_to_kv_pool_allocator
-            # note (0xtoward): The allocator hands out whole pages, so a page a unit already holds absorbs part of its growth.
-            required_kv_slots = unowned_kv_slots(
+            required_kv_slots = additional_kv_slots(
                 len(session_request.origin_input_ids)
                 + int(session_request.sampling_params.max_new_tokens or 0),
                 retained_kv_tokens,
@@ -581,14 +584,14 @@ class ARSessionBridge:
                     active_slot = cache.slots.get(
                         active_append_unit.session_identity.id
                     )
-                    # note (0xtoward): Until a unit takes its slot's KV, its retained history is still allocated in the slot.
+                    # note (0xtoward): Pending units have not taken their slot's KV yet.
                     allocated_kv_tokens = active_session_request.kv.kv_allocated_len + (
                         active_slot.kv.kv_allocated_len
                         if active_slot is not None
                         and not active_session_request.kv.holds_kv
                         else 0
                     )
-                    reserved_kv_slots += unowned_kv_slots(
+                    reserved_kv_slots += additional_kv_slots(
                         len(active_session_request.origin_input_ids)
                         + int(
                             active_session_request.sampling_params.max_new_tokens or 0
