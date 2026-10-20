@@ -43,7 +43,10 @@ from sglang_omni.models.minicpm_o.native_config import (
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
-from sglang_omni.models.minicpm_o.thinker_state import DuplexUnitRequestData
+from sglang_omni.models.minicpm_o.thinker_state import (
+    DuplexUnitRequestData,
+    MiniCPMOThinkerSessionState,
+)
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, SessionOperation, TimedChunk
 from sglang_omni.scheduling.session import SessionAppend
@@ -52,6 +55,7 @@ from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
     splice_embedding_spans,
 )
+from sglang_omni.scheduling.sglang_backend.unit_scorers import UnitScorer
 from tests.unit_test.fixtures.accelerator import require_cuda
 
 IDENTITY = SessionIdentity("vision")
@@ -1027,6 +1031,233 @@ def test_window_cuts_below_high_tokens_when_the_next_unit_would_not_fit(
         + request_data.req.sampling_params.max_new_tokens
         <= FIT_MAX_REQUEST_LENGTH - 1
     ) is fits
+
+
+class FixedUnitScorer(UnitScorer):
+    """Importance given up front, oldest unit first, so a test chooses what a scored cut drops."""
+
+    layer_stride = 1
+
+    def __init__(self, importance: list[float]) -> None:
+        self.importance = importance
+
+    def score(self, keys: torch.Tensor, unit_lengths: list[int]) -> torch.Tensor:
+        return torch.tensor(self.importance[: len(unit_lengths)], device=keys.device)
+
+
+KEYDIFF_WINDOW_ABOVE_TEST_HISTORY = MiniCPMODuplexWindow(
+    mode="keydiff", high_tokens=1000, low_tokens=900, protect_tokens=0
+)
+SCORED_UNITS = [CUT_UNITS[index % len(CUT_UNITS)] for index in range(8)]
+SCORED_IMPORTANCE = [0.9, 0.1, 0.8, 0.2, 0.7, 0.6]
+SCORED_DROPPED = (1, 3)
+
+
+@pytest.mark.parametrize(
+    ("importance", "protect_tokens", "dropped_ranges", "kept_starts"),
+    [
+        ([0.9, 0.1, 0.2, 0.8], 25, [(20, 40)], [10, 20, 30, 40]),
+        ([0.1, 0.9, 0.2, 0.8], 25, [(10, 20), (30, 40)], [10, 20, 30, 40]),
+        ([0.5, 0.4], 45, [(10, 40)], [10, 20, 30]),
+    ],
+    ids=["adjacent-units-merge", "apart", "protected-fallback"],
+)
+def test_scored_window_drops_the_least_important_units_first(
+    importance: list[float],
+    protect_tokens: int,
+    dropped_ranges: list[tuple[int, int]],
+    kept_starts: list[int],
+) -> None:
+    """Five finished 10-token units start at 10..50 and the newest at 60; the next unit starts at 70."""
+    next_unit_start = 70
+    state = MiniCPMOThinkerSessionState(sampling=MiniCPMODuplexSampling())
+    state.unit_starts = [10, 20, 30, 40, 50, 60]
+    target_start = next_unit_start - sum(end - start for start, end in dropped_ranges)
+
+    scoreable_count = state.scoreable_unit_count(next_unit_start, protect_tokens)
+    cut = state.drop_scored_units(next_unit_start, target_start, importance)
+
+    assert scoreable_count == len(
+        importance
+    ), "units within protect_tokens are not scored"
+    assert cut is not None and list(cut.ranges) == dropped_ranges, "dropped ranges"
+    assert (
+        state.unit_starts == kept_starts
+    ), "kept units move down by what went before them"
+
+
+@pytest.mark.parametrize(
+    "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
+)
+@pytest.mark.parametrize(
+    "kv_dtype", [torch.bfloat16, torch.float8_e4m3fn], ids=["bf16", "fp8"]
+)
+def test_scored_window_cut_moves_each_kept_stretch_by_what_was_dropped_before_it(
+    perception: MiniCPMOPerceptionState, device: str, kv_dtype: torch.dtype
+) -> None:
+    """Dropping units 1 and 3 moves unit 2 down by unit 1 and everything after unit 3 down by both."""
+    if device == "cuda":
+        require_cuda()
+    else:
+        pass
+    scheduler, bridge, adapter = open_window_session(
+        perception,
+        KEYDIFF_WINDOW_ABOVE_TEST_HISTORY,
+        device=device,
+        kv_dtype=kv_dtype,
+    )
+    finish_window_units(perception, scheduler, bridge, adapter, SCORED_UNITS[:7])
+    state = adapter.states[IDENTITY]
+    starts = list(state.unit_starts)
+    lengths = [len(unit_token_ids(unit)) for unit in SCORED_UNITS[:7]]
+    first, second = SCORED_DROPPED
+    cut_length = lengths[first] + lengths[second]
+    next_unit_start = starts[6] + lengths[6]
+    adapter.window = MiniCPMODuplexWindow(
+        mode="keydiff",
+        high_tokens=next_unit_start - 1,
+        low_tokens=next_unit_start - cut_length,
+        protect_tokens=0,
+    )
+    adapter.unit_scorer = FixedUnitScorer(SCORED_IMPORTANCE)
+    kv_end = scheduler.tree_cache.slots[IDENTITY.id].kv.kv_committed_len
+    keys_before, values_before = read_session_kv(scheduler, kv_end)
+    free_slots_before = scheduler.token_to_kv_pool_allocator.available_size()
+    buffer_addresses = kv_buffer_addresses(scheduler)
+
+    request_data = append_window_unit(perception, bridge, adapter, 7, SCORED_UNITS[7])
+    keys_after, values_after = read_session_kv(scheduler, kv_end - cut_length)
+
+    kept_units = [
+        (index, SCORED_UNITS[index])
+        for index in range(7)
+        if index not in SCORED_DROPPED
+    ]
+    assert observed_session_layout(request_data) == expected_session_layout(
+        kept_units, 7, SCORED_UNITS[7]
+    )
+    assert state.unit_starts == [
+        starts[0],
+        starts[2] - lengths[first],
+        *(starts[index] - cut_length for index in (4, 5, 6)),
+    ]
+    assert (
+        scheduler.token_to_kv_pool_allocator.available_size()
+        == free_slots_before + cut_length
+    ), "the cut returns one slot per dropped token"
+    kept_stretches = [
+        (0, starts[first], 0),
+        (starts[first + 1], starts[second], lengths[first]),
+        (starts[second + 1], kv_end, cut_length),
+    ]
+    for source_start, source_end, distance in kept_stretches:
+        source = slice(source_start, source_end)
+        target = slice(source_start - distance, source_end - distance)
+        assert same_bits(values_after[:, target], values_before[:, source])
+        if distance == 0:
+            assert same_bits(keys_after[:, target], keys_before[:, source])
+        else:
+            exact_keys = rotate_keys_exactly(keys_before[:, source], distance)
+            assert relative_error(
+                keys_after[:, target], exact_keys
+            ) <= 2 * relative_error(
+                exact_keys.to(kv_dtype), exact_keys
+            ), f"keys after the cut move down by {distance}, rotated once"
+    assert (
+        kv_buffer_addresses(scheduler) == buffer_addresses
+    ), "the cut keeps every buffer a captured graph reads"
+
+
+@pytest.mark.parametrize(
+    "kv_dtype", [torch.bfloat16, torch.float8_e4m3fn], ids=["bf16", "fp8"]
+)
+def test_keydiff_window_keeps_the_unit_whose_cached_keys_stand_out(
+    perception: MiniCPMOPerceptionState, kv_dtype: torch.dtype
+) -> None:
+    """Five units whose position-free keys share one direction go first; unit 2 points elsewhere and stays."""
+    rare_unit_index = 2
+    scheduler, bridge, adapter = open_window_session(
+        perception,
+        KEYDIFF_WINDOW_ABOVE_TEST_HISTORY,
+        kv_dtype=kv_dtype,
+    )
+    finish_window_units(perception, scheduler, bridge, adapter, SCORED_UNITS[:7])
+    starts = list(adapter.states[IDENTITY].unit_starts)
+    lengths = [len(unit_token_ids(unit)) for unit in SCORED_UNITS[:7]]
+    common_direction, rare_direction = torch.linalg.qr(
+        torch.randn((HEAD_DIM, 2), generator=torch.Generator().manual_seed(0))
+    )[0].T
+    slots = scheduler.req_to_token_pool.req_to_token[
+        scheduler.tree_cache.slots[IDENTITY.id].kv.req_pool_idx
+    ].to(torch.int64)
+    for unit_index in range(6):
+        direction = (
+            rare_direction if unit_index == rare_unit_index else common_direction
+        )
+        for position in range(starts[unit_index], starts[unit_index + 1]):
+            for layer_id in range(KV_LAYER_COUNT):
+                key_buffer = scheduler.kv_cache.get_key_buffer(layer_id)
+                storage_rows(key_buffer)[slots[position]] = storage_rows(
+                    rotate_keys_exactly(
+                        direction.expand(KV_HEAD_COUNT, HEAD_DIM), -position
+                    ).to(key_buffer)
+                )
+    next_unit_start = starts[6] + lengths[6]
+    common_length = sum(
+        length for index, length in enumerate(lengths[:6]) if index != rare_unit_index
+    )
+    adapter.window = MiniCPMODuplexWindow(
+        mode="keydiff",
+        high_tokens=next_unit_start - 1,
+        low_tokens=next_unit_start - common_length,
+        protect_tokens=0,
+    )
+
+    request_data = append_window_unit(perception, bridge, adapter, 7, SCORED_UNITS[7])
+
+    assert observed_session_layout(request_data) == expected_session_layout(
+        [(index, SCORED_UNITS[index]) for index in (rare_unit_index, 6)],
+        7,
+        SCORED_UNITS[7],
+    ), "the cut keeps the unit whose keys stand out and the newest unit"
+
+
+def test_keydiff_window_drops_the_oldest_units_once_an_abort_released_the_session_kv(
+    perception: MiniCPMOPerceptionState,
+) -> None:
+    """With no cached keys left to score, a keydiff cut drops the oldest units as the basic window does."""
+    next_unit = CUT_UNITS[CUT_UNIT_INDEX]
+    scheduler, bridge, adapter = open_window_session(
+        perception, KEYDIFF_WINDOW_ABOVE_TEST_HISTORY
+    )
+    finish_window_units(
+        perception, scheduler, bridge, adapter, CUT_UNITS[:CUT_UNIT_INDEX]
+    )
+    aborted_request_data = append_window_unit(
+        perception, bridge, adapter, CUT_UNIT_INDEX, next_unit
+    )
+    scheduler.run(
+        aborted_request_data.req, next_unit.generated_token_ids, FINISH_ABORT()
+    )
+    bridge.release_append_unit(aborted_request_data.req.rid)
+    adapter.window = MiniCPMODuplexWindow(
+        mode="keydiff",
+        high_tokens=CUT_WINDOW.high_tokens,
+        low_tokens=CUT_WINDOW.low_tokens,
+        protect_tokens=0,
+    )
+
+    request_data = append_window_unit(
+        perception, bridge, adapter, CUT_UNIT_INDEX + 1, next_unit
+    )
+    reused_length = finish_window_unit(
+        scheduler, bridge, adapter, request_data, next_unit
+    )
+
+    assert reused_length == 0, "the abort released the session KV"
+    assert observed_session_layout(request_data) == expected_session_layout(
+        [(2, CUT_UNITS[2])], CUT_UNIT_INDEX + 1, next_unit
+    ), "the oldest units go"
 
 
 @pytest.mark.parametrize(

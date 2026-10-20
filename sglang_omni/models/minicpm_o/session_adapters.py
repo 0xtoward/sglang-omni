@@ -33,8 +33,13 @@ from sglang_omni.proto.session import OutputChunk, SessionIdentity, TimedChunk
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     HistoryCut,
+    RetainedKeys,
 )
 from sglang_omni.scheduling.sglang_backend.request_data import EmbeddingSpan
+from sglang_omni.scheduling.sglang_backend.unit_scorers import (
+    KeyDiffUnitScorer,
+    UnitScorer,
+)
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.output import (
@@ -66,6 +71,10 @@ class ThinkerAdapter(ARSessionAdapter):
         self.vocab_size: int = vocab_size
         self.window: MiniCPMODuplexWindow = window
         self.rotary_embedding: RotaryEmbedding = rotary_embedding
+        # note (0xtoward): basic keeps the checkpoint's oldest-first cut; a scored mode ranks units with a scorer.
+        self.unit_scorer: UnitScorer | None = (
+            KeyDiffUnitScorer() if window.mode == "keydiff" else None
+        )
         self.special: MiniCPMOSpecialTokenIds = resolve_special_token_ids(
             tokenizer, bad_token_ids=tuple(tokenizer.bad_token_ids)
         )
@@ -155,23 +164,70 @@ class ThinkerAdapter(ARSessionAdapter):
         request_data: DuplexUnitRequestData,
         history_length: int,
         history_capacity: int,
+        retained_keys: RetainedKeys,
     ) -> HistoryCut | None:
         next_unit_start = history_length + request_data.unit_token_index
         # note (0xtoward): The checkpoint cuts after </unit>, which here lands with the next unit, so its <unit> position is the cache length it checks.
         fitting_start = history_capacity + request_data.unit_token_index
+        state = self.states[session_identity]
+        target_start = min(self.window.low_tokens, fitting_start)
         if self.window.mode == "off" or (
             next_unit_start <= self.window.high_tokens
             and next_unit_start <= fitting_start
         ):
             return None
+        elif self.unit_scorer is None:
+            return state.drop_oldest_units(next_unit_start, target_start)
         else:
-            return self.states[session_identity].drop_oldest_units(
-                next_unit_start, min(self.window.low_tokens, fitting_start)
+            scoreable_count = state.scoreable_unit_count(
+                next_unit_start, self.window.protect_tokens
+            )
+            # note (0xtoward): Every finished unit shapes the mean key, protected ones too; the cut only chooses among scoreable ones.
+            layer_keys = (
+                retained_keys.read(
+                    state.unit_starts[0],
+                    state.unit_starts[-1],
+                    self.unit_scorer.layer_stride,
+                )
+                if scoreable_count
+                else []
+            )
+            # note (0xtoward): Without retained KV (after an abort) there are no keys to score, so the oldest units go.
+            if layer_keys:
+                positions = torch.arange(
+                    state.unit_starts[0],
+                    state.unit_starts[-1],
+                    device=layer_keys[0].device,
+                )
+                unit_lengths = [
+                    end - start
+                    for start, end in zip(state.unit_starts, state.unit_starts[1:])
+                ]
+                unit_importance = (
+                    torch.stack(
+                        [
+                            self.unit_scorer.score(
+                                self.shift_key_positions(keys, positions), unit_lengths
+                            )
+                            for keys in layer_keys
+                        ]
+                    )
+                    .mean(dim=0)[:scoreable_count]
+                    .tolist()
+                )
+            else:
+                unit_importance = []
+            return state.drop_scored_units(
+                next_unit_start, target_start, unit_importance
             )
 
-    def shift_key_positions(self, keys: torch.Tensor, distance: int) -> torch.Tensor:
-        cosine, sine = (
-            self.rotary_embedding.cos_sin_cache[distance].to(torch.float32).chunk(2)
+    def shift_key_positions(
+        self, keys: torch.Tensor, distance: int | torch.Tensor
+    ) -> torch.Tensor:
+        cos_sin = self.rotary_embedding.cos_sin_cache[distance].to(torch.float32)
+        # note (0xtoward): One distance per key gives one cos/sin row per key, broadcast over the heads.
+        cosine, sine = (cos_sin if cos_sin.dim() == 1 else cos_sin[:, None]).chunk(
+            2, dim=-1
         )
         first_half, second_half = keys.to(torch.float32).chunk(2, dim=-1)
         return torch.cat(
