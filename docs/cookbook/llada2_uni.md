@@ -98,15 +98,17 @@ Image endpoints imply image output; no `modalities` field is required.
 `/v1/chat/completions` retains text and image-understanding requests; use the
 image endpoints for T2I and editing.
 
-Only non-thinking generation (`mode: "normal"`) is supported. This is separate
-from `decode_mode`, which selects `normal` or `decoder-turbo` diffusion decoding.
+The response's `usage` counts prompt and generated tokens, including both
+passes in thinking mode.
+
+Text-to-image supports `mode: "normal"` and `mode: "thinking"`. Editing supports
+only `mode: "normal"`. Generation mode is separate from `decode_mode`, which
+selects `normal` or `decoder-turbo` diffusion decoding.
 For normal decoding, `num_inference_steps` specifies at least two sampling
 points, giving `num_inference_steps - 1` solver intervals. For decoder-turbo, it specifies at
 least one decoder iteration. The examples use eight turbo iterations.
 When `decode_mode` is omitted, validation uses the decoder factory's configured
 mode, so a turbo factory accepts `num_inference_steps=1` without a mode override.
-Thinking and interleaved generation are incoming features and are not supported
-by this pipeline yet.
 
 Common controls include `seed`, `cfg_rescale`, and `dllm_steps`. T2I uses
 `guidance_scale` (the thinker's `cfg_scale`); editing uses `cfg_text_scale` and
@@ -118,6 +120,29 @@ then resizes proportionally and center-crops the image to that grid. Small
 images are enlarged without black padding; images already matching the grid
 are preserved. Aspect ratios beyond 4:1 or 1:4 require additional cropping.
 Image understanding retains its separate preprocessing and pixel budgets.
+
+## Thinking Image Generation
+
+Use the same `POST /v1/images/generations` endpoint with top-level
+`mode: "thinking"`. For example, add it to the T2I request above:
+
+```python
+request["mode"] = "thinking"
+response = requests.post(
+    "http://localhost:8000/v1/images/generations", json=request, timeout=600
+)
+response.raise_for_status()
+Path("thinking.png").write_bytes(
+    base64.b64decode(response.json()["data"][0]["b64_json"])
+)
+```
+
+The thinker first generates text with a 2048-token budget, stopping at
+`<boi>`. It then retains that context and generates the requested VQ grid
+with CFG before image decoding. Both phases must fit the configured context
+length. The native response remains `data[]` containing one PNG; it does not
+expose the thinking text. No `modalities` field is needed. Thinking-mode
+editing is unsupported, and chat completions remain for understanding.
 
 ## Text Input
 
@@ -233,11 +258,10 @@ The table below lists common text and image-understanding parameters for
 
 ### Incoming Features
 
-- Text-to-Image Generation with Thinking
 - Interleaved Generation
 
 ## Known Limitations
 
 - Image generation and editing return one image per non-streaming request.
-- Thinking mode and interleaved generation are incoming features and are not
-  supported by this pipeline yet.
+- Thinking mode supports text-to-image only.
+- Interleaved generation is an incoming feature.
