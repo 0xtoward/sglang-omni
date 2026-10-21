@@ -325,7 +325,7 @@ def test_speech_request_prefills_its_text() -> None:
         "output_ids": [999],
         "extra_model_outputs": thinker_request.extra_model_outputs,
     }
-    assert len(thinker_request.extra_model_outputs["hidden_states_seq"]) == 2
+    assert thinker_request.extra_model_outputs["hidden_states_seq"].shape == (2, 4)
     span = build_talker_request(
         state,
         tts_bos_token_id=151703,
@@ -336,6 +336,42 @@ def test_speech_request_prefills_its_text() -> None:
         span["tts_hidden"],
         torch.tensor([[3, 3, 3, 3], [4, 4, 4, 4]]),
     )
+
+
+def speech_state_with_hidden(
+    hidden_states: torch.Tensor | list[torch.Tensor],
+) -> MiniCPMOPipelineState:
+    return MiniCPMOPipelineState(
+        prompt={
+            "input_ids": torch.tensor([7, 151703, 100, 101, 151704]),
+            "known_tts_output_ids": [100, 101],
+        },
+        thinker_out={
+            "output_ids": [999],
+            "extra_model_outputs": {"hidden_states_seq": hidden_states},
+        },
+    )
+
+
+def test_talker_span_accepts_contiguous_and_row_list_hidden_states() -> None:
+    hidden_states = torch.tensor([[1.0, 1.0], [2.0, 2.0]])
+    for published in (hidden_states, list(hidden_states.unbind(0))):
+        span = build_talker_request(
+            speech_state_with_hidden(published),
+            tts_bos_token_id=151703,
+            tts_eos_token_id=151704,
+        )
+        assert span["tts_token_ids"].tolist() == [100, 101]
+        torch.testing.assert_close(span["tts_hidden"], hidden_states)
+
+
+def test_talker_span_rejects_hidden_states_without_rows() -> None:
+    with pytest.raises(ValueError, match="tokens, hidden_size"):
+        build_talker_request(
+            speech_state_with_hidden(torch.zeros(4)),
+            tts_bos_token_id=151703,
+            tts_eos_token_id=151704,
+        )
 
 
 def build_speech_talker_request(talker_params: dict[str, int]) -> SGLangARRequestData:
