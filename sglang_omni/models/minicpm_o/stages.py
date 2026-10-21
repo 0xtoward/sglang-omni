@@ -27,9 +27,12 @@ from sglang_omni.models.minicpm_o.native_config import TALKER_CONTEXT_LENGTH
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
     build_generation_batch_overrides,
+    operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
