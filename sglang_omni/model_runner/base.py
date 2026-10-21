@@ -153,6 +153,9 @@ class ModelRunner(Generic[RequestDataInput]):
       - decode hooks for single-step autoregressive decode processing
     """
 
+    # True when the model's own speculative verify applies repetition_penalty exactly.
+    speculative_verifies_repetition_penalty: bool = False
+
     def __init__(
         self,
         tp_worker: ModelWorker,

@@ -1958,6 +1958,54 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     assert "Lower max_tokens" in message
 
 
+@pytest.mark.parametrize(
+    (
+        "sampling_overrides",
+        "return_logprob",
+        "verifies_repetition_penalty",
+        "refused_option",
+    ),
+    [
+        ({}, False, False, None),
+        ({}, True, False, "logprobs"),
+        ({"min_p": 0.05}, False, False, "min_p"),
+        ({"frequency_penalty": 0.5}, False, False, "frequency_penalty"),
+        ({"presence_penalty": 0.5}, False, False, "presence_penalty"),
+        ({"repetition_penalty": 1.2}, False, False, "repetition_penalty"),
+        ({"repetition_penalty": 1.2}, False, True, None),
+    ],
+)
+def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
+    sampling_overrides: dict[str, float],
+    return_logprob: bool,
+    verifies_repetition_penalty: bool,
+    refused_option: str | None,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.model_runner = SimpleNamespace(
+        speculative_verifies_repetition_penalty=verifies_repetition_penalty
+    )
+    sampling_params = {
+        "min_p": 0.0,
+        "frequency_penalty": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0,
+    }
+    sampling_params.update(sampling_overrides)
+    request = SimpleNamespace(sampling_params=SimpleNamespace(**sampling_params))
+    request_data = SimpleNamespace(return_logprob=return_logprob)
+
+    error = scheduler.speculative_request_error(request, request_data)
+
+    if refused_option is None:
+        assert error is None
+    else:
+        assert refused_option in error
+    scheduler.draft_worker = None
+    assert scheduler.speculative_request_error(request, request_data) is None
+
+
 def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> None:
     """A Fish abort landing mid-step defers per-request cleanup to the
     upstream FINISH_ABORT path, leaves the buffered codes unconsumed, and

@@ -253,8 +253,6 @@ class NoOpGrammarManager:
         return 0
 
 
-# Decode steps between speculative acceptance log lines.
-SPECULATIVE_LOG_INTERVAL_STEPS = 200
 # note (luojiaxuan): a build done this soon joins the next batch, not the one after.
 _REQUEST_BUILD_ADMISSION_WAIT_S = 0.002
 
@@ -314,9 +312,6 @@ class OmniScheduler(Generic[RequestDataT]):
     previous_pending_decode: PendingDecode | None = None
     async_decode_resolve_before_prefill: bool = False
     draft_worker: BaseSpecWorker | None = None
-    speculative_verify_count: int = 0
-    speculative_token_count: int = 0
-    speculative_step_count: int = 0
 
     def __init__(
         self,
@@ -1722,10 +1717,14 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
         else:
             pass
-        kv_error = self.request_kv_capacity_error(req)
-        if kv_error is not None:
-            logger.warning(f"Rejecting request {req_id} before scheduling: {kv_error}")
-            self.emit_request_error(req_id, ValueError(kv_error))
+        admission_error = self.request_kv_capacity_error(
+            req
+        ) or self.speculative_request_error(req, req_data)
+        if admission_error is not None:
+            logger.warning(
+                f"Rejecting request {req_id} before scheduling: {admission_error}"
+            )
+            self.emit_request_error(req_id, ValueError(admission_error))
             self.abort(req_id)
             return
         else:
@@ -1922,6 +1921,41 @@ class OmniScheduler(Generic[RequestDataT]):
             f"{mem_hint}"
         )
 
+    def speculative_request_error(
+        self, request: Req, request_data: RequestDataT | SGLangARRequestData
+    ) -> str | None:
+        """Name the sampling options the draft worker would not reproduce exactly."""
+        if self.draft_worker is None:
+            return None
+        else:
+            pass
+        sampling_params = request.sampling_params
+        # note (wilsonzheng0327): SGLang's draft workers drop min_p and apply each
+        # penalty once per verify block, and logprobs come from the runner's sampler,
+        # which speculative decode bypasses.
+        unsupported_options = [
+            option_name
+            for option_name, is_set in (
+                ("logprobs", request_data.return_logprob),
+                ("min_p", sampling_params.min_p > 0.0),
+                ("frequency_penalty", sampling_params.frequency_penalty != 0.0),
+                ("presence_penalty", sampling_params.presence_penalty != 0.0),
+                (
+                    "repetition_penalty",
+                    sampling_params.repetition_penalty != 1.0
+                    and not self.model_runner.speculative_verifies_repetition_penalty,
+                ),
+            )
+            if is_set
+        ]
+        if unsupported_options:
+            return (
+                f"Speculative decoding does not support "
+                f"{', '.join(unsupported_options)}. Unset them for this request."
+            )
+        else:
+            return None
+
     def emit_request_error(self, request_id: str, error: Exception) -> None:
         if not self.is_entry_rank:
             return
@@ -2106,23 +2140,6 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def process_batch_result(self, batch, result) -> None:
         _Upstream.process_batch_result(self, batch, result)
-        if self.draft_worker is not None and batch.forward_mode.is_decode():
-            batch_size = batch.batch_size()
-            self.speculative_verify_count += batch_size
-            self.speculative_token_count += result.get_num_generated_tokens(batch_size)
-            self.speculative_step_count += 1
-            if self.speculative_step_count % SPECULATIVE_LOG_INTERVAL_STEPS == 0:
-                logger.info(
-                    f"Speculative decode: "
-                    f"{self.speculative_token_count / self.speculative_verify_count:.3f} "
-                    f"tokens per verify (tokens={self.speculative_token_count}, "
-                    f"verifies={self.speculative_verify_count}, "
-                    f"steps={self.speculative_step_count}, batch={batch_size})"
-                )
-            else:
-                pass
-        else:
-            pass
         # note (Richard Wang): cache prompt before blocking tail inserts
         for req in batch.reqs:
             if req.output_ids and getattr(
@@ -2185,7 +2202,9 @@ class OmniScheduler(Generic[RequestDataT]):
     def run_speculative_batch(self, batch: ScheduleBatch) -> GenerationBatchResult:
         """Drive the draft worker synchronously, as the scheduler does without overlap.
 
-        Tokens are emitted later by stream_output, once finishing trims them at the stop.
+        Mirrors the synchronous speculative branch of upstream Scheduler.run_batch;
+        diff the two on every SGLang upgrade. Tokens are emitted later by
+        stream_output, once finishing trims them at the stop.
         """
         if batch.forward_mode.is_extend():
             # note (wilsonzheng0327): a re-prefilled request samples its next token
