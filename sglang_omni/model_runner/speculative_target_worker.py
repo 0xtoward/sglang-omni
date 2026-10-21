@@ -61,8 +61,18 @@ class SpeculativeTargetWorker:
     ) -> GenerationBatchResult:
         if pp_proxy_tensors is not None:
             raise ValueError("speculative decoding does not support pipeline parallel")
-        elif forward_batch is not None:
-            assert batch is None and is_verify
+        elif is_verify:
+            # note (0xtoward): EAGLE and DFlash hand over the forward batch they planned;
+            # NGRAM hands over the schedule batch.
+            if forward_batch is None:
+                forward_batch = ForwardBatch.init_new(
+                    batch,
+                    self.model_runner,
+                    capture_hidden_mode=capture_hidden_mode,
+                    return_hidden_states_before_norm=False,
+                )
+            else:
+                assert batch is None
             forward_batch.apply_deprecated_skip_attn_backend_init(
                 skip_attn_backend_init
             )
