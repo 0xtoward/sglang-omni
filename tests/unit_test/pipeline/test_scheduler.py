@@ -22,7 +22,7 @@ import pytest
 import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
-from sglang.srt.managers.schedule_batch import FINISH_LENGTH, ReqKvInfo
+from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ReqKvInfo
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import (
     CacheRequestHandle,
@@ -524,7 +524,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         lambda rid, *, status: model_path_events.append(("end", rid, status)),
     )
 
-    def release_kv_cache(req, cache) -> None:
+    def release_kv_cache(req, cache, *, checkpoint) -> None:
         skip_insert = getattr(req, "skip_radix_cache_insert", False)
         release_calls.append((req.rid, cache, skip_insert))
         if len(release_calls) == 1:
@@ -647,6 +647,8 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     trace_aborts: list[dict] = []
     req = SimpleNamespace(
         rid="req-over-limit",
+        release_mm_inputs_on_abort=Mock(),
+        session=None,
         cache_request_handle=CacheRequestHandle(rid="req-over-limit", attempt_id=0),
         priority=None,
         weight_version_events=[],
@@ -1187,6 +1189,7 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
     scheduler.is_entry_rank = True
     scheduler.enable_hierarchical_cache = False
     scheduler.forward_ct = 1
+    scheduler.enable_skip_finishing_decode = False
     scheduler.server_args = SimpleNamespace()
     scheduler.decode_offload_manager = None
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 0)
@@ -1222,8 +1225,8 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
         def batch_size(self) -> int:
             return len(self.reqs)
 
-        def filter_batch(self) -> None:
-            pass
+        def filter_batch(self, *, reqs_to_exclude: set[Req]) -> None:
+            assert not reqs_to_exclude
 
         def is_empty(self) -> bool:
             return not self.reqs
@@ -1451,7 +1454,7 @@ def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
 ) -> None:
     """Immediate abort cleanup must not hide allocator failures."""
 
-    def fail_release(_req, _cache) -> None:
+    def fail_release(_req, _cache, *, checkpoint) -> None:
         raise RuntimeError("kv cleanup failed")
 
     monkeypatch.setattr(omni_scheduler_module, "release_kv_cache", fail_release)
@@ -1494,7 +1497,7 @@ def test_omni_scheduler_abort_marks_running_request_for_finish(monkeypatch) -> N
     monkeypatch.setattr(
         omni_scheduler_module,
         "release_kv_cache",
-        lambda req, _cache: release_calls.append(req.rid),
+        lambda req, _cache, *, checkpoint: release_calls.append(req.rid),
     )
     model_path_ends: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -3038,7 +3041,6 @@ def construct_omni_scheduler(
         schedule_policy="fcfs",
         enable_hierarchical_cache=False,
         enable_hisparse=False,
-        enable_dp_attention=False,
         enable_priority_scheduling=False,
         disable_priority_preemption=False,
         schedule_low_priority_values_first=False,
@@ -3360,7 +3362,6 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         schedule_policy="fcfs",
         enable_hierarchical_cache=False,
         enable_hisparse=False,
-        enable_dp_attention=False,
         enable_priority_scheduling=False,
         disable_priority_preemption=False,
         schedule_low_priority_values_first=False,
@@ -3447,7 +3448,6 @@ def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
         schedule_policy="fcfs",
         enable_hierarchical_cache=False,
         enable_hisparse=False,
-        enable_dp_attention=False,
         enable_priority_scheduling=False,
         disable_priority_preemption=False,
         schedule_low_priority_values_first=False,

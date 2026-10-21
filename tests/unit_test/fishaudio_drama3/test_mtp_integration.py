@@ -654,12 +654,13 @@ def test_streamed_and_result_frames_stay_on_cpu_under_another_default_device() -
 
 
 def admitted_for_prefill(data: Drama3RequestData, start: int, end: int) -> None:
-    """Leave the request as prefill admission does: fill ids rebuilt, extend range set."""
+    """Leave the request as prefill admission does: fill ids rebuilt, extend bounds set."""
     req = data.req
     assert req is not None
     # Without a tree cache this only rebuilds fill ids; no prefix is matched.
     req.init_next_round_input()
-    req.set_extend_range(start, end)
+    req.prefix_len = start
+    req.extend_end = end
 
 
 def test_prefill_rows_cover_the_whole_history_after_a_retract() -> None:
@@ -678,11 +679,11 @@ def test_prefill_rows_cover_the_whole_history_after_a_retract() -> None:
 
 
 @pytest.mark.parametrize(
-    "extend_range", [(0, 3), (1, 4)], ids=["partial-chunk", "cached-prefix"]
+    "extend_bounds", [(0, 3), (1, 4)], ids=["partial-chunk", "cached-prefix"]
 )
-def test_prefill_rows_reject_a_partial_extend(extend_range: tuple[int, int]) -> None:
+def test_prefill_rows_reject_a_partial_extend(extend_bounds: tuple[int, int]) -> None:
     data = built_request(frame_rows_of([4], seed=4)[0])
-    admitted_for_prefill(data, *extend_range)
+    admitted_for_prefill(data, *extend_bounds)
 
     with pytest.raises(RuntimeError, match="whole sequence"):
         extend_frame_rows(data)
@@ -1319,9 +1320,9 @@ class SuppliedBatchRunner(Drama3ModelRunner):
             for request in scheduler_output.requests:
                 sglang_request = request_data_of(request).req
                 assert sglang_request is not None
-                assert sglang_request.extend_range is not None
+                assert sglang_request.extend_end is not None
                 request_slots.append(sglang_request.kv.req_pool_idx)
-                extend_row_count += sglang_request.extend_range.length
+                extend_row_count += sglang_request.extend_len
             forward_batch.req_pool_indices = torch.tensor(
                 request_slots, dtype=torch.int64
             )
@@ -2365,13 +2366,11 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         ({"disable_radix_cache": False}, "disable_radix_cache"),
         ({"chunked_prefill_size": 64}, "chunked_prefill_size"),
         ({"cuda_graph_backend_prefill": "full"}, "breakable CUDA graph"),
-        ({"cuda_graph_backend_prefill": "tc_piecewise"}, "breakable CUDA graph"),
         (
             {"cuda_graph_config": {"prefill": {"backend": "full"}}},
             "breakable CUDA graph",
         ),
         ({"cuda_graph_backend_decode": "breakable"}, "full decode CUDA graphs"),
-        ({"cuda_graph_backend_decode": "tc_piecewise"}, "full decode CUDA graphs"),
         (
             {"cuda_graph_config": {"decode": {"backend": "breakable"}}},
             "full decode CUDA graphs",
@@ -2386,10 +2385,8 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         "radix",
         "chunked-prefill",
         "full-prefill-graph",
-        "piecewise-prefill-graph",
         "nested-prefill-graph",
         "breakable-decode-graph",
-        "piecewise-decode-graph",
         "nested-decode-graph",
         "overlap",
         "flashinfer",

@@ -12,8 +12,12 @@ import numpy.typing as npt
 import pytest
 import torch
 from PIL import Image
-from sglang.srt.mem_cache.chunk_cache import ChunkCache
-from sglang.srt.mem_cache.common import maybe_cache_unfinished_req
+from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
+from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+from sglang.srt.mem_cache.common import checkpoint_kv_cache
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.minicpm_o.components import preprocessor as preprocessor_mod
@@ -451,17 +455,21 @@ def test_speech_prefill_advances_by_chunk_in_its_own_cache_namespace() -> None:
     assert first.extra_key != second.extra_key
 
     # SGLang stashes a finished chunk so that the next chunk starts after it.
-    chunk_cache = ChunkCache(
-        SimpleNamespace(
-            req_to_token_pool=SimpleNamespace(req_to_token=torch.arange(4).view(1, 4)),
-            token_to_kv_pool_allocator=None,
+    tree_cache = UnifiedRadixCache(
+        CacheInitParams(
+            disable=True,
+            req_to_token_pool=ReqToTokenPool(1, 4, "cpu", enable_memory_saver=False),
+            token_to_kv_pool_allocator=TokenToKVPoolAllocator(
+                8, torch.float32, "cpu", None, False
+            ),
             page_size=1,
+            tree_components=(ComponentType.FULL,),
         )
     )
     first.kv.req_pool_idx = 0
-    first.set_extend_range(0, 2)
-    maybe_cache_unfinished_req(first, chunk_cache, chunked=True)
-    assert first.prefix_indices.tolist() == [0, 1]
+    first.extend_end = 2
+    checkpoint_kv_cache(first, tree_cache)
+    assert first.prefix_len == 2
 
 
 def test_ordered_inline_media_preserves_turns_and_text_separators(

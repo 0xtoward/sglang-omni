@@ -174,12 +174,16 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
             self.vocab_size = vocab_size
             self.extra_key = extra_key
             self.output_ids = []
-            self.prefix_indices = []
-            self.extend_range = SimpleNamespace(length=len(origin_input_ids))
+            self.prefix_len = 0
+            self.extend_end = len(origin_input_ids)
+
+        @property
+        def extend_len(self) -> int:
+            return self.extend_end - self.prefix_len
 
         def reset_for_retract(self) -> None:
-            self.prefix_indices = []
-            self.extend_range = None
+            self.prefix_len = 0
+            self.extend_end = None
 
     class FakeSamplingParams:
         def __init__(self, **kwargs) -> None:

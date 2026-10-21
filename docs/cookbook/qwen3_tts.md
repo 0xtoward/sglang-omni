@@ -13,7 +13,7 @@ endpoint.
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
-dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.21 stack remains
+dependencies so the SGLang-Omni Transformers 5.19 / SGLang 0.5.22 stack remains
 in place:
 
 ```bash
@@ -24,7 +24,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 
 `--no-deps` is required on **both** lines, for two different reasons.
 
-`qwen-tts` pins Transformers 4.57.3, which would replace the project's 5.12.1.
+`qwen-tts` pins Transformers 4.57.3, which would replace the project's 5.19.0.
 And resolving `sox` normally pulls `numpy` past the ceiling `numba==0.65.1`
 imposes (numba requires `numpy<=2.4`); the upgraded `numpy` then breaks
 `librosa`, so `import qwen_tts` fails with `Numba needs NumPy 2.4 or less`
@@ -42,7 +42,7 @@ factories (`create_causal_mask` and friends), which now spell `input_embeds` as
 `inputs_embeds` and no longer accept `cache_position`. SGLang-Omni patches these
 differences in
 `sglang_omni/models/qwen3_tts/compat.py`, which every Qwen3-TTS entry point
-applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.21
+applies before importing `qwen_tts`. The pinned Transformers 5.19 / SGLang 0.5.22
 stack is therefore the supported configuration, not a workaround.
 
 If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by

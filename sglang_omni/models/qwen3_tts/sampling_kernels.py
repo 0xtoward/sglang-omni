@@ -132,7 +132,7 @@ if has_triton_runtime():
     ):
         """One compare-exchange round of PyTorch's small descending sort.
 
-        Under the repository's ``torch==2.13.0`` pin,
+        Under the repository's torch pin,
         ``torch.topk(..., sorted=True)`` first gathers the selected entries and
         then uses this unstable 32-entry bitonic network for k <= 32. The
         equality behavior is observable by the seeded sampler, so a regular
