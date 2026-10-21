@@ -55,6 +55,10 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
     def lm_head(self) -> nn.Module:
         return self.language_model.lm_head
 
+    def get_input_embeddings(self) -> nn.Embedding:
+        # note (0xtoward): prefill graph replay embeds a text-only batch itself.
+        return self.language_model.get_input_embeddings()
+
     def forward(
         self,
         input_ids: torch.Tensor,
