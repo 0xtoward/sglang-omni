@@ -86,6 +86,13 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
 
     def set_eagle3_layers_to_capture(self, layer_ids: list[int] | None = None) -> None:
         self.language_model.set_eagle3_layers_to_capture(layer_ids)
+        self.keep_hidden_rows_for_talker()
+
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        self.language_model.set_dflash_layers_to_capture(layer_ids)
+        self.keep_hidden_rows_for_talker()
+
+    def keep_hidden_rows_for_talker(self) -> None:
         # note (0xtoward): captured verify and prefill graphs rewrite these fixed buffers on replay.
         head = self.language_model.lm_head.weight
         self.speculative_hidden_rows = torch.empty(
@@ -98,9 +105,6 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
         self.language_model.model.register_forward_hook(
             self.keep_speculative_hidden_rows, with_kwargs=True
         )
-
-    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
-        self.language_model.set_dflash_layers_to_capture(layer_ids)
 
     def forward(
         self,
