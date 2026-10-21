@@ -52,6 +52,8 @@ def test_cosyvoice3_runner_reads_cuda_token_ids_through_pinned_staging() -> None
     runner.outbox = None
     runner.token_id_host_bufs = None
     runner.token_id_host_slot = 0
+    runner.token_id_events = []
+    runner.token_id_event_slot = 0
     requests = [
         SimpleNamespace(data=CosyVoice3SGLangRequestData()),
         SimpleNamespace(data=CosyVoice3SGLangRequestData()),
@@ -317,6 +319,8 @@ def test_cosyvoice3_seeded_ras_redraw_of_a_row_subset_matches_the_full_draw() ->
     runner = object.__new__(FunCosyVoice3ModelRunner)
     runner.token_id_host_bufs = None
     runner.token_id_host_slot = 0
+    runner.token_id_events = []
+    runner.token_id_event_slot = 0
     runner.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(sampler=SimpleNamespace(use_ascend_backend=False))
     )

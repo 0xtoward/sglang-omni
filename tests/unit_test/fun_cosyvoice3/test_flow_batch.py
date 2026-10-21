@@ -218,6 +218,31 @@ def test_pack_flow_inputs_keeps_prompt_and_target_contiguous() -> None:
     ]
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_pack_flow_inputs_uploads_without_a_host_wait() -> None:
+    items = [
+        make_input([0, 8, 0], prompt_token=[4], prompt_value=0.5),
+        make_input([0], prompt_token=[5, 6, 7], prompt_value=1.5),
+    ]
+    reference = pack_flow_inputs(FakeFlow(), items)
+    flow = FakeFlow().cuda()
+    sync_debug_mode = torch.cuda.get_sync_debug_mode()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        packed = pack_flow_inputs(flow, items)
+    finally:
+        torch.cuda.set_sync_debug_mode(sync_debug_mode)
+    assert torch.equal(packed.token.cpu(), reference.token)
+    assert torch.equal(packed.token_mask.cpu(), reference.token_mask)
+    assert torch.equal(
+        packed.combined_token_lengths_tensor.cpu(),
+        reference.combined_token_lengths_tensor,
+    )
+    assert torch.equal(packed.prompt_feat.cpu(), reference.prompt_feat)
+    assert torch.equal(packed.embedding.cpu(), reference.embedding)
+
+
 def test_pack_flow_inputs_builds_variable_length_token_masks() -> None:
     packed = pack_flow_inputs(
         FakeFlow(),

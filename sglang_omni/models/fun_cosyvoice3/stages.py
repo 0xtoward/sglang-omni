@@ -24,6 +24,7 @@ from numpy.typing import ArrayLike
 from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
+from sglang.srt.utils.common import async_d2h, is_pin_memory_available
 from torch._inductor.runtime.compile_tasks import _set_triton_libdevice_path
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 from x_transformers.x_transformers import apply_rotary_pos_emb
@@ -206,6 +207,24 @@ class HiftStepRow:
 
 
 @dataclass(kw_only=True, frozen=True)
+class HiftStepSamples:
+    """A streaming HiFT step's new samples per row and each row's emitted samples after
+    it. With copy_done the new samples view a pinned host copy, complete once it is."""
+
+    new_samples: list[torch.Tensor]
+    emitted_samples: list[int]
+    copy_done: torch.cuda.Event | None
+
+    def wait(self) -> list[torch.Tensor]:
+        """Each row's new samples on the host, once the copy has landed."""
+        if self.copy_done is not None:
+            self.copy_done.synchronize()
+        else:
+            pass
+        return self.new_samples
+
+
+@dataclass(kw_only=True, frozen=True)
 class HiftDecodeWindow:
     """The mel frames a row's decode covers, from start_frame, emitting from
     emitted_frame up to end_frame."""
@@ -297,18 +316,20 @@ def pack_flow_inputs(
         length * flow.token_mel_ratio for length in combined_lengths
     )
     combined_token_lengths_tensor = torch.tensor(
-        combined_lengths, dtype=torch.int64, device=device
-    )
+        combined_lengths,
+        dtype=torch.int64,
+        pin_memory=is_pin_memory_available(device),
+    ).to(device, non_blocking=True)
 
     max_tokens = max(combined_lengths)
     token = torch.zeros(len(inputs), max_tokens, dtype=torch.int32, device=device)
     for index, item in enumerate(inputs):
         prompt_length = prompt_lengths[index]
         token[index, :prompt_length] = item.prompt_token[0].to(
-            device=device, dtype=torch.int32
+            device=device, dtype=torch.int32, non_blocking=True
         )
         token[index, prompt_length : combined_lengths[index]] = item.token[0].to(
-            device=device, dtype=torch.int32
+            device=device, dtype=torch.int32, non_blocking=True
         )
     token_mask = (
         torch.arange(max_tokens, device=device).unsqueeze(0)
@@ -321,10 +342,14 @@ def pack_flow_inputs(
     )
     for index, item in enumerate(inputs):
         prompt_feat[index, : prompt_mel_lengths[index]] = item.prompt_feat[0].to(
-            device=device, dtype=dtype
+            device=device, dtype=dtype, non_blocking=True
         )
     embedding = torch.cat(
-        [item.embedding.to(device=device, dtype=dtype) for item in inputs], dim=0
+        [
+            item.embedding.to(device=device, dtype=dtype, non_blocking=True)
+            for item in inputs
+        ],
+        dim=0,
     )
     return PackedFlowBatch(
         token=token,
@@ -1187,6 +1212,10 @@ def load_cosyvoice3_flow_hift(
     flow.to(device).eval()
     hift.to(device).eval()
     keep_hift_constants_on_device(hift, device)
+    patch_sine_harmonics(hift, device)
+    # note (ratish): a plain attribute, so flow.to(device) leaves it on the host and
+    # every Flow call uploads its slice, waiting for the work queued on the stream.
+    flow.decoder.rand_noise = flow.decoder.rand_noise.to(device)
     patch_causal_conv_cache()
     # note (Dayuxiaoshui): folding weight_norm is the only load-time step
     # batched decode needs.
@@ -1318,6 +1347,32 @@ def keep_hift_constants_on_device(hift: "CausalHiFTGenerator", device: str) -> N
     # note(ratish): HiFT.inference casts the f0 predictor to float64 on every
     # call; done once here the per-call cast finds nothing to convert.
     hift.f0_predictor.to(torch.float64)
+
+
+def patch_sine_harmonics(hift: "CausalHiFTGenerator", device: str) -> None:
+    """Give SineGen2 its harmonic multipliers on the device, bit for bit. Its forward
+    builds them on the host every call, and their pageable upload waits for all the work
+    queued on the stream."""
+    sine_generator = hift.m_source.l_sin_gen
+    harmonics = torch.arange(
+        1, sine_generator.harmonic_num + 2, dtype=torch.float32, device=device
+    ).view(1, 1, -1)
+
+    def forward(f0: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        sine_waves = (
+            sine_generator._f02sine(  # noqa: leading-underscore  # upstream name
+                torch.multiply(f0, harmonics)
+            )
+            * sine_generator.sine_amp
+        )
+        uv = sine_generator._f02uv(f0)  # noqa: leading-underscore  # upstream name
+        noise_amp = (
+            uv * sine_generator.noise_std + (1 - uv) * sine_generator.sine_amp / 3
+        )
+        noise = noise_amp * sine_generator.sine_waves[:, : sine_waves.shape[1]]
+        return sine_waves * uv + noise, uv, noise
+
+    sine_generator.forward = forward
 
 
 def load_cosyvoice3_flow_hift_lightweight(
@@ -1760,9 +1815,17 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
                 hift.decode = ChannelsLastHiftDecode(hift, device)
             else:
                 pass
+            # note (ratish): a step completes after the next one is launched, so two
+            # events serve every step in turn; a new event's first record waits while
+            # another thread of the process is inside the CUDA runtime.
+            self.copy_done_events: list[torch.cuda.Event] = [
+                torch.cuda.Event() for _ in range(2)
+            ]
         else:
             self.stream_context = contextlib.nullcontext()
             self.has_hift_kernels = False
+            self.copy_done_events = []
+        self.copy_done_slot: int = 0
 
     def prepare_item(
         self, payload: StagePayload
@@ -2027,9 +2090,9 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
         return delta, tts_mel.detach(), int(tts_speech.shape[1])
 
     @torch.inference_mode()
-    def hift_step(self, rows: Sequence[HiftStepRow]) -> list[tuple[torch.Tensor, int]]:
-        """HiFT over the rows of a streaming step. Returns each row's new samples
-        and its emitted sample count afterwards."""
+    def hift_step(self, rows: Sequence[HiftStepRow]) -> HiftStepSamples:
+        """HiFT over the rows of a streaming step: each row's new samples and its
+        emitted sample count afterwards."""
         windows: list[HiftDecodeWindow] = []
         for row in rows:
             history_frames = int(row.history.shape[2])
@@ -2061,7 +2124,20 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
         for members in groups.values():
             decoded = self.hift_group([windows[index] for index in members])
             outputs.update(zip(members, decoded, strict=True))
-        return [outputs[index] for index in range(len(rows))]
+        ordered = [outputs[index] for index in range(len(rows))]
+        if self.copy_done_events:
+            copy_done: torch.cuda.Event | None = self.copy_done_events[
+                self.copy_done_slot
+            ]
+            self.copy_done_slot ^= 1
+            copy_done.record()
+        else:
+            copy_done = None
+        return HiftStepSamples(
+            new_samples=[samples for samples, _ in ordered],
+            emitted_samples=[emitted for _, emitted in ordered],
+            copy_done=copy_done,
+        )
 
     def hift_group(
         self, windows: Sequence[HiftDecodeWindow]
@@ -2151,7 +2227,12 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
             speech = hift.decode(x=window_mel, s=window_source, finalize=True)
         else:
             speech = runner.run(window_mel, window_source)
-        speech = speech.detach().cpu()
+        # note (ratish): queued on this stream, the copy reads a replay's output before
+        # any later replay of the pool overwrites it.
+        if self.copy_done_events:
+            speech = async_d2h(speech.detach())
+        else:
+            speech = speech.detach().cpu()
         return [
             (
                 speech[
@@ -2159,7 +2240,7 @@ class CosyVoice3Vocoder(BatchVocoderBase[FunCosyVoice3State, torch.Tensor]):
                     (window.emitted_frame - origin)
                     * samples_per_frame : (window.end_frame - origin)
                     * samples_per_frame,
-                ].contiguous(),
+                ],
                 window.end_frame * samples_per_frame,
             )
             for index, (window, origin) in enumerate(
