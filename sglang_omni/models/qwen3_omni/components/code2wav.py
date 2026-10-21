@@ -55,7 +55,7 @@ def causal_conv(
     assert conv.stride == (1,), "code2wav causal convs are stride 1"
     length = hidden_states.shape[1]
     padded = F.pad(hidden_states, (0, 0, module.padding, (-length) % conv.dilation[0]))
-    return channels_last_conv1d(padded, conv, conv.weight, length)
+    return channels_last_conv1d(padded, conv, conv.weight, conv.bias, length)
 
 
 def causal_transconv(
