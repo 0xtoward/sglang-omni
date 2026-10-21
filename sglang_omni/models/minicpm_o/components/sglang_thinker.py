@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Iterator
 
 import torch
@@ -17,6 +18,8 @@ from sglang_omni.models.minicpm_o.hf_config import derive_text_config
 
 # note (0xtoward): verify rows kept for the talker, room for every running request's block.
 SPECULATIVE_HIDDEN_ROWS = 8192
+
+CAPTURE_LAYER_IDS = (1, 9, 17, 25, 33)
 
 NON_TEXT_PREFIXES = (
     "vpm.",
@@ -45,7 +48,19 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
             prefix=prefix,
         )
         self.speculative_hidden_rows: torch.Tensor | None = None
+        self.capture_streams: list[torch.Tensor] = []
+        self.capture_last_hidden: torch.Tensor | None = None
+        if os.environ.get("SGLANG_OMNI_MINICPMO_CAPTURE_DIR"):
+            self.language_model.set_dflash_layers_to_capture(list(CAPTURE_LAYER_IDS))
+            self.language_model.model.register_forward_hook(self.capture_backbone_output)
+        else:
+            pass
         self.prefill_last_hidden: torch.Tensor | None = None
+
+    def capture_backbone_output(self, module, args, output) -> None:
+        hidden, aux = output
+        self.capture_streams = [torch.cat(aux, dim=-1)]
+        self.capture_last_hidden = hidden
 
     @property
     def thinker(self) -> "MiniCPMOThinkerForCausalLM":

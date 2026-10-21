@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 import torch
@@ -74,6 +76,9 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
         self.hands_hidden_to_talker = output_processor.capture_hidden
         self.speculative_hidden_queue: dict[str, torch.Tensor] = {}
+        self.capture_dir = os.environ.get("SGLANG_OMNI_MINICPMO_CAPTURE_DIR")
+        self.capture_store: dict[str, list[tuple[torch.Tensor, torch.Tensor]]] = {}
+        self.capture_writer = ThreadPoolExecutor(max_workers=8)
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
@@ -138,6 +143,10 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         outputs: dict[str, RequestOutput],
     ) -> None:
         """Collect request outputs; the raw result is part of the runner interface."""
+        if self.capture_dir and self.outer_model.capture_last_hidden is not None:
+            self.store_capture_rows(scheduler_output)
+        else:
+            pass
         for sched_req in scheduler_output.requests:
             req_output = outputs.get(sched_req.request_id)
             if req_output is None or req_output.extra is None:
@@ -162,6 +171,26 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             else:
                 # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
                 seq.append(hidden_rows[-1].detach().clone())
+
+    def store_capture_rows(self, scheduler_output: SchedulerOutput) -> None:
+        model = self.outer_model
+        streams = torch.cat(model.capture_streams, dim=-1)
+        last = model.capture_last_hidden
+        batch = scheduler_output.batch_data
+        if batch.forward_mode.is_extend():
+            lengths = list(batch.extend_lens)
+        else:
+            lengths = [1] * len(scheduler_output.requests)
+        start = 0
+        for sched_req, length in zip(scheduler_output.requests, lengths, strict=True):
+            self.capture_store.setdefault(sched_req.request_id, []).append(
+                (
+                    streams[start : start + length].clone(),
+                    last[start : start + length].clone(),
+                )
+            )
+            start += length
+        model.capture_last_hidden = None
 
     def after_speculative_step(
         self,
@@ -218,6 +247,20 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self, request_id: str, req_data: SGLangARRequestData
     ) -> None:
         """Flush the request's hidden accumulator with a single D2H copy."""
+        captured = self.capture_store.pop(request_id, None)
+        if captured and self.capture_dir:
+            self.capture_writer.submit(
+                torch.save,
+                {
+                    "input_ids": list(req_data.req.origin_input_ids),
+                    "output_ids": list(req_data.req.output_ids),
+                    "hidden_states": torch.cat([rows[0] for rows in captured]).to("cpu"),
+                    "last_hidden_states": torch.cat([rows[1] for rows in captured]).to("cpu"),
+                },
+                f"{self.capture_dir}/{request_id}.pt",
+            )
+        else:
+            pass
         self.speculative_hidden_queue.pop(request_id, None)
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
@@ -237,5 +280,6 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
 
     def reset_request(self, request_id: str) -> None:
         """Drop accumulated hidden states on abort (no terminal flush runs)."""
+        self.capture_store.pop(request_id, None)
         self.speculative_hidden_queue.pop(request_id, None)
         self.pending_hidden.pop(request_id, None)
