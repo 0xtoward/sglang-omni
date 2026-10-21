@@ -406,7 +406,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         rows = forward_batch.req_pool_indices[: len(requests)]
         sampling_info = forward_batch.sampling_info
         if os.environ.get("SGLANG_OMNI_MINICPMO_DUMP_TALKER_PROBS") and not forward_batch.forward_mode.is_extend():
-            self.record_step_distribution(logits, rows, requests)
+            self.record_step_distribution(logits, rows, requests, logits_output.hidden_states)
         else:
             pass
         if forward_batch.forward_mode.is_extend():
@@ -435,7 +435,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         return next_token_ids
 
     @torch.no_grad()
-    def record_step_distribution(self, logits, rows, requests) -> None:
+    def record_step_distribution(self, logits, rows, requests, hidden=None) -> None:
         state = self.slot_state
         probe = logits.clone()
         state.apply(probe, rows)
@@ -454,7 +454,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             pass
         for index, sched_req in enumerate(requests):
             store.setdefault(sched_req.request_id, []).append(
-                (kept[index, :8].clone(), sorted_ids[index, :8].clone())
+                (kept[index, :8].clone(), sorted_ids[index, :8].clone(), hidden[index].clone())
             )
 
     def suppress_mask(
@@ -557,6 +557,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
                 {
                     "probs": torch.stack([step[0] for step in steps]).cpu(),
                     "ids": torch.stack([step[1] for step in steps]).cpu(),
+                    "hidden": torch.stack([step[2] for step in steps]).to(torch.bfloat16).cpu(),
                     "output_ids": [int(t) for t in data.req.output_ids_through_stop],
                 },
                 f"{probs_dir}/{request_id}.pt",
