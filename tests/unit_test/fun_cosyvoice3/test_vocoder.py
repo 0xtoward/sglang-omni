@@ -1103,6 +1103,43 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     assert ("packed_warmup" in startup_events) is enable_dit_torch_compile
 
 
+def test_create_vocoder_executor_skips_the_padded_dit_startup_on_the_packed_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    startup_events: list[str] = []
+    prepare_vocoder_startup(
+        monkeypatch,
+        startup_events,
+        device_type="cuda",
+        allow_native_compile=False,
+        packed_estimator=RecordingPackedDiT(is_ragged=True),
+    )
+    monkeypatch.setattr(
+        stages,
+        "set_dit_compile_config",
+        lambda: startup_events.append("compile_config"),
+    )
+    monkeypatch.setattr(torch, "autocast", null_autocast)
+
+    stages.create_vocoder_executor(
+        "model",
+        device="cuda",
+        dtype="bfloat16",
+        flow_prefix_cache_gb=0.0,
+        enable_dit_torch_compile=True,
+        enable_flow_cuda_graph=True,
+        flow_cuda_graph_capture_shapes=FLOW_GRAPH_CAPTURE_SHAPES,
+        enable_flow_prefix_cuda_graph=False,
+        enable_flow_whole_history_cuda_graph=False,
+        enable_hift_cuda_graph=False,
+    )
+
+    assert "runner_create" not in startup_events
+    assert startup_events.index("compile_config") < startup_events.index(
+        "packed_warmup"
+    )
+
+
 @pytest.mark.parametrize("enable_dit_torch_compile", [False, True])
 def test_create_vocoder_executor_on_xpu_captures_flow_graphs_only_for_an_eager_dit(
     monkeypatch: pytest.MonkeyPatch,
