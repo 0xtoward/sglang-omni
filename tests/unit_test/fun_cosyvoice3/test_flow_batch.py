@@ -257,6 +257,25 @@ def test_flow_batch_builds_variable_length_mel_masks_and_conditions() -> None:
     assert torch.count_nonzero(cond[1, :, 4:]) == 0
 
 
+@pytest.mark.parametrize("is_buffered_packed", [False, True])
+def test_buffered_flow_takes_the_packed_solve_only_on_the_packed_route(
+    is_buffered_packed: bool,
+) -> None:
+    flow = FakeFlow(max_frames=128)
+    packed_flow = make_packed(flow)
+    packed_flow.is_buffered_packed = is_buffered_packed
+    items = [
+        make_input([1], prompt_token=[2], prompt_value=0.5),
+        make_input([3, 4], prompt_token=[5, 6], prompt_value=1.5),
+    ]
+
+    mels = packed_flow.inference(items)
+
+    assert [tuple(mel.shape) for mel in mels] == [(1, 4, 2), (1, 4, 4)]
+    assert bool(flow.packed_estimator.calls) is is_buffered_packed
+    assert bool(flow.decoder.estimator.calls) is not is_buffered_packed
+
+
 def test_flow_batch_cfg_uses_two_times_request_batch() -> None:
     flow = FakeFlow()
 
