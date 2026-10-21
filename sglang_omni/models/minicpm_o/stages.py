@@ -357,6 +357,13 @@ def create_sglang_thinker_executor_from_config(
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
     register_minicpm_o_hf_config()
+    # note (0xtoward): a short prefill launches every layer's kernels one at a time;
+    # the breakable graph replays them, and composed multimodal embeddings ride the
+    # prefill input-embeds slot, as on the Qwen3-Omni thinker.
+    if current_platform.is_cuda():
+        prefill_graph_backend = CudaGraphBackend.BREAKABLE
+    else:
+        prefill_graph_backend = CudaGraphBackend.DISABLED
     overrides = build_generation_batch_overrides(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
@@ -366,6 +373,7 @@ def create_sglang_thinker_executor_from_config(
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
         sampling_backend="pytorch",
+        cuda_graph_backend_prefill=prefill_graph_backend,
     )
     overrides.setdefault("trust_remote_code", False)
     overrides["tp_size"] = tp_size
@@ -401,6 +409,9 @@ def create_sglang_thinker_executor_from_config(
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         speech_enabled=speech_enabled,
+        operator_selected_prefill_backend=operator_selected_prefill_backend(
+            server_args_overrides
+        ),
     )
     logger.info(
         f"sglang_ar_started stage=thinker gpu_id={gpu_id} "
