@@ -21,6 +21,10 @@ from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
     IMAGE_STAGE,
 )
+from sglang_omni.models.llada2_uni.interleaved import (
+    SYSTEM_PROMPT_INTERLEAVED,
+    InterleavedGenerationParams,
+)
 from sglang_omni.models.llada2_uni.payload_types import (
     ImageEncoderInputs,
     LLaDA2UniPipelineState,
@@ -28,6 +32,7 @@ from sglang_omni.models.llada2_uni.payload_types import (
     SkippedEncoderInputs,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.pipeline.umm import UMMRequestError
 from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
     ensure_image_list_async,
@@ -286,8 +291,14 @@ def edit_image_pixel_values(
 class LLaDA2Preprocessor:
     """Preprocessor for LLaDA2-Uni model (text + image)."""
 
-    def __init__(self, model_path: str, max_seq_len: int | None = None):
+    def __init__(
+        self,
+        model_path: str,
+        max_seq_len: int | None = None,
+        interleaved: bool = False,
+    ):
         self.max_seq_len = max_seq_len
+        self.interleaved = interleaved
         self.model_dir = resolve_local_model_dir(model_path)
         self.tokenizer = load_llada2_tokenizer(model_path)
 
@@ -349,7 +360,24 @@ class LLaDA2Preprocessor:
         else:
             pass
         task_kind = "chat"
-        if isinstance(image_generation, dict):
+        stage_params = request.params.get("stage_params")
+        wants_interleaved = (
+            isinstance(image_generation, dict)
+            and image_generation.get("mode") == "interleaved"
+        )
+        if (
+            wants_interleaved
+            or isinstance(stage_params, dict)
+            and "orchestrator" in stage_params
+        ) and not self.interleaved:
+            raise UMMRequestError(
+                "Interleaved generation needs the interleaved pipeline, "
+                "sgl-omni serve --variant interleaved"
+            )
+        elif wants_interleaved:
+            config = InterleavedGenerationParams.model_validate(image_generation)
+            task_kind = "interleaved"
+        elif isinstance(image_generation, dict):
             task_kind = "edit" if raw_images else "t2i"
         else:
             pass
@@ -436,6 +464,27 @@ class LLaDA2Preprocessor:
         max_new_tokens = request.params.get(
             "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
         )
+        if task_kind == "interleaved":
+            max_seq_len = self.max_seq_len
+            if max_seq_len is None:
+                raise ValueError("Interleaved generation requires max_seq_len")
+            else:
+                pass
+            stream_state["image_token_offset"] = IMAGE_TOKEN_OFFSET
+            stream_state["interleaved"] = {
+                **config.model_dump(),
+                "phase": "text",
+                "frame_index": 0,
+                "segment_start": len(input_ids),
+                "prompt_length": len(input_ids),
+                "max_seq_len": max_seq_len,
+                "segments": [],
+            }
+            max_new_tokens = min(
+                config.text_max_new_tokens, max_seq_len - len(input_ids)
+            )
+        else:
+            pass
         if task_kind == "t2i":
             ig = image_generation
             image_h = int(ig.get("image_h", DEFAULT_T2I_IMAGE_H))
@@ -497,7 +546,7 @@ class LLaDA2Preprocessor:
         )
         return StagePayload(
             request_id=payload.request_id,
-            request=payload.request,
+            request=request,
             data=state.to_dict(),
         )
 
@@ -574,6 +623,7 @@ class LLaDA2Preprocessor:
             "t2i": SYSTEM_PROMPT_T2I,
             "t2i_thinking": SYSTEM_PROMPT_T2I_THINKING,
             "edit": EDIT_SYSTEM_PROMPT,
+            "interleaved": SYSTEM_PROMPT_INTERLEAVED,
         }.get(task_kind, DEFAULT_SYSTEM_PROMPT)
         parts.append(f"{ROLE_SYSTEM} {system_prompt} ")
 

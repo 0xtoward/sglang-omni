@@ -37,7 +37,55 @@ class ImageGrid(TypedDict):
     grid_w: int
 
 
+class InterleavedSegment(ImageGrid):
+    frame_index: int
+    text: str
+
+
+class InterleavedFrame(ImageGrid):
+    index: int
+    text: str
+    remaining_image_tokens: int
+    vq_tokens: list[int]
+
+
+class InterleavedCFGPlan(TypedDict):
+    mode: Literal["none", "simple", "editing"]
+    branches: dict[str, list[int]]
+    cfg_scale: float
+    cfg_text_scale: float
+    cfg_image_scale: float
+    cfg_rescale: float
+
+
+class InterleavedState(TypedDict, total=False):
+    """Interleaved progress, advanced by the thinker and read by the adapter.
+
+    The preprocessor also copies every InterleavedGenerationParams field here.
+    These are the ones read from this state.
+    """
+
+    max_frames: int
+    text_max_new_tokens: int
+    dllm_steps: int
+    phase: Literal["text", "image", "done"]
+    frame_index: int
+    segment_start: int
+    prompt_length: int
+    max_seq_len: int
+    segments: list[InterleavedSegment]
+    current_frame: InterleavedFrame
+    cfg_plan: InterleavedCFGPlan
+    emit_frame: bool
+    done: bool
+    finish_reason: str
+    usage: dict[str, int]
+    trailing_text: str
+
+
 class LLaDA2UniStreamState(TypedDict, total=False):
+    image_token_offset: int
+    interleaved: InterleavedState
     image_info: list[ImageGrid]
     dllm_steps: int
     cfg_scale: float

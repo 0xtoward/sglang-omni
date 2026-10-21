@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import logging
 from collections.abc import Mapping
@@ -63,12 +64,14 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     max_seq_len: int | None = None,
+    interleaved: bool = False,
 ):
     from sglang_omni.models.llada2_uni.components.preprocessor import LLaDA2Preprocessor
 
     preprocessor = LLaDA2Preprocessor(
         model_path=model_path,
         max_seq_len=max_seq_len,
+        interleaved=interleaved,
     )
     return SimpleScheduler(preprocessor)
 
@@ -339,6 +342,19 @@ def create_image_decode_executor(
         image_buffer = io.BytesIO()
         image.save(image_buffer, format="PNG")
         image_b64 = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+        if state.task_kind == "interleaved":
+            # One inline image segment for the UMM controller.
+            png = image_buffer.getvalue()
+            payload.data = {
+                "kind": "image",
+                "mime_type": "image/png",
+                "size_bytes": len(png),
+                "sha256": hashlib.sha256(png).hexdigest(),
+                "url": f"data:image/png;base64,{image_b64}",
+            }
+            return payload
+        else:
+            pass
         event = LLaDA2UniEvent(
             type="image_final",
             modality="image",

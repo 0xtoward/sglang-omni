@@ -144,6 +144,61 @@ length. The native response remains `data[]` containing one PNG; it does not
 expose the thinking text. No `modalities` field is needed. Thinking-mode
 editing is unsupported, and chat completions remain for understanding.
 
+## Interleaved Output
+
+The interleaved variant answers with text and images in one response. Each
+image decodes while the model writes the next text.
+
+```bash
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --variant interleaved --port 8000 \
+  --thinker.engine.enable_torch_compile false
+```
+
+Send text-only `messages` to `POST /v1/chat/completions`:
+
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json={
+        "model": "inclusionAI/LLaDA2.0-Uni",
+        "messages": [{"role": "user", "content": "Illustrate a three-frame story"}],
+        "stage_params": {"orchestrator": {"max_frames": 3, "seed": 42}},
+    },
+    timeout=1800,
+)
+segments = response.json()["choices"][0]["message"]["segments"]
+```
+
+`choices[0].message.segments` lists the text and image segments in the order
+the model wrote them, and `message.content` holds the text. With
+`stream: true`, each segment arrives in `choices[0].delta.segment` as soon as it
+is ready. An image segment carries the PNG with its size and SHA-256, and `url` is a
+PNG data URL:
+
+```json
+{
+  "type": "segment",
+  "execution_id": "...",
+  "segment_index": 1,
+  "kind": "image",
+  "data": {
+    "kind": "image",
+    "mime_type": "image/png",
+    "size_bytes": 12345,
+    "sha256": "...",
+    "url": "..."
+  }
+}
+```
+
+Optional controls go in `stage_params.orchestrator`: `max_frames` (default
+10, the most the default server admits), `text_max_new_tokens`,
+`image_max_new_tokens`, `max_image_tokens`, `dllm_steps`, `cfg_scale`,
+`cfg_text_scale`, `cfg_image_scale`, `cfg_rescale`, `decode_mode`,
+`decoder_steps`, and `seed`.
+
 ## Text Input
 
 Send a text-only prompt and get a text response.
@@ -256,12 +311,8 @@ The table below lists common text and image-understanding parameters for
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 
-### Incoming Features
-
-- Interleaved Generation
-
 ## Known Limitations
 
 - Image generation and editing return one image per non-streaming request.
 - Thinking mode supports text-to-image only.
-- Interleaved generation is an incoming feature.
+- Interleaved output takes text-only input.
