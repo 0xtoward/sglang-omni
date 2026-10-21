@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import os
+
+import json
+
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -401,6 +405,10 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         logits = logits_output.next_token_logits[: len(requests)]
         rows = forward_batch.req_pool_indices[: len(requests)]
         sampling_info = forward_batch.sampling_info
+        if os.environ.get("SGLANG_OMNI_MINICPMO_DUMP_TALKER_PROBS") and not forward_batch.forward_mode.is_extend():
+            self.record_step_distribution(logits, rows, requests)
+        else:
+            pass
         if forward_batch.forward_mode.is_extend():
             self.slot_state.reset(
                 rows, requests, sampling_info, self.suppress_mask(requests, logits)
@@ -425,6 +433,29 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         )
         self.slot_state.append(rows, next_token_ids[: len(requests)])
         return next_token_ids
+
+    @torch.no_grad()
+    def record_step_distribution(self, logits, rows, requests) -> None:
+        state = self.slot_state
+        probe = logits.clone()
+        state.apply(probe, rows)
+        probs = torch.softmax(probe.float() / state.temperatures[rows], dim=-1)
+        sorted_probs, sorted_ids = probs.sort(dim=-1, descending=True)
+        rank = torch.arange(probs.shape[1], device=probs.device).unsqueeze(0)
+        keep = rank < state.top_ks[rows].unsqueeze(1)
+        keep &= (sorted_probs.cumsum(dim=-1) - sorted_probs) <= state.top_ps[rows].unsqueeze(1)
+        kept = sorted_probs * keep
+        kept = kept / kept.sum(dim=-1, keepdim=True)
+        store = getattr(self, "debug_step_distributions", None)
+        if store is None:
+            store = {}
+            self.debug_step_distributions = store
+        else:
+            pass
+        for index, sched_req in enumerate(requests):
+            store.setdefault(sched_req.request_id, []).append(
+                (kept[index, :8].clone(), sorted_ids[index, :8].clone())
+            )
 
     def suppress_mask(
         self, requests: list[SchedulerRequest], logits: torch.Tensor
@@ -517,6 +548,25 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             # note (Junnan Li): The last sample has no KV and is not committed by chunk TTS.
             data.req.output_ids = data.req.output_ids[:-1]
             data.req.finished_len = len(data.req.output_ids)
+        else:
+            pass
+        probs_dir = os.environ.get("SGLANG_OMNI_MINICPMO_DUMP_TALKER_PROBS")
+        steps = getattr(self, "debug_step_distributions", {}).pop(request_id, None)
+        if probs_dir and steps:
+            torch.save(
+                {
+                    "probs": torch.stack([step[0] for step in steps]).cpu(),
+                    "ids": torch.stack([step[1] for step in steps]).cpu(),
+                    "output_ids": [int(t) for t in data.req.output_ids_through_stop],
+                },
+                f"{probs_dir}/{request_id}.pt",
+            )
+        else:
+            pass
+        dump_dir = os.environ.get("SGLANG_OMNI_MINICPMO_DUMP_TALKER")
+        if dump_dir:
+            with open(f"{dump_dir}/talker_tokens_{os.getpid()}.jsonl", "a") as f:
+                f.write(json.dumps({"rid": request_id, "output_ids": [int(t) for t in data.req.output_ids_through_stop]}) + "\n")
         else:
             pass
         super().on_request_finished(request_id, data)

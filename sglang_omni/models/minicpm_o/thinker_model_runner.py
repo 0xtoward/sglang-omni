@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import torch
@@ -74,6 +75,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
         self.hands_hidden_to_talker = output_processor.capture_hidden
         self.speculative_hidden_queue: dict[str, torch.Tensor] = {}
+        self.dumped_requests = 0
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
@@ -234,6 +236,19 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             pass
         stacked = torch.stack(seq).to("cpu")
         req_data.extra_model_outputs["hidden_states_seq"] = list(stacked.unbind(0))
+        dump_dir = os.environ.get("SGLANG_OMNI_MINICPMO_DUMP_HIDDEN")
+        if dump_dir and self.dumped_requests < int(os.environ.get("SGLANG_OMNI_MINICPMO_DUMP_MAX", "20")):
+            torch.save(
+                {
+                    "input_ids": list(req_data.req.origin_input_ids),
+                    "output_ids": list(req_data.req.output_ids),
+                    "hidden": stacked.float(),
+                },
+                f"{dump_dir}/{request_id}.pt",
+            )
+            self.dumped_requests += 1
+        else:
+            pass
 
     def reset_request(self, request_id: str) -> None:
         """Drop accumulated hidden states on abort (no terminal flush runs)."""
