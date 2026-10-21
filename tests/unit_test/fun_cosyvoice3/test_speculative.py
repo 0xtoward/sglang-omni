@@ -485,10 +485,10 @@ def test_materialized_draft_refuses_another_vocabulary_or_block(
 
 def dspark_overrides(
     *,
-    enable_overlap: bool,
+    enable_async_decode: bool,
     **server_args_overrides: object,
 ) -> tuple[FunCosyVoice3EngineBuilder, dict[str, object]]:
-    builder = FunCosyVoice3EngineBuilder(enable_overlap=enable_overlap)
+    builder = FunCosyVoice3EngineBuilder(enable_async_decode=enable_async_decode)
     builder.device = "cuda:0"
     overrides = build_generation_batch_overrides(
         server_args_overrides=server_args_overrides,
@@ -527,21 +527,21 @@ def test_engine_builder_refuses_what_the_dspark_draft_cannot_serve(
     server_args_overrides: dict[str, object], error: str
 ) -> None:
     with pytest.raises(ValueError, match=error):
-        dspark_overrides(enable_overlap=False, **server_args_overrides)
+        dspark_overrides(enable_async_decode=False, **server_args_overrides)
 
 
-@pytest.mark.parametrize("enable_overlap", [False, True])
+@pytest.mark.parametrize("enable_async_decode", [False, True])
 def test_dspark_draft_reserves_its_verify_windows_in_the_kv_pool_cap(
     materialized_draft: str,
-    enable_overlap: bool,
+    enable_async_decode: bool,
 ) -> None:
     builder, overrides = dspark_overrides(
-        enable_overlap=enable_overlap,
+        enable_async_decode=enable_async_decode,
         speculative_draft_model_path="yuekai/cosyvoice3_llm_dspark",
     )
 
-    assert builder.extra_scheduler_kwargs()["enable_overlap"] is enable_overlap
-    assert overrides["disable_overlap_schedule"] is not enable_overlap
+    assert builder.extra_scheduler_kwargs()["enable_overlap"] is enable_async_decode
+    assert overrides["disable_overlap_schedule"] is not enable_async_decode
     assert overrides["speculative_algorithm"] == "DSPARK"
     assert overrides["speculative_draft_model_path"] == materialized_draft
     assert overrides["speculative_dspark_block_size"] == DRAFT_TOKENS_PER_STEP

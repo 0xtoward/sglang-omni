@@ -171,12 +171,14 @@ def test_post_capture_resize_preserving_byte_budget_passes(monkeypatch) -> None:
     runner.post_capture_resize_kv_pool()
 
 
-def patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
+def patch_thinker_startup(
+    monkeypatch, *, expected_context_length: int | None = None
+) -> list[dict[str, object]]:
     scheduler_calls: list[dict[str, object]] = []
 
     def fake_server_args_builder(model_path, context_length, **overrides):
         assert model_path == "dummy"
-        assert context_length is None
+        assert context_length == expected_context_length
         assert overrides["sampling_backend"] == thinker_sampling_backend()
         return SimpleNamespace(
             mem_fraction_static=overrides["mem_fraction_static"],
@@ -824,33 +826,95 @@ def test_talker_graph_stays_available_to_an_explicit_override(monkeypatch) -> No
     assert overrides["disable_cuda_graph"] is False
 
 
-@pytest.mark.parametrize("enable_overlap", [False, True])
+@pytest.mark.parametrize("enable_async_decode", [False, True])
 def test_thinker_overlap_conflict_fails_before_draft_loading(
-    monkeypatch: pytest.MonkeyPatch, enable_overlap: bool
+    monkeypatch: pytest.MonkeyPatch, enable_async_decode: bool
 ) -> None:
     """A contradictory native flag must fail before draft metadata is loaded."""
     load_draft = Mock(side_effect=AssertionError("draft loading must not start"))
     monkeypatch.setattr(qwen_stages.AutoConfig, "from_pretrained", load_draft)
 
-    with pytest.raises(ValueError, match="conflicts with factory.enable_overlap"):
+    with pytest.raises(ValueError, match="conflicts with factory.enable_async_decode"):
         qwen_stages.create_sglang_thinker_executor_from_config(
             "dummy",
-            enable_overlap=enable_overlap,
+            enable_async_decode=enable_async_decode,
             server_args_overrides={
                 "speculative_algorithm": "DFLASH",
                 "speculative_draft_model_path": "draft",
-                "disable_overlap_schedule": enable_overlap,
+                "disable_overlap_schedule": enable_async_decode,
             },
         )
 
     load_draft.assert_not_called()
 
 
-@pytest.mark.parametrize("enable_overlap", [False, True])
+@pytest.mark.parametrize("has_draft", [False, True])
+@pytest.mark.parametrize("enable_async_decode", [None, False, True])
+def test_thinker_async_option_selects_the_matching_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+    has_draft: bool,
+    enable_async_decode: bool | None,
+) -> None:
+    """One public flag must select exactly one async path and preserve both defaults."""
+    patch_thinker_startup(
+        monkeypatch, expected_context_length=8192 if has_draft else None
+    )
+    create_scheduler = Mock(wraps=qwen_stages.create_thinker_scheduler)
+    monkeypatch.setattr(qwen_stages, "create_thinker_scheduler", create_scheduler)
+    monkeypatch.setattr(
+        qwen_stages.AutoConfig,
+        "from_pretrained",
+        Mock(return_value=SimpleNamespace(max_position_embeddings=8192)),
+    )
+    if has_draft:
+        engine_overrides = {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": "draft",
+        }
+    else:
+        engine_overrides = {}
+
+    qwen_stages.create_sglang_thinker_executor_from_config(
+        "dummy",
+        total_gpu_memory_fraction=0.75,
+        enable_async_decode=enable_async_decode,
+        server_args_overrides=engine_overrides,
+    )
+
+    assert create_scheduler.call_args.kwargs["enable_async_decode"] is (
+        not has_draft and enable_async_decode is not False
+    )
+    assert create_scheduler.call_args.kwargs["enable_overlap"] is (
+        has_draft and enable_async_decode is True
+    )
+
+
+def test_thinker_speculative_async_rejects_an_unsupported_batch_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The legacy async threshold must not be silently ignored by native overlap."""
+    load_draft = Mock(side_effect=AssertionError("draft loading must not start"))
+    monkeypatch.setattr(qwen_stages.AutoConfig, "from_pretrained", load_draft)
+
+    with pytest.raises(ValueError, match="async_decode_min_batch_size=1"):
+        qwen_stages.create_sglang_thinker_executor_from_config(
+            "dummy",
+            enable_async_decode=True,
+            async_decode_min_batch_size=2,
+            server_args_overrides={
+                "speculative_algorithm": "DFLASH",
+                "speculative_draft_model_path": "draft",
+            },
+        )
+
+    load_draft.assert_not_called()
+
+
+@pytest.mark.parametrize("enable_async_decode", [False, True])
 @pytest.mark.parametrize("explicit_native_flag", [False, True])
 def test_thinker_overlap_derives_native_worker_configuration(
     monkeypatch: pytest.MonkeyPatch,
-    enable_overlap: bool,
+    enable_async_decode: bool,
     explicit_native_flag: bool,
 ) -> None:
     """The public option selects the native worker mode after overrides merge."""
@@ -864,7 +928,7 @@ def test_thinker_overlap_derives_native_worker_configuration(
         "speculative_draft_model_path": "draft",
     }
     if explicit_native_flag:
-        engine_overrides["disable_overlap_schedule"] = not enable_overlap
+        engine_overrides["disable_overlap_schedule"] = not enable_async_decode
     else:
         pass
     build_server_args = Mock(side_effect=RuntimeError("configuration forwarded"))
@@ -873,13 +937,13 @@ def test_thinker_overlap_derives_native_worker_configuration(
     with pytest.raises(RuntimeError, match="configuration forwarded"):
         qwen_stages.create_sglang_thinker_executor_from_config(
             "dummy",
-            enable_overlap=enable_overlap,
+            enable_async_decode=enable_async_decode,
             server_args_overrides=engine_overrides,
         )
 
     assert (
         build_server_args.call_args.kwargs["disable_overlap_schedule"]
-        is not enable_overlap
+        is not enable_async_decode
     )
 
 

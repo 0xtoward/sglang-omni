@@ -1203,25 +1203,35 @@ def create_sglang_thinker_executor_from_config(
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
     total_gpu_memory_fraction: float | None = None,
-    enable_async_decode: bool = True,
-    enable_overlap: bool = False,
+    enable_async_decode: bool | None = None,
     async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
     execution_mode: Literal["request", "session"] = "request",
 ) -> "OmniScheduler[SGLangARRequestData]":
-    """Returns OmniScheduler for thinker."""
-    if (
-        enable_overlap
-        or (server_args_overrides or {}).get("speculative_draft_model_path") is not None
-    ) and (server_args_overrides or {}).get("disable_overlap_schedule") not in (
-        None,
-        not enable_overlap,
-    ):
-        raise ValueError(
-            "engine.disable_overlap_schedule conflicts with factory.enable_overlap"
-        )
+    """Build the thinker; async defaults on for ordinary decode and off for drafts."""
+    draft_model_path = (server_args_overrides or {}).get("speculative_draft_model_path")
+    if enable_async_decode is None:
+        enable_async_decode = draft_model_path is None
+    else:
+        pass
+    enable_overlap = enable_async_decode and draft_model_path is not None
+    if draft_model_path is not None:
+        if (server_args_overrides or {}).get("disable_overlap_schedule") not in (
+            None,
+            not enable_overlap,
+        ):
+            raise ValueError(
+                "engine.disable_overlap_schedule conflicts with factory.enable_async_decode"
+            )
+        elif enable_overlap and async_decode_min_batch_size != 1:
+            raise ValueError(
+                "speculative async decode requires async_decode_min_batch_size=1"
+            )
+        else:
+            pass
+        enable_async_decode = False
     else:
         pass
     from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
@@ -1267,10 +1277,6 @@ def create_sglang_thinker_executor_from_config(
     speculative_algorithm = SpeculativeAlgorithm.from_string(
         overrides.get("speculative_algorithm")
     )
-    if enable_overlap and draft_model_path is None:
-        raise ValueError("enable_overlap requires a speculative_draft_model_path")
-    else:
-        pass
     if draft_model_path is not None:
         overrides["disable_overlap_schedule"] = not enable_overlap
         if speculative_algorithm.is_none():
@@ -1284,7 +1290,6 @@ def create_sglang_thinker_executor_from_config(
         else:
             pass
         overrides["enable_mixed_chunk"] = False
-        enable_async_decode = False
         # note (wilsonzheng0327): an EAGLE draft extends on the composed multimodal
         # prefill embeddings, which a captured draft prefill graph would ignore.
         if speculative_algorithm.is_eagle():

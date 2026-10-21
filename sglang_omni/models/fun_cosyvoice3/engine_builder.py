@@ -54,10 +54,10 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         *,
         token_hop_len: int = TOKEN_HOP_LEN,
         onnx_intra_op_threads: int = 16,
-        enable_overlap: bool,
+        enable_async_decode: bool,
     ) -> None:
         super().__init__()
-        self.enable_overlap: bool = enable_overlap
+        self.enable_async_decode: bool = enable_async_decode
         hop = int(token_hop_len)
         if hop <= 0:
             raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
@@ -96,7 +96,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             return {
                 "max_running_requests": 1,
                 "disable_cuda_graph": True,
-                "disable_overlap_schedule": not self.enable_overlap,
+                "disable_overlap_schedule": not self.enable_async_decode,
                 "disable_radix_cache": True,
                 "enable_torch_compile": False,
                 "max_prefill_tokens": self.context_length,
@@ -114,7 +114,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             "torch_compile_max_bs": 32,
             "dtype": dtype,
             "disable_cuda_graph": False,
-            "disable_overlap_schedule": not self.enable_overlap,
+            "disable_overlap_schedule": not self.enable_async_decode,
             "enable_torch_compile": False,
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 4096,
@@ -126,16 +126,16 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         draft_model_path = overrides.get("speculative_draft_model_path")
-        if draft_model_path is not None or self.enable_overlap:
+        if draft_model_path is not None or self.enable_async_decode:
             if overrides.get("disable_overlap_schedule") not in (
                 None,
-                not self.enable_overlap,
+                not self.enable_async_decode,
             ):
                 raise ValueError(
-                    "engine.disable_overlap_schedule conflicts with factory.enable_overlap"
+                    "engine.disable_overlap_schedule conflicts with factory.enable_async_decode"
                 )
             else:
-                overrides["disable_overlap_schedule"] = not self.enable_overlap
+                overrides["disable_overlap_schedule"] = not self.enable_async_decode
         else:
             pass
         speculative_algorithm = SpeculativeAlgorithm.from_string(
@@ -143,7 +143,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         )
         speculative_reserve_tokens = 0
         if draft_model_path is None:
-            if self.enable_overlap or not speculative_algorithm.is_none():
+            if self.enable_async_decode or not speculative_algorithm.is_none():
                 raise ValueError(
                     "Fun-CosyVoice3 speculative decoding needs "
                     "speculative_draft_model_path"
@@ -288,7 +288,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         # at equal priority the AR's decode replays wait behind its kernels.
         return {
             "should_run_top_priority_stream": current_platform.is_cuda(),
-            "enable_overlap": self.enable_overlap,
+            "enable_overlap": self.enable_async_decode,
         }
 
     def infra_kwargs(self) -> InfrastructureOptions:
