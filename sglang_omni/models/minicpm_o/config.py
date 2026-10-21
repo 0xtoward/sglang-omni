@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import ClassVar
 
 from pydantic import Field
@@ -103,7 +104,9 @@ def decode_stage(*, process: str) -> StageConfig:
     )
 
 
-def talker_stage(*, gpu: int, process: str) -> StageConfig:
+def talker_stage(
+    *, gpu: int, process: str, stream_codec_tokens: bool = False
+) -> StageConfig:
     return EngineStageConfig(
         name="talker",
         process=process,
@@ -111,6 +114,7 @@ def talker_stage(*, gpu: int, process: str) -> StageConfig:
         factory=FactoryArgs(max_seq_len=4096),
         gpu=gpu,
         next="code2wav",
+        stream_to=["code2wav"] if stream_codec_tokens else [],
         project_payload={
             "code2wav": f"{PKG}.routing.project_talker_to_code2wav",
         },
@@ -135,7 +139,9 @@ class MiniCPMOCode2WavStageConfig(StageConfig):
     )
 
 
-def code2wav_stage(*, gpu: int, process: str) -> MiniCPMOCode2WavStageConfig:
+def code2wav_stage(
+    *, gpu: int, process: str, accept_codec_stream: bool = False
+) -> MiniCPMOCode2WavStageConfig:
     return MiniCPMOCode2WavStageConfig(
         name="code2wav",
         process=process,
@@ -167,6 +173,7 @@ def code2wav_stage(*, gpu: int, process: str) -> MiniCPMOCode2WavStageConfig:
         # ms for grouping the batchs, but right now, set it to 0.0.
         gpu=gpu,
         terminal=True,
+        can_accept_stream_before_payload=accept_codec_stream,
     )
 
 
@@ -182,6 +189,8 @@ def text_stages() -> list[StageConfig]:
 
 
 def speech_stages() -> list[StageConfig]:
+    # note (0xtoward): code2wav vocodes each codec chunk while the talker still decodes.
+    stream_code2wav = os.environ.get("SGLANG_OMNI_MINICPMO_STREAM_CODE2WAV") == "1"
     return [
         preprocessing_stage(gpu=0, process="pipeline"),
         # note (MayDomine): the thinker initializes the TP group reused by encoders.
@@ -190,9 +199,9 @@ def speech_stages() -> list[StageConfig]:
         audio_encoder_stage(process="pipeline", gpu=0),
         decode_stage(process="pipeline"),
         # note (MayDomine): each engine requires a separate process-global TP group.
-        talker_stage(gpu=0, process="talker"),
+        talker_stage(gpu=0, process="talker", stream_codec_tokens=stream_code2wav),
         # note (zhaochenyang20): sharing a CUDA context lets the stage streams overlap.
-        code2wav_stage(gpu=0, process="talker"),
+        code2wav_stage(gpu=0, process="talker", accept_codec_stream=stream_code2wav),
     ]
 
 

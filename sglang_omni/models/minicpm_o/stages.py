@@ -333,6 +333,22 @@ def create_code2wav_executor(
             for payload in payloads:
                 model.release_reference(payload.request_id)
 
+    if os.environ.get("SGLANG_OMNI_MINICPMO_STREAM_CODE2WAV") == "1":
+        from sglang_omni.models.minicpm_o.code2wav_streaming import (
+            MiniCPMOStreamingCode2WavScheduler,
+        )
+        from sglang_omni.models.minicpm_o.native_config import (
+            DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
+        )
+
+        return MiniCPMOStreamingCode2WavScheduler(
+            model,
+            dense_vocode=vocode_and_release,
+            max_open_sessions=256,
+            max_state_bytes_per_session=DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
+        )
+    else:
+        pass
     return SimpleScheduler(
         lambda payload: vocode_and_release([payload])[0],
         batch_compute_fn=vocode_and_release,

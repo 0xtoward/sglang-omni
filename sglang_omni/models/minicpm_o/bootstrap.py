@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,6 +36,9 @@ def create_talker_scheduler(
     )
     from sglang_omni.models.minicpm_o.talker_request import (
         make_talker_scheduler_adapters,
+    )
+    from sglang_omni.models.minicpm_o.code2wav_streaming import (
+        make_talker_codec_stream_builder,
     )
     from sglang_omni.models.minicpm_o.talker_session import TalkerAdapter
     from sglang_omni.scheduling.bootstrap import (
@@ -125,6 +130,11 @@ def create_talker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         session_adapter=TalkerAdapter(model) if session_mode else None,
+        stream_output_builder=(
+            make_talker_codec_stream_builder(model.codec_eos_id)
+            if not session_mode and os.environ.get("SGLANG_OMNI_MINICPMO_STREAM_CODE2WAV") == "1"
+            else None
+        ),
         # note (0xtoward): the penalty and length floor read device state, never an unresolved token, so lookahead starts at one request.
         enable_async_decode=not session_mode,
         async_decode_min_batch_size=1,
@@ -159,13 +169,13 @@ def create_thinker_scheduler(
         create_sglang_infrastructure,
         init_sglang_cuda_graphs,
     )
-    from sglang_omni.scheduling.generation_batch_policy import (
-        CudaGraphBackend,
-        get_prefill_cuda_graph_backend,
-    )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        get_prefill_cuda_graph_backend,
     )
     from sglang_omni.utils import cuda_graph_batch_validator
     from sglang_omni.vendor.sglang.server_args import override_server_args
