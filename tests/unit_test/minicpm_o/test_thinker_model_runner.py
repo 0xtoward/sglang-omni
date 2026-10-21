@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MiniCPM-o thinker runners: offline length penalty, speculative steps and the duplex unit sampler."""
+"""MiniCPM-o thinker runners: prefill graph default, offline length penalty, speculative steps and the duplex unit sampler."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import torch
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.minicpm_o import stages
 from sglang_omni.models.minicpm_o.duplex_sampler import filter_top_k_top_p
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
@@ -26,6 +27,7 @@ from sglang_omni.models.minicpm_o.special_tokens import (
 )
 from sglang_omni.models.minicpm_o.thinker_model_runner import MiniCPMOThinkerModelRunner
 from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
@@ -39,6 +41,53 @@ BAD_TOKEN_IDS = (7, 8, 94)
 PLAIN_TOKEN_ID = 42
 OTHER_TOKEN_ID = 55
 THIRD_TOKEN_ID = 60
+
+
+@pytest.mark.parametrize(
+    ("server_args_overrides", "is_cuda", "backend", "operator_selected"),
+    [
+        ({}, True, "breakable", False),
+        ({"cuda_graph_backend_prefill": "disabled"}, True, "disabled", True),
+        ({}, False, "disabled", False),
+    ],
+)
+def test_thinker_stage_defaults_breakable_prefill_graphs_on_nvidia(
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, object],
+    is_cuda: bool,
+    backend: str,
+    operator_selected: bool,
+) -> None:
+    built: dict[str, object] = {}
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
+    monkeypatch.setattr(stages, "register_minicpm_o_hf_config", lambda: None)
+    monkeypatch.setattr(
+        stages,
+        "build_sglang_server_args",
+        lambda model_path, context_length, **overrides: built.update(overrides),
+    )
+    monkeypatch.setattr(stages, "validate_generation_batch_policy", lambda **_: None)
+    monkeypatch.setattr(
+        stages,
+        "resolved_view",
+        lambda server_args: SimpleNamespace(mem_fraction_static=0.5),
+    )
+    monkeypatch.setattr(stages, "avail_gpu_mem", lambda gpu_id: 0)
+    monkeypatch.setattr(
+        stages,
+        "create_thinker_scheduler",
+        lambda server_args, gpu_id, **kwargs: built.update(scheduler=kwargs),
+    )
+
+    stages.create_sglang_thinker_executor_from_config(
+        "model", server_args_overrides=server_args_overrides
+    )
+
+    assert built["cuda_graph_backend_prefill"] == backend
+    assert built["scheduler"]["operator_selected_prefill_backend"] is operator_selected
 
 
 def bare_runner() -> MiniCPMOThinkerModelRunner:

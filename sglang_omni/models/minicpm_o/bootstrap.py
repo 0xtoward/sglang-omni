@@ -158,6 +158,7 @@ def create_thinker_scheduler(
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 1,
     speech_enabled: bool = False,
+    operator_selected_prefill_backend: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
     """Create a thinker scheduler with optional hidden-state capture for speech."""
     from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -175,12 +176,18 @@ def create_thinker_scheduler(
         create_sglang_infrastructure,
         init_sglang_cuda_graphs,
     )
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        get_prefill_cuda_graph_backend,
+    )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
+    from sglang_omni.utils import cuda_graph_batch_validator
     from sglang_omni.vendor.sglang.server_args import override_server_args
 
+    prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
     cfg = resolved_view(server_args)
     want_cuda_graph = not bool(cfg.disable_cuda_graph)
     speculative = cfg.speculative_algorithm is not None
@@ -224,9 +231,18 @@ def create_thinker_scheduler(
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
             supports_speculative_decoding=True,
+            enable_prefill_input_embeds=prefill_graph_backend
+            == CudaGraphBackend.BREAKABLE,
         )
         if defer_cuda_graph_capture:
             init_sglang_cuda_graphs(infrastructure[0])
+        else:
+            pass
+        if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
+            cuda_graph_batch_validator.attest_prefill_cuda_graphs(
+                infrastructure[0].model_runner,
+                operator_selected=operator_selected_prefill_backend,
+            )
         else:
             pass
     finally:
