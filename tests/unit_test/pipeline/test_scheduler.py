@@ -1938,6 +1938,103 @@ def test_speculative_emission_failure_fails_only_its_request() -> None:
     assert good_request.to_finish is None
 
 
+def test_abort_during_speculative_emission_lands_before_or_after_the_step(
+    monkeypatch,
+) -> None:
+    """An abort arriving mid-emission no longer lands between the liveness check and
+    the enqueue, so a cancelled request ships no tokens after the abort is recorded."""
+
+    class ObservedRLock:
+        def __init__(self):
+            self.lock = threading.RLock()
+            self.owner: int | None = None
+            self.contender_waiting = threading.Event()
+
+        def __enter__(self):
+            thread_id = threading.get_ident()
+            if self.owner is not None and self.owner != thread_id:
+                self.contender_waiting.set()
+            self.lock.acquire()
+            self.owner = thread_id
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self.owner = None
+            self.lock.release()
+
+    monkeypatch.setattr(
+        omni_scheduler_module, "_emit_model_path_end", lambda rid, *, status: None
+    )
+    scheduler = object.__new__(OmniScheduler)
+    init_sync_request_build_state(scheduler)
+    lock = ObservedRLock()
+    scheduler.request_admission_lock = lock
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.outbox = Queue()
+    scheduler.inbox = Queue()
+    scheduler.aborted_request_ids = set()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.pending_stream_ingress = {}
+    scheduler.deferred_request_payloads = {}
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.waiting_queue = []
+    request_data = SimpleNamespace(emitted_token_count=1, generation_steps=1)
+    req = SimpleNamespace(
+        rid="req-spec-abort",
+        omni_data=request_data,
+        output_ids_through_stop=[5, 6, 7],
+        finished=lambda: False,
+        finished_reason=None,
+        is_retracted=False,
+        to_finish=None,
+        kv=ReqKvInfo(req_pool_idx=1),
+        _omni_terminal_claimed=False,
+    )
+    batch = SimpleNamespace(reqs=[req], batch_is_full=True)
+    scheduler.running_batch = batch
+    scheduler.cur_batch = batch
+    scheduler.last_batch = None
+    abort_errors: list[BaseException] = []
+
+    def abort_from_listener() -> None:
+        try:
+            scheduler.abort(req.rid)
+        except BaseException as exc:
+            abort_errors.append(exc)
+
+    abort_thread = threading.Thread(target=abort_from_listener)
+    enqueue_aborted: list[bool] = []
+
+    class Runner:
+        def on_speculative_tokens(self, scheduler_request, token_ids):
+            abort_thread.start()
+            # The listener's abort reaches the lock while this step is mid-emission.
+            assert lock.contender_waiting.wait(timeout=1)
+
+    scheduler.model_runner = Runner()
+
+    def stream_output_builder(rid, data, output):
+        enqueue_aborted.append(rid in scheduler.aborted_request_ids)
+        return [SimpleNamespace(request_id=rid, type="stream", data=output.data)]
+
+    scheduler.stream_output_builder = stream_output_builder
+
+    scheduler.stream_output([req])
+    abort_thread.join(timeout=1)
+    req.output_ids_through_stop = [5, 6, 7, 8, 9]
+    scheduler.stream_output([req])
+
+    assert not abort_thread.is_alive()
+    assert abort_errors == []
+    assert enqueue_aborted == [False, False]
+    assert isinstance(req.to_finish, omni_scheduler_module.FINISH_ABORT)
+    assert [scheduler.outbox.get_nowait().data for _ in range(2)] == [6, 7]
+    assert scheduler.outbox.empty()
+
+
 def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.draft_worker = SimpleNamespace()
@@ -1962,22 +2059,25 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     (
         "sampling_overrides",
         "return_logprob",
+        "return_hidden_states",
         "verifies_repetition_penalty",
         "refused_option",
     ),
     [
-        ({}, False, False, None),
-        ({}, True, False, "logprobs"),
-        ({"min_p": 0.05}, False, False, "min_p"),
-        ({"frequency_penalty": 0.5}, False, False, "frequency_penalty"),
-        ({"presence_penalty": 0.5}, False, False, "presence_penalty"),
-        ({"repetition_penalty": 1.2}, False, False, "repetition_penalty"),
-        ({"repetition_penalty": 1.2}, False, True, None),
+        ({}, False, False, False, None),
+        ({}, True, False, False, "logprobs"),
+        ({}, False, True, False, "return_hidden_states"),
+        ({"min_p": 0.05}, False, False, False, "min_p"),
+        ({"frequency_penalty": 0.5}, False, False, False, "frequency_penalty"),
+        ({"presence_penalty": 0.5}, False, False, False, "presence_penalty"),
+        ({"repetition_penalty": 1.2}, False, False, False, "repetition_penalty"),
+        ({"repetition_penalty": 1.2}, False, False, True, None),
     ],
 )
 def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     sampling_overrides: dict[str, float],
     return_logprob: bool,
+    return_hidden_states: bool,
     verifies_repetition_penalty: bool,
     refused_option: str | None,
 ) -> None:
@@ -1993,7 +2093,10 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
         "repetition_penalty": 1.0,
     }
     sampling_params.update(sampling_overrides)
-    request = SimpleNamespace(sampling_params=SimpleNamespace(**sampling_params))
+    request = SimpleNamespace(
+        sampling_params=SimpleNamespace(**sampling_params),
+        return_hidden_states=return_hidden_states,
+    )
     request_data = SimpleNamespace(return_logprob=return_logprob)
 
     error = scheduler.speculative_request_error(request, request_data)

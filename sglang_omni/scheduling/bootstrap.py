@@ -40,6 +40,7 @@ class InfrastructureOptions(TypedDict, total=False):
     total_gpu_memory_fraction: float | None
     enable_prefill_input_embeds: bool
     before_memory_pool: Callable[["ModelWorker"], None] | None
+    supports_speculative_decoding: bool
     speculative_worker_class: type[BaseSpecWorker] | None
 
 
@@ -103,15 +104,17 @@ def create_sglang_infrastructure(
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
     before_memory_pool: Callable[["ModelWorker"], None] | None = None,
+    supports_speculative_decoding: bool = False,
     speculative_worker_class: type[BaseSpecWorker] | None = None,
 ):
     """Create SGLang worker, memory pools, and tree cache.
 
     before_memory_pool runs with the model worker after the weights are loaded
     and before the KV pool is sized, for resources the stage keeps for the life
-    of the process. When the server args name a speculative algorithm, the draft
-    worker (speculative_worker_class, else the algorithm's own) is attached to the
-    model worker and shares its request and KV allocators.
+    of the process. When the server args name a speculative algorithm, a stage
+    that sets supports_speculative_decoding gets the draft worker
+    (speculative_worker_class, else the algorithm's own) attached to its model
+    worker, sharing its request and KV allocators; any other stage is refused.
     """
     # ModelWorker publishes server_args as the process-wide runtime context
     # once its pre-publish declarations are made; publishing again would
@@ -170,6 +173,13 @@ def create_sglang_infrastructure(
     if speculative_algorithm.is_none():
         model_runner.alloc_memory_pool()
         model_runner.init_attention_backends()
+    elif not supports_speculative_decoding:
+        # note (wilsonzheng0327): speculative tokens skip the runner's decode hooks,
+        # so only a stage that hands them on through on_speculative_tokens opts in.
+        raise ValueError(
+            f"speculative_algorithm={speculative_algorithm.name} is set, but this "
+            "stage does not support speculative decoding"
+        )
     else:
         # note (wilsonzheng0327): the draft loads before the pool is sized, so its
         # weights are counted, and its KV pool shares the target's slot ids.

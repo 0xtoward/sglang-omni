@@ -1931,12 +1931,14 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         sampling_params = request.sampling_params
         # note (wilsonzheng0327): SGLang's draft workers drop min_p and apply each
-        # penalty once per verify block, and logprobs come from the runner's sampler,
-        # which speculative decode bypasses.
+        # penalty once per verify block; logprobs come from the runner's sampler, which
+        # speculative decode bypasses, and hidden-state results need the per-request
+        # extend lengths run_speculative_batch leaves unset.
         unsupported_options = [
             option_name
             for option_name, is_set in (
                 ("logprobs", request_data.return_logprob),
+                ("return_hidden_states", request.return_hidden_states),
                 ("min_p", sampling_params.min_p > 0.0),
                 ("frequency_penalty", sampling_params.frequency_penalty != 0.0),
                 ("presence_penalty", sampling_params.presence_penalty != 0.0),
@@ -2487,6 +2489,8 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
             if not req.finished():
                 if self.draft_worker is not None:
+                    # note (wilsonzheng0327): emission holds the lock abort takes, so an
+                    # abort from the listener thread lands before or after these tokens.
                     with self.request_admission_lock:
                         request_data = (
                             None
@@ -2495,20 +2499,20 @@ class OmniScheduler(Generic[RequestDataT]):
                             or req._omni_terminal_claimed  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                             else req.omni_data
                         )
-                    if request_data is not None:
-                        try:
-                            self.emit_speculative_tokens(req, request_data)
-                        except Exception as exc:
-                            # note (wilsonzheng0327): fail only this request; it
-                            # finishes next step and is cleaned up as an abort.
-                            logger.exception(
-                                f"OmniScheduler speculative token emission failed "
-                                f"for request {req.rid}"
-                            )
-                            req.to_finish = FINISH_ABORT()
-                            self.emit_request_error(req.rid, exc)
-                    else:
-                        pass
+                        if request_data is not None:
+                            try:
+                                self.emit_speculative_tokens(req, request_data)
+                            except Exception as exc:
+                                # note (wilsonzheng0327): fail only this request; it
+                                # finishes next step and is cleaned up as an abort.
+                                logger.exception(
+                                    f"OmniScheduler speculative token emission failed "
+                                    f"for request {req.rid}"
+                                )
+                                req.to_finish = FINISH_ABORT()
+                                self.emit_request_error(req.rid, exc)
+                        else:
+                            pass
                 else:
                     pass
                 continue
