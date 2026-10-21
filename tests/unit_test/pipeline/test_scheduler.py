@@ -2068,6 +2068,8 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
         ({}, True, False, False, "logprobs"),
         ({}, False, True, False, "return_hidden_states"),
         ({"min_p": 0.05}, False, False, False, "min_p"),
+        ({"sampling_seed": 7, "top_k": 50}, False, False, False, "seed"),
+        ({"sampling_seed": 7, "top_k": 1}, False, False, False, None),
         ({"frequency_penalty": 0.5}, False, False, False, "frequency_penalty"),
         ({"presence_penalty": 0.5}, False, False, False, "presence_penalty"),
         ({"repetition_penalty": 1.2}, False, False, False, "repetition_penalty"),
@@ -2088,6 +2090,8 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     )
     sampling_params = {
         "min_p": 0.0,
+        "sampling_seed": None,
+        "top_k": -1,
         "frequency_penalty": 0.0,
         "presence_penalty": 0.0,
         "repetition_penalty": 1.0,
