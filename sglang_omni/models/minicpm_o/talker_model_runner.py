@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import os
+
+import json
+
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -517,6 +521,12 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             # note (Junnan Li): The last sample has no KV and is not committed by chunk TTS.
             data.req.output_ids = data.req.output_ids[:-1]
             data.req.finished_len = len(data.req.output_ids)
+        else:
+            pass
+        dump_dir = os.environ.get("SGLANG_OMNI_MINICPMO_DUMP_TALKER")
+        if dump_dir:
+            with open(f"{dump_dir}/talker_tokens_{os.getpid()}.jsonl", "a") as f:
+                f.write(json.dumps({"rid": request_id, "output_ids": [int(t) for t in data.req.output_ids_through_stop]}) + "\n")
         else:
             pass
         super().on_request_finished(request_id, data)
