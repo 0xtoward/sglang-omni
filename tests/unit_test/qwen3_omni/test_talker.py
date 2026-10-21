@@ -1841,7 +1841,7 @@ def test_qwen_model_runner_and_code_predictor_tensor_contracts() -> None:
             extend_seq_lens_cpu=[3],
             extend_prefix_lens_cpu=[0],
         ),
-        SimpleNamespace(reqs=[req]),
+        SimpleNamespace(reqs=[req], chunked_req=None),
     )
 
     assert (
