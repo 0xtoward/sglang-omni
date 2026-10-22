@@ -3,11 +3,17 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import torch
 from sglang.srt.models.dspark import VanillaMarkov
+from sglang.srt.speculative.spec_tp_sync import SpecTpSync
+from torch import nn
 
 from sglang_omni.models.minicpm_o.talker_dspark import (
-    SpeculativeSamplingGraphs,
+    ExactAcceptGraphs,
+    FoldedTalkerDraw,
+    StaticSamplingRows,
     accept_block,
     draw_block,
 )
@@ -222,19 +228,84 @@ def test_greedy_rows_commit_the_talker_argmax() -> None:
         outputs.append(int(expected))
 
 
-def test_sampling_graphs_replay_the_greedy_draw_and_verify() -> None:
+class TinyDraft(nn.Module):
+    """The draft model surface the folded draw reads: head, Markov head, block layout."""
+
+    sample_from_anchor = False
+
+    def __init__(self, hidden: int) -> None:
+        super().__init__()
+        self.lm_head = nn.Linear(hidden, VOCAB_SIZE, bias=False)
+        self.markov_head = VanillaMarkov(vocab_size=VOCAB_SIZE, markov_rank=4)
+
+    def compute_base_logits(
+        self, hidden: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        return (hidden @ self.lm_head.weight.T).float(), None
+
+
+def test_folded_draw_hook_draws_the_talker_shaped_block() -> None:
+    torch.manual_seed(5)
+    gamma, hidden = 3, 8
+    model = TinyDraft(hidden)
+    rows = StaticSamplingRows(
+        capacity=4, vocab=VOCAB_SIZE, eos_id=CODEC_EOS_ID, device=torch.device("cpu")
+    )
+    state = make_state([[3, 5, 3], [1], [2, 2, 2, 2]])
+    rows.load(state)
+    hook = FoldedTalkerDraw(
+        model=model,
+        gamma=gamma,
+        max_bs=4,
+        device=torch.device("cpu"),
+        tp_sync=SpecTpSync(SimpleNamespace(world_size=1, rank_in_group=0)),
+        rows=rows,
+        draw_kernel=sample_draft_block,
+    )
+    # The draft graph feeds the anchor and gamma mask positions of each request.
+    hidden_states = torch.randn(3 * (gamma + 1), hidden)
+    input_ids = torch.tensor([[3, 0, 0, 0], [1, 0, 0, 0], [2, 0, 0, 0]]).view(-1)
+
+    torch.manual_seed(6)
+    with torch.no_grad():
+        hook(hidden_states, input_ids)
+    torch.manual_seed(6)
+    with torch.no_grad():
+        base_logits = model.compute_base_logits(
+            hidden_states.view(3, gamma + 1, hidden)[:, 1:].reshape(-1, hidden)
+        )[0].view(3, gamma, -1)
+        expected_tokens, expected_shaped = sample_draft_block(
+            base_logits,
+            torch.tensor([3, 1, 2]),
+            model.markov_head.markov_w1.weight,
+            model.markov_head.markov_w2.weight,
+            state,
+            torch.empty_like(base_logits).exponential_(),
+        )
+    assert torch.equal(hook.out[: 3 * gamma].view(3, gamma), expected_tokens)
+    torch.testing.assert_close(
+        hook.corrected_out[: 3 * gamma].view(3, gamma, -1), expected_shaped
+    )
+
+
+def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block() -> None:
     require_cuda()
     device = torch.device("cuda")
     torch.manual_seed(4)
+    gamma = 3
     markov_head = VanillaMarkov(vocab_size=VOCAB_SIZE, markov_rank=4).to(device)
-    graphs = SpeculativeSamplingGraphs(
+    rows = StaticSamplingRows(
+        capacity=4, vocab=VOCAB_SIZE, eos_id=CODEC_EOS_ID, device=device
+    )
+    draft_tokens_buffer = torch.zeros(4 * gamma, dtype=torch.long, device=device)
+    shaped_buffer = torch.zeros(4 * gamma, VOCAB_SIZE, device=device)
+    graphs = ExactAcceptGraphs(
         batch_sizes=[1, 4],
-        gamma=3,
-        vocab=VOCAB_SIZE,
-        eos_id=CODEC_EOS_ID,
-        markov_head=markov_head,
-        draw_fallback=draw_block,
-        accept_fallback=accept_block,
+        gamma=gamma,
+        rows=rows,
+        draft_tokens=draft_tokens_buffer,
+        shaped_draft_logits=shaped_buffer,
+        fallback=accept_block,
         backend=current_platform.get_device_graph_backend(device),
         device=device,
     )
@@ -247,22 +318,31 @@ def test_sampling_graphs_replay_the_greedy_draw_and_verify() -> None:
             for name, value in vars(cpu_state).items()
         }
     )
-    base_logits = torch.randn(3, 3, VOCAB_SIZE, device=device)
+    base_logits = torch.randn(3, gamma, VOCAB_SIZE, device=device)
     previous = torch.tensor([3, 1, 2], device=device)
-    target_logits = torch.randn(3 * 4, VOCAB_SIZE, device=device)
+    target_logits = torch.randn(3 * (gamma + 1), VOCAB_SIZE, device=device)
     weights = (markov_head.markov_w1.weight, markov_head.markov_w2.weight)
+    tokens, shaped = draw_block(base_logits, previous, *weights, state)
 
-    graphs.load(state)
-    tokens, shaped = graphs.draw(base_logits, previous, *weights, state)
-    accepted, bonus = graphs.accept(target_logits, shaped, tokens, state)
-
-    expected_tokens, expected_shaped = draw_block(
-        base_logits, previous, *weights, state
+    # A folded draw leaves its block in the buffers the graphs read.
+    rows.load(state)
+    draft_tokens_buffer[: 3 * gamma].copy_(tokens.reshape(-1))
+    shaped_buffer[: 3 * gamma].copy_(shaped.reshape(3 * gamma, -1))
+    accepted, bonus = graphs.accept(
+        target_logits,
+        shaped_buffer[: 3 * gamma].view(3, gamma, -1),
+        draft_tokens_buffer[: 3 * gamma].view(3, gamma),
+        state,
     )
     expected_accepted, expected_bonus = accept_block(
-        target_logits, expected_shaped, expected_tokens, state
+        target_logits, shaped, tokens, state
     )
-    assert torch.equal(tokens, expected_tokens)
-    torch.testing.assert_close(shaped, expected_shaped)
+    assert torch.equal(accepted, expected_accepted)
+    assert torch.equal(bonus, expected_bonus)
+
+    # An eager draw's block is copied in first.
+    accepted, bonus = graphs.accept(
+        target_logits, shaped.clone(), tokens.clone(), state
+    )
     assert torch.equal(accepted, expected_accepted)
     assert torch.equal(bonus, expected_bonus)
