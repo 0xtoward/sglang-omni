@@ -3780,13 +3780,14 @@ class OmniScheduler(Generic[RequestDataT]):
     def event_loop_speculative_lookahead(self) -> None:
         """Speculative decode with a one-step lookahead.
 
-        A decode iteration launches its step and only then processes the previous
-        step's result, so result processing, streaming and planning the next batch
-        run on the host while the device drafts and verifies. A step reads its
-        lengths and bonus tokens from the future map behind the previous step's
-        accept, never from the host. Prefill, empty and failed batches first
-        process the step in flight and then run synchronously, which keeps the
-        same-iteration inflight_middle_chunks contract of the normal loop.
+        An iteration launches its step and only then processes the previous step's
+        result, so result processing, streaming and planning the next batch run on
+        the host while the device drafts and verifies. A step reads its lengths and
+        bonus tokens from the future map behind the previous step's accept, never
+        from the host. Batches that leave a request mid-prompt, mixed batches,
+        empty and failed batches first process the step in flight and then run
+        synchronously, which keeps the same-iteration inflight_middle_chunks
+        contract of the normal loop.
         """
         while self.running:
             self.process_admin_requests()
@@ -3803,7 +3804,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
-            if batch is not None and self.batch_is_decode(batch):
+            if batch is not None and self.batch_runs_ahead(batch):
                 previous = self.speculative_pending
                 result = self.run_batch(batch)
                 if result is _FAILED_BATCH_RESULT:
@@ -3847,6 +3848,16 @@ class OmniScheduler(Generic[RequestDataT]):
             self.process_batch_result(pending.batch, pending.result)
         else:
             pass
+
+    def batch_runs_ahead(self, batch: ScheduleBatch) -> bool:
+        """Whether the lookahead may launch this batch before processing the step in flight."""
+        if self.batch_is_decode(batch):
+            return True
+        else:
+            pass
+        # note (0xtoward): model runners read inflight_middle_chunks at forward time, so a middle chunk's result is
+        # processed before the next chunk launches; a mixed batch carries decode requests of the step in flight.
+        return self.chunked_req is None and not batch.decoding_reqs
 
     @staticmethod
     def batch_is_decode(batch: ScheduleBatch) -> bool:
