@@ -214,6 +214,10 @@ class SpeculativeSamplingGraphs:
     ) -> None:
         self.batch_sizes = sorted(set(batch_sizes))
         self.draw_fallback = draw_fallback
+        # note (0xtoward): compiled, the shaping, sort and scatters fuse into a few kernels;
+        # the noise stays eager so each replay draws from the graph's random state.
+        self.draw_kernel = torch.compile(sample_draft_block, dynamic=True)
+        self.accept_kernel = torch.compile(exact_accept, dynamic=True)
         self.accept_fallback = accept_fallback
         self.markov_head = markov_head
         self.rows_per_request = gamma + 1
@@ -290,22 +294,30 @@ class SpeculativeSamplingGraphs:
         )
 
     def run_draw(self, size: int) -> None:
-        tokens, logits = draw_block(
-            self.base_logits[:size],
+        base_logits = self.base_logits[:size]
+        tokens, logits = self.draw_kernel(
+            base_logits,
             self.previous_tokens[:size],
             self.markov_head.markov_w1.weight,
             self.markov_head.markov_w2.weight,
             self.state_rows(size),
+            torch.empty_like(base_logits).exponential_(),
         )
         self.drawn_tokens[:size].copy_(tokens)
         self.drawn_logits[:size].copy_(logits)
 
     def run_accept(self, size: int) -> None:
-        accepted_count, next_tokens = accept_block(
-            self.target_logits[: size * self.rows_per_request],
+        draft_tokens = self.draft_tokens[:size]
+        target_logits = self.target_logits[: size * self.rows_per_request]
+        accepted_count, next_tokens = self.accept_kernel(
+            target_logits,
             self.shaped_draft_logits[:size],
-            self.draft_tokens[:size],
+            draft_tokens,
             self.state_rows(size),
+            torch.rand(draft_tokens.shape, device=draft_tokens.device),
+            torch.empty(
+                (size, target_logits.shape[1]), device=draft_tokens.device
+            ).exponential_(),
         )
         self.accepted_count[:size].copy_(accepted_count)
         self.next_tokens[:size].copy_(next_tokens)
