@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 from sglang.kernels.ops.speculative.dspark.dspark_accept import finalize_accept_lens
 from sglang.kernels.ops.speculative.dspark.dspark_verify_window import build_out_tokens
@@ -35,6 +36,7 @@ from sglang_omni.models.minicpm_o.talker_model_runner import (
     REP_PENALTY_WINDOW,
     TalkerSlotState,
 )
+from sglang_omni.models.minicpm_o.talker_slot_kernels import commit_slot_rows
 from sglang_omni.platforms import current_platform
 from tests.unit_test.fixtures.accelerator import require_cuda
 
@@ -447,3 +449,77 @@ def test_slot_state_gives_the_ordered_window_and_takes_committed_blocks() -> Non
     state = state_from_slots(slots, rows)
     assert torch.equal(state.recent_tokens, make_state(after).recent_tokens)
     assert state.generated.tolist() == [len(history) for history in after]
+
+
+def make_filled_slots(
+    vocab: int, device: torch.device, generator: torch.Generator
+) -> TalkerSlotState:
+    """Slots whose windows have wrapped for some rows, with mixed sampling parameters."""
+    slots = TalkerSlotState.allocate(8, vocab, vocab - 1, device)
+    for row, length in enumerate([0, 3, 15, 16, 17, 31, 40, 9]):
+        tokens = torch.randint(vocab, (length,), generator=generator).tolist()
+        for token in tokens:
+            slots.append(
+                torch.tensor([row], device=device), torch.tensor([token], device=device)
+            )
+    rows = slots.generated.shape[0]
+    slots.min_new_tokens.copy_(torch.randint(10, (rows,), generator=generator))
+    slots.penalties.copy_(1 + torch.rand(rows, generator=generator))
+    slots.temperatures.copy_(torch.rand(rows, 1, generator=generator) + 0.1)
+    slots.top_ks.copy_(
+        torch.randint(1, 4, (rows,), generator=generator).to(torch.int32)
+    )
+    slots.top_ps.copy_(torch.rand(rows, generator=generator))
+    slots.suppress.copy_(torch.rand(rows, vocab, generator=generator) < 0.3)
+    return slots
+
+
+@pytest.mark.parametrize("vocab", [VOCAB_SIZE, 2500])
+def test_the_slot_gather_kernel_loads_what_state_from_slots_returns(vocab: int) -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    slots = make_filled_slots(vocab, device, torch.Generator().manual_seed(vocab))
+    rows = torch.tensor([5, 1, 7, 3, 0], device=device)
+    static = StaticSamplingRows(
+        capacity=8, vocab=vocab, eos_id=vocab - 1, device=device
+    )
+
+    expected = state_from_slots(slots, rows)
+    loaded = static.gather(slots, rows)
+
+    assert static.loaded_count == len(rows), "the gather marks its rows as loaded"
+    for name in (
+        "recent_tokens",
+        "generated",
+        "min_new_tokens",
+        "penalties",
+        "suppress",
+        "temperatures",
+        "top_ks",
+        "top_ps",
+        "greedy",
+    ):
+        assert torch.equal(
+            getattr(loaded, name), getattr(expected, name)
+        ), f"{name} bit-exact"
+
+
+def test_the_slot_commit_kernel_appends_what_commit_to_slots_appends() -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    generator = torch.Generator().manual_seed(7)
+    expected = make_filled_slots(VOCAB_SIZE, device, generator)
+    committed_slots = make_filled_slots(
+        VOCAB_SIZE, device, torch.Generator().manual_seed(7)
+    )
+    rows = torch.tensor([6, 2, 4, 5], device=device)
+    committed = torch.randint(VOCAB_SIZE, (4, 8), generator=generator).to(device)
+    counts = torch.tensor([0, 8, 3, 1], dtype=torch.int32, device=device)
+
+    commit_to_slots(expected, rows, committed, counts)
+    commit_slot_rows(committed_slots, rows, committed, counts)
+
+    assert torch.equal(committed_slots.windows, expected.windows), "windows bit-exact"
+    assert torch.equal(
+        committed_slots.generated, expected.generated
+    ), "output counts bit-exact"
