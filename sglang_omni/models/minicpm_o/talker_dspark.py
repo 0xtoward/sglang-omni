@@ -20,9 +20,19 @@ import torch
 from huggingface_hub import snapshot_download
 from safetensors import safe_open
 from safetensors.torch import save_file
-from sglang.kernels.ops.speculative.dspark.dspark_accept import FinalizeAcceptLens
-from sglang.kernels.ops.speculative.dspark.dspark_verify_window import BuildOutTokens
+from sglang.kernels.ops.attention.dsv4.unified_kv_kernels.env_gate import (
+    is_unified_kv_triton,
+)
+from sglang.kernels.ops.speculative.dspark.dspark_accept import (
+    FinalizeAcceptLens,
+    finalize_accept_lens,
+)
+from sglang.kernels.ops.speculative.dspark.dspark_verify_window import (
+    BuildOutTokens,
+    build_out_tokens,
+)
 from sglang.srt.environ import envs
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.utils import GenerationBatchResult
@@ -39,6 +49,7 @@ from sglang.srt.speculative.dspark_components.dspark_draft import (
 from sglang.srt.speculative.dspark_components.dspark_draft_sampler import (
     DsparkDraftSampler,
 )
+from sglang.srt.speculative.dspark_components.dspark_planner import VerifyWindow
 from sglang.srt.speculative.dspark_components.dspark_verify import (
     AcceptOuts,
     TargetVerifyExecutor,
@@ -334,13 +345,13 @@ class FoldedTalkerDraw(DsparkDraftSampler):
 
 
 class ExactAcceptGraphs:
-    """The exact verify replayed as a device graph per padded batch size.
+    """The exact verify and its commit lengths replayed as a device graph per padded batch size.
 
-    Eager, it is a compiled-function dispatch plus dozens of small kernels per step,
-    several times the Talker's GPU work for a block; a replay launches them at once.
-    The graphs read the draft tokens and shaped logits where the folded draw leaves
-    them; batches above the largest size, or whose rows were not loaded, take the
-    fallback.
+    Eager, the verify is a compiled-function dispatch plus dozens of small kernels per
+    step, several times the Talker's GPU work for a block, and the commit lengths and
+    output tokens are two more kernel launches; a replay launches them at once. The
+    graphs read the draft tokens and shaped logits where the folded draw leaves them;
+    batches above the largest size, or whose rows were not loaded, take the fallback.
     """
 
     def __init__(
@@ -374,6 +385,13 @@ class ExactAcceptGraphs:
         )
         self.accepted_count = torch.zeros(largest, dtype=torch.long, device=device)
         self.next_tokens = torch.zeros(largest, dtype=torch.long, device=device)
+        self.prefix_lens = torch.zeros(largest, dtype=torch.long, device=device)
+        self.no_trim = torch.zeros(largest, dtype=torch.int32, device=device)
+        self.commit_lens = torch.zeros(largest, dtype=torch.int32, device=device)
+        self.new_seq_lens = torch.zeros(largest, dtype=torch.long, device=device)
+        self.out_tokens = torch.zeros(
+            (largest, self.rows_per_request), dtype=torch.long, device=device
+        )
         self.graphs: dict[int, ReplayableGraph] = {}
         device_module = torch.get_device_module(device)
         pool = backend.graph_pool_handle()
@@ -408,22 +426,38 @@ class ExactAcceptGraphs:
         )
         self.accepted_count[:size].copy_(accepted_count)
         self.next_tokens[:size].copy_(next_tokens)
+        finalized = finalize_accept_lens(
+            correct_len=accepted_count,
+            cap_trim_lens=self.no_trim[:size],
+            prefix_lens=self.prefix_lens[:size],
+        )
+        self.commit_lens[:size].copy_(finalized.commit_lens)
+        self.new_seq_lens[:size].copy_(finalized.new_seq_lens)
+        self.out_tokens[:size].copy_(
+            build_out_tokens(
+                draft_tokens=draft_tokens,
+                correct_len=accepted_count,
+                bonus=next_tokens,
+                verify_num_draft_tokens=self.rows_per_request,
+                gamma=self.gamma,
+            )
+        )
 
-    def accept(
+    def padded_size(self, count: int) -> int | None:
+        if count != self.sampling_rows.loaded_count:
+            return None
+        else:
+            pass
+        return next((size for size in self.batch_sizes if size >= count), None)
+
+    def replay(
         self,
+        size: int,
         target_logits: torch.Tensor,
         shaped_draft_logits: torch.Tensor,
         draft_tokens: torch.Tensor,
-        state: TalkerSamplingState,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> None:
         count = draft_tokens.shape[0]
-        size = next((size for size in self.batch_sizes if size >= count), None)
-        if size is None or count != self.sampling_rows.loaded_count:
-            return self.fallback(
-                target_logits, shaped_draft_logits, draft_tokens, state
-            )
-        else:
-            pass
         rows = count * self.gamma
         # An eager draft draw leaves its block elsewhere; the folded draw, in place.
         if shaped_draft_logits.data_ptr() != self.shaped_draft_logits.data_ptr():
@@ -433,7 +467,137 @@ class ExactAcceptGraphs:
             pass
         self.target_logits[: count * self.rows_per_request].copy_(target_logits)
         self.graphs[size].replay()
+
+    def accept_and_finalize(
+        self,
+        target_logits: torch.Tensor,
+        shaped_draft_logits: torch.Tensor,
+        draft_tokens: torch.Tensor,
+        prefix_lens: torch.Tensor,
+    ) -> AcceptOuts | None:
+        """One replay for the verify, the commit lengths and the output tokens; None when no graph fits."""
+        count = draft_tokens.shape[0]
+        size = self.padded_size(count)
+        if size is None:
+            return None
+        else:
+            pass
+        self.prefix_lens[:count].copy_(prefix_lens)
+        self.replay(size, target_logits, shaped_draft_logits, draft_tokens)
+        return AcceptOuts(
+            correct_len=self.accepted_count[:count].clone(),
+            bonus=self.next_tokens[:count].clone(),
+            cap_trim_lens=self.no_trim[:count],
+            commit_lens=self.commit_lens[:count].clone(),
+            new_seq_lens=self.new_seq_lens[:count].clone(),
+            out_tokens=self.out_tokens[:count].clone(),
+        )
+
+    def accept(
+        self,
+        target_logits: torch.Tensor,
+        shaped_draft_logits: torch.Tensor,
+        draft_tokens: torch.Tensor,
+        state: TalkerSamplingState,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        count = draft_tokens.shape[0]
+        size = self.padded_size(count)
+        if size is None:
+            return self.fallback(
+                target_logits, shaped_draft_logits, draft_tokens, state
+            )
+        else:
+            pass
+        self.replay(size, target_logits, shaped_draft_logits, draft_tokens)
         return self.accepted_count[:count].clone(), self.next_tokens[:count].clone()
+
+
+class DraftKvInjectionGraphs:
+    """The draft's KV write for the committed verify rows, replayed as a device graph per padded batch size.
+
+    Eager it is the target-hidden projection, a projection to every draft layer's keys
+    and values and a fused norm, rope and write kernel, launched from Python each step.
+    Padded rows commit nothing, so the write masks them out.
+    """
+
+    def __init__(
+        self,
+        *,
+        batch_sizes: list[int],
+        rows_per_request: int,
+        hidden_width: int,
+        hidden_dtype: torch.dtype,
+        inject: Callable[..., None],
+        backend: DeviceGraphBackend,
+        device: torch.device,
+    ) -> None:
+        self.batch_sizes = sorted(set(batch_sizes))
+        self.rows_per_request = rows_per_request
+        self.inject = inject
+        largest = self.batch_sizes[-1]
+        self.hidden = torch.zeros(
+            (largest * rows_per_request, hidden_width),
+            dtype=hidden_dtype,
+            device=device,
+        )
+        self.cache_loc_2d = torch.zeros(
+            (largest, rows_per_request), dtype=torch.long, device=device
+        )
+        self.positions = torch.zeros(
+            largest * rows_per_request, dtype=torch.long, device=device
+        )
+        # Zero commit lengths make the warm-ups and padded rows write nothing.
+        self.commit_lens = torch.zeros(largest, dtype=torch.int32, device=device)
+        self.graphs: dict[int, ReplayableGraph] = {}
+        device_module = torch.get_device_module(device)
+        pool = backend.graph_pool_handle()
+        stream = device_module.Stream(device=device)
+        # note (0xtoward): largest first on one stream, so smaller graphs reuse its pool.
+        for size in reversed(self.batch_sizes):
+            stream.wait_stream(device_module.current_stream(device))
+            with device_module.stream(stream):
+                for _ in range(2):
+                    self.run(size)
+            with backend.capture(
+                pool=pool, stream=stream, thread_local_errors=True
+            ) as graph:
+                self.run(size)
+            self.graphs[size] = graph
+            device_module.current_stream(device).wait_stream(stream)
+
+    def run(self, size: int) -> None:
+        rows = size * self.rows_per_request
+        self.inject(
+            target_hidden=self.hidden[:rows],
+            cache_loc=self.cache_loc_2d[:size].reshape(-1),
+            positions=self.positions[:rows],
+            cache_loc_2d=self.cache_loc_2d[:size],
+            commit_lens=self.commit_lens[:size],
+        )
+
+    def write(
+        self,
+        *,
+        hidden: torch.Tensor,
+        cache_loc_2d: torch.Tensor,
+        positions: torch.Tensor,
+        commit_lens: torch.Tensor,
+    ) -> bool:
+        """Write the committed rows' draft KV; False when no graph fits the batch."""
+        count = cache_loc_2d.shape[0]
+        size = next((size for size in self.batch_sizes if size >= count), None)
+        if size is None:
+            return False
+        else:
+            pass
+        rows = count * self.rows_per_request
+        self.hidden[:rows].copy_(hidden.reshape(rows, -1))
+        self.cache_loc_2d[:count].copy_(cache_loc_2d)
+        self.positions[:rows].copy_(positions)
+        self.commit_lens[:count].copy_(commit_lens)
+        self.commit_lens[count:size].zero_()
+        self.graphs[size].replay()
+        return True
 
 
 class MirroredMarkovHead(VanillaMarkov):
@@ -612,6 +776,8 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
 
     sampling_state: TalkerSamplingState | None = None
     accept_function: BlockAccept = staticmethod(accept_block)
+    accept_graphs: ExactAcceptGraphs | None = None
+    kv_graphs: DraftKvInjectionGraphs | None = None
 
     def accept_and_finalize(
         self,
@@ -631,6 +797,16 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
         assert not folded_accept and layout is None and target_logits is not None
         assert state is not None, "a verify step needs its sampling state"
         draft_tokens = draft_tokens.long()
+        if self.accept_graphs is not None:
+            replayed = self.accept_graphs.accept_and_finalize(
+                target_logits, draft_block.corrected_logits, draft_tokens, prefix_lens
+            )
+            if replayed is not None:
+                return replayed
+            else:
+                pass
+        else:
+            pass
         accepted_count, next_tokens = self.accept_function(
             target_logits, draft_block.corrected_logits, draft_tokens, state
         )
@@ -653,6 +829,45 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
             commit_lens=finalized.commit_lens,
             new_seq_lens=finalized.new_seq_lens,
             out_tokens=out_tokens,
+        )
+
+    def commit_hidden(
+        self,
+        *,
+        batch: ScheduleBatch,
+        layout: None,
+        hidden_strided: torch.Tensor | None,
+        verify_window: VerifyWindow,
+        logits_output: LogitsProcessorOutput,
+        commit_lens: torch.Tensor,
+        bs: int,
+        run_compact: bool,
+    ) -> None:
+        """Write the committed rows' draft KV from a graph replay when one fits."""
+        hidden = logits_output.hidden_states
+        if (
+            self.kv_graphs is not None
+            and not run_compact
+            and hidden is not None
+            and self.kv_graphs.write(
+                hidden=hidden,
+                cache_loc_2d=verify_window.verify_cache_loc_2d,
+                positions=verify_window.positions_2d.reshape(-1),
+                commit_lens=commit_lens,
+            )
+        ):
+            return
+        else:
+            pass
+        super().commit_hidden(
+            batch=batch,
+            layout=layout,
+            hidden_strided=hidden_strided,
+            verify_window=verify_window,
+            logits_output=logits_output,
+            commit_lens=commit_lens,
+            bs=bs,
+            run_compact=run_compact,
         )
 
 
@@ -735,6 +950,21 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
             device=device,
         )
         self.exact_verify_executor.accept_function = self.accept_graphs.accept
+        self.exact_verify_executor.accept_graphs = self.accept_graphs
+        # note (0xtoward): the unified SWA KV ring addresses rows by request slot, which
+        # the KV graphs leave out.
+        if not is_unified_kv_triton():
+            self.exact_verify_executor.kv_graphs = DraftKvInjectionGraphs(
+                batch_sizes=self.accept_graphs.batch_sizes,
+                rows_per_request=self.gamma + 1,
+                hidden_width=int(self.draft_model.fc.in_features),
+                hidden_dtype=self.draft_model.fc.weight.dtype,
+                inject=self._kv_injector.inject_target_hidden,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                backend=backend,
+                device=device,
+            )
+        else:
+            pass
 
     # note (0xtoward): compiled graphs guard on grad mode, so the warm-up runs under the
     # scheduler loop's mode.
