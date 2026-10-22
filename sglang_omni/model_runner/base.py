@@ -155,6 +155,9 @@ class ModelRunner(Generic[RequestDataInput]):
       - decode hooks for single-step autoregressive decode processing
     """
 
+    # True when the model's own speculative verify applies repetition_penalty exactly.
+    speculative_verifies_repetition_penalty: bool = False
+
     def __init__(
         self,
         tp_worker: ModelWorker,
@@ -679,6 +682,16 @@ class ModelRunner(Generic[RequestDataInput]):
                 self.cleanup_prefill(forward_batch, schedule_batch, requests)
             else:
                 pass
+
+    def on_speculative_tokens(
+        self, scheduler_request: SchedulerRequest, token_ids: list[int]
+    ) -> None:
+        """Hook for the tokens one speculative step committed for a request.
+
+        Speculative decoding bypasses execute, so a runner collecting outputs in
+        post_decode collects them here; they end at the stop, before the result.
+        """
+        return None
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Request ids whose ``generation_steps`` must NOT advance this step.
