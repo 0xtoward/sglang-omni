@@ -350,16 +350,22 @@ def test_event_loops_run_without_autograd(loop_name: str) -> None:
 class LookaheadBatch:
     """A schedule batch reduced to what the speculative lookahead loop reads."""
 
-    def __init__(self, name: str, forward_mode: ForwardMode) -> None:
+    def __init__(
+        self, name: str, forward_mode: ForwardMode, *, middle_chunk: bool = False
+    ) -> None:
         self.name = name
         self.forward_mode = forward_mode
+        self.middle_chunk = middle_chunk
         self.reqs = [object()]
+        self.decoding_reqs = None
 
     def copy(self) -> LookaheadBatch:
-        return LookaheadBatch(self.name, self.forward_mode)
+        return LookaheadBatch(
+            self.name, self.forward_mode, middle_chunk=self.middle_chunk
+        )
 
 
-def test_speculative_lookahead_launches_a_decode_step_before_processing_the_last_one() -> (
+def test_speculative_lookahead_launches_each_step_before_processing_the_last_one() -> (
     None
 ):
     scheduler = object.__new__(OmniScheduler)
@@ -376,8 +382,10 @@ def test_speculative_lookahead_launches_a_decode_step_before_processing_the_last
     batches = deque(
         [
             LookaheadBatch("decode-1", ForwardMode.DECODE),
-            LookaheadBatch("decode-2", ForwardMode.DECODE),
             LookaheadBatch("prefill", ForwardMode.EXTEND),
+            LookaheadBatch("decode-2", ForwardMode.DECODE),
+            LookaheadBatch("middle-chunk", ForwardMode.EXTEND, middle_chunk=True),
+            LookaheadBatch("final-chunk", ForwardMode.EXTEND),
             None,
         ]
     )
@@ -385,6 +393,9 @@ def test_speculative_lookahead_launches_a_decode_step_before_processing_the_last
 
     def get_next_batch_to_run() -> LookaheadBatch | None:
         batch = batches.popleft()
+        scheduler.chunked_req = (
+            object() if batch is not None and batch.middle_chunk else None
+        )
         scheduler.running = bool(batches)
         return batch
 
@@ -402,12 +413,16 @@ def test_speculative_lookahead_launches_a_decode_step_before_processing_the_last
 
     assert events == [
         "launch decode-1",
-        "launch decode-2",
-        "process decode-1",
-        "process decode-2",
         "launch prefill",
+        "process decode-1",
+        "launch decode-2",
         "process prefill",
-    ], "a decode step launches before the last result is processed; a prefill drains it first"
+        "process decode-2",
+        "launch middle-chunk",
+        "process middle-chunk",
+        "launch final-chunk",
+        "process final-chunk",
+    ], "a step launches before the last result is processed; a middle chunk drains it and runs synchronously"
     assert (
         scheduler.speculative_pending is None
     ), "the idle iteration leaves no step in flight"
