@@ -1940,6 +1940,12 @@ class OmniScheduler(Generic[RequestDataT]):
                 ("logprobs", request_data.return_logprob),
                 ("return_hidden_states", request.return_hidden_states),
                 ("min_p", sampling_params.min_p > 0.0),
+                # note (0xtoward): verify draws its own randomness, so a seed is lost.
+                (
+                    "seed",
+                    sampling_params.sampling_seed is not None
+                    and sampling_params.top_k != 1,
+                ),
                 ("frequency_penalty", sampling_params.frequency_penalty != 0.0),
                 ("presence_penalty", sampling_params.presence_penalty != 0.0),
                 (
@@ -2599,16 +2605,17 @@ class OmniScheduler(Generic[RequestDataT]):
                     if finished_reason is not None
                     else None
                 )
-                model_runner = self.model_runner
-                if model_runner is not None:
-                    model_runner.on_request_finished(rid, data)
-                else:
-                    pass
+                # note (0xtoward): a verify block can commit tokens past the stop.
                 data.output_ids = list(
                     req.output_ids
                     if self.draft_worker is None
                     else req.output_ids_through_stop
                 )
+                model_runner = self.model_runner
+                if model_runner is not None:
+                    model_runner.on_request_finished(rid, data)
+                else:
+                    pass
                 data.weight_version = get_serving().weight_version
                 self.flush_stream_output(rid, data)
                 session_unit = self.active_session_unit(rid)
