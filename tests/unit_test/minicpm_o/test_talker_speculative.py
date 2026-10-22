@@ -6,11 +6,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import torch
+from sglang.kernels.ops.speculative.dspark.dspark_accept import finalize_accept_lens
+from sglang.kernels.ops.speculative.dspark.dspark_verify_window import build_out_tokens
 from sglang.srt.models.dspark import VanillaMarkov
 from sglang.srt.speculative.spec_tp_sync import SpecTpSync
 from torch import nn
 
 from sglang_omni.models.minicpm_o.talker_dspark import (
+    DraftKvInjectionGraphs,
     ExactAcceptGraphs,
     FoldedTalkerDraw,
     StaticSamplingRows,
@@ -348,6 +351,72 @@ def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block() -> None:
     )
     assert torch.equal(accepted, expected_accepted)
     assert torch.equal(bonus, expected_bonus)
+
+    # One replay also gives the commit lengths and the output tokens.
+    prefix_lens = torch.tensor([40, 7, 19], device=device)
+    outs = graphs.accept_and_finalize(target_logits, shaped, tokens, prefix_lens)
+    expected = finalize_accept_lens(
+        correct_len=expected_accepted,
+        cap_trim_lens=torch.zeros(3, dtype=torch.int32, device=device),
+        prefix_lens=prefix_lens,
+    )
+    assert torch.equal(outs.correct_len, expected_accepted)
+    assert torch.equal(outs.bonus, expected_bonus)
+    assert torch.equal(outs.commit_lens, expected.commit_lens)
+    assert torch.equal(outs.new_seq_lens, expected.new_seq_lens)
+    assert torch.equal(
+        outs.out_tokens,
+        build_out_tokens(
+            draft_tokens=tokens,
+            correct_len=expected_accepted,
+            bonus=expected_bonus,
+            verify_num_draft_tokens=gamma + 1,
+            gamma=gamma,
+        ),
+    )
+
+
+def test_kv_injection_graphs_write_only_the_committed_rows() -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    rows_per_request, width, trash = 3, 4, 99
+    cache = torch.zeros(100, device=device)
+
+    def inject(*, target_hidden, cache_loc, positions, cache_loc_2d, commit_lens):
+        # A stand-in for the draft's KV write: row value = hidden sum + position,
+        # rows past the commit length land in a slot nobody reads.
+        del cache_loc
+        size = cache_loc_2d.shape[0]
+        keep = torch.arange(rows_per_request, device=device) < commit_lens.view(-1, 1)
+        locs = torch.where(keep, cache_loc_2d, torch.full_like(cache_loc_2d, trash))
+        values = target_hidden.float().sum(-1) + positions.float()
+        cache.scatter_(0, locs.reshape(-1), values.view(size * rows_per_request))
+
+    graphs = DraftKvInjectionGraphs(
+        batch_sizes=[1, 4],
+        rows_per_request=rows_per_request,
+        hidden_width=width,
+        hidden_dtype=torch.bfloat16,
+        inject=inject,
+        backend=current_platform.get_device_graph_backend(device),
+        device=device,
+    )
+    cache.zero_()
+    hidden = torch.ones(
+        2 * rows_per_request, width, dtype=torch.bfloat16, device=device
+    )
+    cache_loc_2d = torch.tensor([[10, 11, 12], [20, 21, 22]], device=device)
+    positions = torch.tensor([5, 6, 7, 30, 31, 32], device=device)
+    assert graphs.write(
+        hidden=hidden,
+        cache_loc_2d=cache_loc_2d,
+        positions=positions,
+        commit_lens=torch.tensor([2, 3], dtype=torch.int32, device=device),
+    )
+    written = {int(i): float(cache[i]) for i in torch.nonzero(cache).view(-1).tolist()}
+    trash_value = written.pop(trash, None)
+    assert written == {10: 9.0, 11: 10.0, 20: 34.0, 21: 35.0, 22: 36.0}
+    assert trash_value is not None
 
 
 def test_slot_state_gives_the_ordered_window_and_takes_committed_blocks() -> None:
