@@ -319,7 +319,14 @@ def test_scheduler_idle_sleep_yields_to_pending_request_builds(
     assert sleep_calls == ([0.001, 0.0001] if follower else [0.0001])
 
 
-@pytest.mark.parametrize("loop_name", ["event_loop_normal", "event_loop_async_decode"])
+@pytest.mark.parametrize(
+    "loop_name",
+    [
+        "event_loop_normal",
+        "event_loop_async_decode",
+        "event_loop_speculative_lookahead",
+    ],
+)
 def test_event_loops_run_without_autograd(loop_name: str) -> None:
     class StopLoop(Exception):
         pass
@@ -338,6 +345,72 @@ def test_event_loops_run_without_autograd(loop_name: str) -> None:
 
     assert grad_modes == [False]
     assert torch.is_grad_enabled()
+
+
+class LookaheadBatch:
+    """A schedule batch reduced to what the speculative lookahead loop reads."""
+
+    def __init__(self, name: str, forward_mode: ForwardMode) -> None:
+        self.name = name
+        self.forward_mode = forward_mode
+        self.reqs = [object()]
+
+    def copy(self) -> LookaheadBatch:
+        return LookaheadBatch(self.name, self.forward_mode)
+
+
+def test_speculative_lookahead_launches_a_decode_step_before_processing_the_last_one() -> (
+    None
+):
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.running = True
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
+    scheduler.speculative_pending = None
+    scheduler.process_admin_requests = lambda: None
+    scheduler.recv_requests = lambda: []
+    scheduler.take_deferred_request_payloads = lambda: []
+    scheduler.process_input_requests = lambda requests: None
+    scheduler.self_check_during_idle = lambda: None
+    scheduler.sleep_during_idle = lambda: None
+    scheduler.drop_stale_overrun = lambda batch: batch
+    batches = deque(
+        [
+            LookaheadBatch("decode-1", ForwardMode.DECODE),
+            LookaheadBatch("decode-2", ForwardMode.DECODE),
+            LookaheadBatch("prefill", ForwardMode.EXTEND),
+            None,
+        ]
+    )
+    events: list[str] = []
+
+    def get_next_batch_to_run() -> LookaheadBatch | None:
+        batch = batches.popleft()
+        scheduler.running = bool(batches)
+        return batch
+
+    def run_batch(batch: LookaheadBatch) -> str:
+        events.append(f"launch {batch.name}")
+        return batch.name
+
+    scheduler.get_next_batch_to_run = get_next_batch_to_run
+    scheduler.run_batch = run_batch
+    scheduler.process_batch_result = lambda batch, result: events.append(
+        f"process {result}"
+    )
+
+    scheduler.event_loop_speculative_lookahead()
+
+    assert events == [
+        "launch decode-1",
+        "launch decode-2",
+        "process decode-1",
+        "process decode-2",
+        "launch prefill",
+        "process prefill",
+    ], "a decode step launches before the last result is processed; a prefill drains it first"
+    assert (
+        scheduler.speculative_pending is None
+    ), "the idle iteration leaves no step in flight"
 
 
 def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> None:
