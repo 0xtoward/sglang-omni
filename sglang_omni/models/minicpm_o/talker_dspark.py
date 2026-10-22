@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import torch
 from huggingface_hub import snapshot_download
@@ -53,6 +53,8 @@ from sglang_omni.models.minicpm_o.talker_dspark_sampling import (
     sample_draft_block,
 )
 from sglang_omni.models.minicpm_o.talker_model_runner import REP_PENALTY_WINDOW
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 
 DRAFT_ARCHITECTURE = "MiniCPMOTalkerDSparkDraftModel"
 # Fields SGLang reads from the top level of a DSpark config; SpecForge exports nest them.
@@ -142,6 +144,238 @@ def materialize_draft_checkpoint(
     return draft_dir, int(config["block_size"])
 
 
+BlockDraw = Callable[
+    [torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, TalkerSamplingState],
+    tuple[torch.Tensor, torch.Tensor],
+]
+BlockAccept = Callable[
+    [torch.Tensor, torch.Tensor, torch.Tensor, TalkerSamplingState],
+    tuple[torch.Tensor, torch.Tensor],
+]
+
+
+def draw_block(
+    base_logits: torch.Tensor,
+    previous_tokens: torch.Tensor,
+    markov_embedding: torch.Tensor,
+    markov_projection: torch.Tensor,
+    state: TalkerSamplingState,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """sample_draft_block with its Exp(1) noise drawn here."""
+    return sample_draft_block(
+        base_logits,
+        previous_tokens,
+        markov_embedding,
+        markov_projection,
+        state,
+        torch.empty_like(base_logits, dtype=torch.float32).exponential_(),
+    )
+
+
+def accept_block(
+    target_logits: torch.Tensor,
+    shaped_draft_logits: torch.Tensor,
+    draft_tokens: torch.Tensor,
+    state: TalkerSamplingState,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """exact_accept with its uniform and Exp(1) noise drawn here."""
+    return exact_accept(
+        target_logits,
+        shaped_draft_logits,
+        draft_tokens,
+        state,
+        torch.rand(draft_tokens.shape, device=draft_tokens.device),
+        torch.empty(
+            (draft_tokens.shape[0], target_logits.shape[1]), device=draft_tokens.device
+        ).exponential_(),
+    )
+
+
+class SpeculativeSamplingGraphs:
+    """The draft draw and the exact verify replayed as device graphs per padded batch size.
+
+    Eager, each is a compiled-function dispatch plus dozens of small kernels per step,
+    several times the Talker's GPU work for a block; a replay launches them at once.
+    Batches above the largest size, or whose state was not loaded, take the fallbacks.
+    """
+
+    def __init__(
+        self,
+        *,
+        batch_sizes: list[int],
+        gamma: int,
+        vocab: int,
+        eos_id: int,
+        markov_head: VanillaMarkov,
+        draw_fallback: BlockDraw,
+        accept_fallback: BlockAccept,
+        backend: DeviceGraphBackend,
+        device: torch.device,
+    ) -> None:
+        self.batch_sizes = sorted(set(batch_sizes))
+        self.draw_fallback = draw_fallback
+        self.accept_fallback = accept_fallback
+        self.markov_head = markov_head
+        self.rows_per_request = gamma + 1
+        largest = self.batch_sizes[-1]
+        self.state = TalkerSamplingState(
+            recent_tokens=torch.full(
+                (largest, REP_PENALTY_WINDOW), vocab, dtype=torch.long, device=device
+            ),
+            generated=torch.zeros(largest, dtype=torch.long, device=device),
+            min_new_tokens=torch.zeros(largest, dtype=torch.long, device=device),
+            penalties=torch.ones(largest, device=device),
+            suppress=torch.zeros((largest, vocab), dtype=torch.bool, device=device),
+            temperatures=torch.ones(largest, device=device),
+            top_ks=torch.full((largest,), vocab, dtype=torch.long, device=device),
+            top_ps=torch.ones(largest, device=device),
+            greedy=torch.zeros(largest, dtype=torch.bool, device=device),
+            eos_id=eos_id,
+        )
+        self.base_logits = torch.zeros((largest, gamma, vocab), device=device)
+        self.previous_tokens = torch.zeros(largest, dtype=torch.long, device=device)
+        self.target_logits = torch.zeros(
+            (largest * self.rows_per_request, vocab), device=device
+        )
+        self.shaped_draft_logits = torch.zeros((largest, gamma, vocab), device=device)
+        self.draft_tokens = torch.zeros(
+            (largest, gamma), dtype=torch.long, device=device
+        )
+        self.drawn_tokens = torch.zeros(
+            (largest, gamma), dtype=torch.long, device=device
+        )
+        self.drawn_logits = torch.zeros((largest, gamma, vocab), device=device)
+        self.accepted_count = torch.zeros(largest, dtype=torch.long, device=device)
+        self.next_tokens = torch.zeros(largest, dtype=torch.long, device=device)
+        self.loaded_count = 0
+        self.draw_graphs: dict[int, ReplayableGraph] = {}
+        self.accept_graphs: dict[int, ReplayableGraph] = {}
+        device_module = torch.get_device_module(device)
+        pool = backend.graph_pool_handle()
+        stream = device_module.Stream(device=device)
+        # note (0xtoward): largest first on one stream, so smaller graphs reuse its pool.
+        for size in reversed(self.batch_sizes):
+            stream.wait_stream(device_module.current_stream(device))
+            with device_module.stream(stream):
+                for _ in range(2):
+                    self.run_draw(size)
+                    self.run_accept(size)
+            # note (0xtoward): code2wav runs on other threads of this process, so a
+            # capture failure there must not abort this one.
+            with backend.capture(
+                pool=pool, stream=stream, thread_local_errors=True
+            ) as graph:
+                self.run_draw(size)
+            self.draw_graphs[size] = graph
+            with backend.capture(
+                pool=pool, stream=stream, thread_local_errors=True
+            ) as graph:
+                self.run_accept(size)
+            self.accept_graphs[size] = graph
+            device_module.current_stream(device).wait_stream(stream)
+
+    def state_rows(self, size: int) -> TalkerSamplingState:
+        state = self.state
+        return TalkerSamplingState(
+            recent_tokens=state.recent_tokens[:size],
+            generated=state.generated[:size],
+            min_new_tokens=state.min_new_tokens[:size],
+            penalties=state.penalties[:size],
+            suppress=state.suppress[:size],
+            temperatures=state.temperatures[:size],
+            top_ks=state.top_ks[:size],
+            top_ps=state.top_ps[:size],
+            greedy=state.greedy[:size],
+            eos_id=state.eos_id,
+        )
+
+    def run_draw(self, size: int) -> None:
+        tokens, logits = draw_block(
+            self.base_logits[:size],
+            self.previous_tokens[:size],
+            self.markov_head.markov_w1.weight,
+            self.markov_head.markov_w2.weight,
+            self.state_rows(size),
+        )
+        self.drawn_tokens[:size].copy_(tokens)
+        self.drawn_logits[:size].copy_(logits)
+
+    def run_accept(self, size: int) -> None:
+        accepted_count, next_tokens = accept_block(
+            self.target_logits[: size * self.rows_per_request],
+            self.shaped_draft_logits[:size],
+            self.draft_tokens[:size],
+            self.state_rows(size),
+        )
+        self.accepted_count[:size].copy_(accepted_count)
+        self.next_tokens[:size].copy_(next_tokens)
+
+    def padded_size(self, count: int) -> int | None:
+        return next((size for size in self.batch_sizes if size >= count), None)
+
+    def load(self, state: TalkerSamplingState) -> None:
+        """Copy one step's sampling state into the graphs' inputs; rows past it stay valid."""
+        count = int(state.generated.shape[0])
+        if self.padded_size(count) is None:
+            self.loaded_count = 0
+            return
+        else:
+            pass
+        for name in (
+            "recent_tokens",
+            "generated",
+            "min_new_tokens",
+            "penalties",
+            "suppress",
+            "temperatures",
+            "top_ks",
+            "top_ps",
+            "greedy",
+        ):
+            getattr(self.state, name)[:count].copy_(getattr(state, name))
+        self.loaded_count = count
+
+    def draw(
+        self,
+        base_logits: torch.Tensor,
+        previous_tokens: torch.Tensor,
+        markov_embedding: torch.Tensor,
+        markov_projection: torch.Tensor,
+        state: TalkerSamplingState,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        count = base_logits.shape[0]
+        if count != self.loaded_count:
+            return self.draw_fallback(
+                base_logits, previous_tokens, markov_embedding, markov_projection, state
+            )
+        else:
+            pass
+        self.base_logits[:count].copy_(base_logits)
+        self.previous_tokens[:count].copy_(previous_tokens)
+        self.draw_graphs[self.padded_size(count)].replay()
+        return self.drawn_tokens[:count].clone(), self.drawn_logits[:count].clone()
+
+    def accept(
+        self,
+        target_logits: torch.Tensor,
+        shaped_draft_logits: torch.Tensor,
+        draft_tokens: torch.Tensor,
+        state: TalkerSamplingState,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        count = draft_tokens.shape[0]
+        if count != self.loaded_count:
+            return self.accept_fallback(
+                target_logits, shaped_draft_logits, draft_tokens, state
+            )
+        else:
+            pass
+        self.target_logits[: count * self.rows_per_request].copy_(target_logits)
+        self.shaped_draft_logits[:count].copy_(shaped_draft_logits)
+        self.draft_tokens[:count].copy_(draft_tokens)
+        self.accept_graphs[self.padded_size(count)].replay()
+        return self.accepted_count[:count].clone(), self.next_tokens[:count].clone()
+
+
 class MirroredMarkovHead(VanillaMarkov):
     """Markov head that draws each draft step from the talker's shaping of it.
 
@@ -152,7 +386,7 @@ class MirroredMarkovHead(VanillaMarkov):
     def __init__(self, *, vocab_size: int, markov_rank: int) -> None:
         super().__init__(vocab_size=vocab_size, markov_rank=markov_rank)
         self.sampling_state: TalkerSamplingState | None = None
-        self.block_sampler = sample_draft_block
+        self.block_sampler: BlockDraw = draw_block
 
     def sample_block(
         self,
@@ -176,7 +410,6 @@ class MirroredMarkovHead(VanillaMarkov):
             self.markov_w1.weight,
             self.markov_w2.weight,
             state,
-            torch.empty_like(base_logits, dtype=torch.float32).exponential_(),
         )
 
 
@@ -272,7 +505,7 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
     """Accept drafts against the talker's exact per-position distribution."""
 
     sampling_state: TalkerSamplingState | None = None
-    accept_function = staticmethod(exact_accept)
+    accept_function: BlockAccept = staticmethod(accept_block)
 
     def accept_and_finalize(
         self,
@@ -293,14 +526,7 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
         assert state is not None, "a verify step needs its sampling state"
         draft_tokens = draft_tokens.long()
         accepted_count, next_tokens = self.accept_function(
-            target_logits,
-            draft_block.corrected_logits,
-            draft_tokens,
-            state,
-            torch.rand(draft_tokens.shape, device=draft_tokens.device),
-            torch.empty(
-                (bs, target_logits.shape[1]), device=draft_tokens.device
-            ).exponential_(),
+            target_logits, draft_block.corrected_logits, draft_tokens, state
         )
         finalized = FinalizeAcceptLens.execute(
             correct_len=accepted_count,
@@ -326,6 +552,8 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
 
 class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
     """DSpark worker that mirrors the talker's sampling in drafting and verification."""
+
+    sampling_graphs: SpeculativeSamplingGraphs | None = None
 
     def __init__(
         self,
@@ -369,15 +597,39 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
         self._verify_executor = (
             self.exact_verify_executor
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        # note (0xtoward): eager, the draft block and the exact verify are about a hundred
-        # small kernels per step; compiled they fuse into a few.
-        self.exact_verify_executor.accept_function = torch.compile(
-            exact_accept, dynamic=True
-        )
-        self.draft_model.markov_head.block_sampler = torch.compile(
-            sample_draft_block, dynamic=True
-        )
+        markov_head = self.draft_model.markov_head
+        # note (0xtoward): batches the graphs do not cover draw and verify compiled; eager,
+        # each is about a hundred small kernels per step.
+        self.compiled_draw = torch.compile(draw_block, dynamic=True)
+        self.compiled_accept = torch.compile(accept_block, dynamic=True)
+        markov_head.block_sampler = self.compiled_draw
+        self.exact_verify_executor.accept_function = self.compiled_accept
         self.warm_up_compiled_sampling()
+
+    def init_cuda_graphs(self) -> None:
+        """Capture the sampling graphs too, once the request slots they are sized by exist."""
+        super().init_cuda_graphs()
+        device = torch.device(self.device)
+        backend = current_platform.get_device_graph_backend(device)
+        if backend is None:
+            return
+        else:
+            pass
+        markov_head = self.draft_model.markov_head
+        slots = self.target_worker.model_runner.req_to_token_pool.req_to_token.shape[0]
+        self.sampling_graphs = SpeculativeSamplingGraphs(
+            batch_sizes=[size for size in (1, 2, 4, 8, 16, 32) if size <= slots] or [1],
+            gamma=self.gamma,
+            vocab=int(self.draft_model.lm_head.weight.shape[0]),
+            eos_id=self.eos_id,
+            markov_head=markov_head,
+            draw_fallback=self.compiled_draw,
+            accept_fallback=self.compiled_accept,
+            backend=backend,
+            device=device,
+        )
+        markov_head.block_sampler = self.sampling_graphs.draw
+        self.exact_verify_executor.accept_function = self.sampling_graphs.accept
 
     # note (0xtoward): compiled graphs guard on grad mode, so the warm-up runs under the
     # scheduler loop's mode.
@@ -423,15 +675,12 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
                 markov_head.markov_w1.weight,
                 markov_head.markov_w2.weight,
                 state,
-                torch.ones_like(base_logits),
             )
             self.exact_verify_executor.accept_function(
                 torch.zeros((batch_size * (self.gamma + 1), vocab), device=self.device),
                 shaped_logits,
                 draft_tokens,
                 state,
-                torch.zeros((batch_size, self.gamma), device=self.device),
-                torch.ones((batch_size, vocab), device=self.device),
             )
 
     def _maybe_build_draft_sampler(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -466,6 +715,10 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
             state = build_sampling_state(batch, sampling_info, self.eos_id)
             self.draft_model.markov_head.sampling_state = state
             self.exact_verify_executor.sampling_state = state
+            if self.sampling_graphs is not None:
+                self.sampling_graphs.load(state)
+            else:
+                pass
         else:
             pass
         return super().forward_batch_generation(
