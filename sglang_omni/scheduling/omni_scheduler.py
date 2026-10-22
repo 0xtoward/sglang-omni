@@ -25,6 +25,7 @@ from collections.abc import Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass
+from functools import partial
 from itertools import islice
 from typing import Callable, Generic
 
@@ -35,7 +36,11 @@ from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.io_struct import AbortReq
-from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+from sglang.srt.managers.overlap_utils import (
+    decide_needs_confidence_relay,
+    decide_needs_cpu_seq_lens,
+    resolve_forward_inputs,
+)
 from sglang.srt.managers.schedule_batch import (
     FINISH_ABORT,
     NextBatchPlan,
@@ -156,6 +161,14 @@ class PendingDecode:
     batch: ScheduleBatch
     scheduler_output: SchedulerOutput
     device_step: PendingStep
+
+
+@dataclass(kw_only=True)
+class PendingSpeculativeStep:
+    """Launched speculative decode batch and its result, copied to the host behind copy_done."""
+
+    batch: ScheduleBatch
+    result: GenerationBatchResult
 
 
 class PendingStreamIngress:
@@ -310,6 +323,8 @@ class OmniScheduler(Generic[RequestDataT]):
     session_bridge: ARSessionBridge | None = None
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
+    speculative_pending: PendingSpeculativeStep | None = None
+    speculative_lookahead: bool = False
     async_decode_resolve_before_prefill: bool = False
     draft_worker: BaseSpecWorker | None = None
 
@@ -538,6 +553,11 @@ class OmniScheduler(Generic[RequestDataT]):
         # can reach the in-flight step. See _event_loop_async_decode.
         self.async_pending: PendingDecode | None = None
         self.previous_pending_decode = None
+        # note (0xtoward): kept here, not as a loop local, so abort and the request scans reach the step in flight.
+        self.speculative_pending: PendingSpeculativeStep | None = None
+        # note (0xtoward): upstream idle checks read this queue whenever enable_overlap is set; the
+        # lookahead keeps its step in speculative_pending instead.
+        self.result_queue: deque = deque()
         self.forward_ct = 0
         self.return_health_check_ct = 0
         self.num_retracted_reqs = 0
@@ -624,19 +644,52 @@ class OmniScheduler(Generic[RequestDataT]):
             raise ValueError(
                 "speculative decoding verifies whole blocks; disable enable_mixed_chunk"
             )
-        elif self.enable_overlap or self.enable_async_decode:
+        elif self.enable_async_decode:
             raise ValueError(
-                "speculative decoding runs the synchronous loop; disable "
-                "enable_overlap and enable_async_decode"
+                "speculative decoding runs the synchronous loop or the "
+                "speculative lookahead; disable enable_async_decode"
             )
         else:
             self.spec_algorithm = SpeculativeAlgorithm.from_string(
                 get_spec().speculative_algorithm
             )
+        self.speculative_lookahead = (
+            self.enable_overlap and self.draft_worker is not None
+        )
+        # note (0xtoward): a backend that builds its page table on the device (FA3) lets the
+        # lookahead launch a step before the previous step's lengths reach the host.
+        needs_cpu_seq_lens = (
+            decide_needs_cpu_seq_lens(
+                getattr(
+                    self.draft_worker,
+                    "spec_v2_attn_backends",
+                    (tp_worker.model_runner.attn_backend,),
+                )
+            )
+            if self.speculative_lookahead
+            else True
+        )
         self.future_map = self.spec_algorithm.create_future_map(
             torch.device(self.device),
             self.req_to_token_pool,
-            needs_cpu_seq_lens=True,
+            needs_cpu_seq_lens=needs_cpu_seq_lens,
+            needs_confidence_relay=(
+                self.speculative_lookahead and decide_needs_confidence_relay()
+            ),
+        )
+        if self.speculative_lookahead:
+            logger.info(
+                "Speculative decode runs with a one-step lookahead (host lengths %s)",
+                "awaited" if needs_cpu_seq_lens else "not needed",
+            )
+        else:
+            pass
+        # note (0xtoward): under the lookahead the draft worker reads a verify budget planned
+        # before the forward, as under SGLang's overlap scheduler.
+        self.confidence_budget_prepare = (
+            self.draft_worker.get_confidence_budget_prepare()
+            if self.speculative_lookahead and self.future_map.needs_confidence_relay
+            else None
         )
         self.dllm_config = None
         self.execution_bridge = None
@@ -2208,17 +2261,33 @@ class OmniScheduler(Generic[RequestDataT]):
         return self.make_batch_result(mr_output)
 
     def run_speculative_batch(self, batch: ScheduleBatch) -> GenerationBatchResult:
-        """Drive the draft worker synchronously, as the scheduler does without overlap.
+        """Drive the draft worker for one step, synchronously or for the lookahead.
 
-        Mirrors the synchronous speculative branch of upstream Scheduler.run_batch;
-        diff the two on every SGLang upgrade. Tokens are emitted later by
-        stream_output, once finishing trims them at the stop.
+        Mirrors the speculative branches of upstream Scheduler.run_batch, the
+        synchronous one and the overlap one on a single stream; diff them on every
+        SGLang upgrade. Under the lookahead the step's lengths and bonus tokens
+        stay on the device: the draft worker publishes them to the future map
+        after accept, and the next step reads them there. Tokens are emitted later
+        by stream_output, once finishing trims them at the stop.
         """
         is_prefill = batch.forward_mode.is_extend()
         if is_prefill:
             # note (wilsonzheng0327): a re-prefilled request samples its next token
             # here, and speculative decode never cumulates penalty history.
             self.model_runner.restore_output_penalty_history(batch)
+        else:
+            pass
+        forward_kwargs = {}
+        future_indices = batch.req_pool_indices
+        if self.speculative_lookahead:
+            self.future_map.resolve_seq_lens_cpu(batch)
+            if self.confidence_budget_prepare is not None:
+                self.confidence_budget_prepare(batch, self.future_map)
+            else:
+                pass
+            forward_kwargs["on_publish"] = partial(
+                self.future_map.publish, future_indices
+            )
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
@@ -2231,7 +2300,15 @@ class OmniScheduler(Generic[RequestDataT]):
             with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 self, batch, overlap=False
             ):
-                result = self.draft_worker.forward_batch_generation(batch)
+                result = self.draft_worker.forward_batch_generation(
+                    batch, **forward_kwargs
+                )
+                if self.speculative_lookahead:
+                    _Upstream._relay_forward_payload(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                        self, batch, future_indices, result
+                    )
+                else:
+                    pass
         finally:
             target_worker.verify_requests = []
         self.model_runner.after_speculative_step(
@@ -2245,21 +2322,24 @@ class OmniScheduler(Generic[RequestDataT]):
             ),
         )
         batch.spec_info = result.next_draft_input
-        new_sequence_lengths = result.new_seq_lens
-        if (
-            new_sequence_lengths is not None
-            and new_sequence_lengths is not batch.seq_lens
-        ):
-            batch.seq_lens = new_sequence_lengths
-            if batch.seq_lens_cpu is not None:
-                batch.seq_lens_cpu = new_sequence_lengths.to("cpu")
-                batch.seq_lens_sum = int(batch.seq_lens_cpu.sum())
+        if self.speculative_lookahead:
+            batch.spec_info.future_indices = future_indices
+        else:
+            new_sequence_lengths = result.new_seq_lens
+            if (
+                new_sequence_lengths is not None
+                and new_sequence_lengths is not batch.seq_lens
+            ):
+                batch.seq_lens = new_sequence_lengths
+                if batch.seq_lens_cpu is not None:
+                    batch.seq_lens_cpu = new_sequence_lengths.to("cpu")
+                    batch.seq_lens_sum = int(batch.seq_lens_cpu.sum())
+                else:
+                    pass
             else:
                 pass
-        else:
-            pass
+            self.update_cache_from_scheduler(batch, result)
         batch.input_ids = None
-        self.update_cache_from_scheduler(batch, result)
         result.copy_done = torch.get_device_module(self.device).Event()
         result.copy_to_cpu(
             return_logprob=batch.return_logprob,
@@ -2770,6 +2850,8 @@ class OmniScheduler(Generic[RequestDataT]):
             with loop_stream_context:
                 if self.enable_async_decode:
                     self.event_loop_async_decode()
+                elif self.speculative_lookahead:
+                    self.event_loop_speculative_lookahead()
                 elif self.enable_overlap:
                     self.event_loop_overlap()
                 else:
@@ -3463,6 +3545,11 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             return _Upstream.flush_cache(self, empty_cache=empty_cache)
 
+    def is_fully_idle(self, for_health_check=False, ignore_waiting=False) -> bool:
+        return self.speculative_pending is None and _Upstream.is_fully_idle(
+            self, for_health_check=for_health_check, ignore_waiting=ignore_waiting
+        )
+
     def flush_cache_after_update(self) -> bool:
         try:
             return bool(self.flush_cache())
@@ -3637,6 +3724,78 @@ class OmniScheduler(Generic[RequestDataT]):
             "guard."
         )
 
+    @DynamicGradMode()
+    def event_loop_speculative_lookahead(self) -> None:
+        """Speculative decode with a one-step lookahead.
+
+        A decode iteration launches its step and only then processes the previous
+        step's result, so result processing, streaming and planning the next batch
+        run on the host while the device drafts and verifies. A step reads its
+        lengths and bonus tokens from the future map behind the previous step's
+        accept, never from the host. Prefill, empty and failed batches first
+        process the step in flight and then run synchronously, which keeps the
+        same-iteration inflight_middle_chunks contract of the normal loop.
+        """
+        while self.running:
+            self.process_admin_requests()
+            recv_reqs = self.recv_requests()
+            recv_reqs.extend(self.take_deferred_request_payloads())
+            self.process_input_requests(recv_reqs)
+            if self._engine_paused:  # noqa: leading-underscore
+                self.process_speculative_pending()
+                self.process_admin_requests()
+                time.sleep(0.001)
+                continue
+            else:
+                pass
+
+            batch = self.get_next_batch_to_run()
+            self.cur_batch = batch
+            if batch is not None and self.batch_is_decode(batch):
+                previous = self.speculative_pending
+                result = self.run_batch(batch)
+                if result is _FAILED_BATCH_RESULT:
+                    self.speculative_pending = None
+                else:
+                    self.speculative_pending = PendingSpeculativeStep(
+                        batch=batch.copy(), result=result
+                    )
+                if previous is not None:
+                    self.process_batch_result(previous.batch, previous.result)
+                else:
+                    pass
+            else:
+                if self.speculative_pending is not None:
+                    self.process_speculative_pending()
+                    # note (0xtoward): the batch was planned before that result finished or retracted some of its requests.
+                    batch = self.drop_stale_overrun(batch)
+                    self.cur_batch = batch
+                else:
+                    pass
+                if batch:
+                    result = self.run_batch(batch)
+                    if result is not _FAILED_BATCH_RESULT:
+                        self.process_batch_result(batch, result)
+                    else:
+                        pass
+                else:
+                    self._sched_idled = True  # noqa: leading-underscore
+                    self.self_check_during_idle()
+                    self.sleep_during_idle()
+
+            self.last_batch = batch
+            if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():
+                self.self_check_during_busy()
+            else:
+                pass
+
+    def process_speculative_pending(self) -> None:
+        pending, self.speculative_pending = self.speculative_pending, None
+        if pending is not None:
+            self.process_batch_result(pending.batch, pending.result)
+        else:
+            pass
+
     @staticmethod
     def batch_is_decode(batch: ScheduleBatch) -> bool:
         mode = batch.forward_mode
@@ -3653,7 +3812,12 @@ class OmniScheduler(Generic[RequestDataT]):
     def async_pending_batch(self) -> ScheduleBatch | None:
         """Return the launched decode batch awaiting result processing, or None."""
         pending_decode = self.async_pending
-        return pending_decode.batch if pending_decode is not None else None
+        if pending_decode is not None:
+            return pending_decode.batch
+        elif self.speculative_pending is not None:
+            return self.speculative_pending.batch
+        else:
+            return None
 
     def synchronize_launched_decode(self) -> None:
         pending_decode = self.async_pending
