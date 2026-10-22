@@ -4,7 +4,13 @@
 from __future__ import annotations
 
 import torch
+from sglang.srt.models.dspark import VanillaMarkov
 
+from sglang_omni.models.minicpm_o.talker_dspark import (
+    SpeculativeSamplingGraphs,
+    accept_block,
+    draw_block,
+)
 from sglang_omni.models.minicpm_o.talker_dspark_sampling import (
     TalkerSamplingState,
     exact_accept,
@@ -18,6 +24,8 @@ from sglang_omni.models.minicpm_o.talker_model_runner import (
     REP_PENALTY_WINDOW,
     TalkerSlotState,
 )
+from sglang_omni.platforms import current_platform
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 VOCAB_SIZE = 12
 CODEC_EOS_ID = VOCAB_SIZE - 1
@@ -212,3 +220,49 @@ def test_greedy_rows_commit_the_talker_argmax() -> None:
         ).argmax()
         assert torch.all(committed[:, offset] == expected)
         outputs.append(int(expected))
+
+
+def test_sampling_graphs_replay_the_greedy_draw_and_verify() -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    torch.manual_seed(4)
+    markov_head = VanillaMarkov(vocab_size=VOCAB_SIZE, markov_rank=4).to(device)
+    graphs = SpeculativeSamplingGraphs(
+        batch_sizes=[1, 4],
+        gamma=3,
+        vocab=VOCAB_SIZE,
+        eos_id=CODEC_EOS_ID,
+        markov_head=markov_head,
+        draw_fallback=draw_block,
+        accept_fallback=accept_block,
+        backend=current_platform.get_device_graph_backend(device),
+        device=device,
+    )
+    cpu_state = make_state(
+        [[3, 5, 3], [1], [2, 2, 2, 2]], greedy=torch.ones(3, dtype=torch.bool)
+    )
+    state = TalkerSamplingState(
+        **{
+            name: value.to(device) if isinstance(value, torch.Tensor) else value
+            for name, value in vars(cpu_state).items()
+        }
+    )
+    base_logits = torch.randn(3, 3, VOCAB_SIZE, device=device)
+    previous = torch.tensor([3, 1, 2], device=device)
+    target_logits = torch.randn(3 * 4, VOCAB_SIZE, device=device)
+    weights = (markov_head.markov_w1.weight, markov_head.markov_w2.weight)
+
+    graphs.load(state)
+    tokens, shaped = graphs.draw(base_logits, previous, *weights, state)
+    accepted, bonus = graphs.accept(target_logits, shaped, tokens, state)
+
+    expected_tokens, expected_shaped = draw_block(
+        base_logits, previous, *weights, state
+    )
+    expected_accepted, expected_bonus = accept_block(
+        target_logits, expected_shaped, expected_tokens, state
+    )
+    assert torch.equal(tokens, expected_tokens)
+    torch.testing.assert_close(shaped, expected_shaped)
+    assert torch.equal(accepted, expected_accepted)
+    assert torch.equal(bonus, expected_bonus)
