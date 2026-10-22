@@ -706,17 +706,35 @@ class ModelRunner(Generic[RequestDataInput]):
         self,
         logits_output: LogitsProcessorOutput,
         requests: list[SchedulerRequest],
-        rows_per_request: int,
+        rows_per_request: int | torch.Tensor,
     ) -> None:
         """Give every verify row the logits hooks its plain decode row would take.
 
         Speculative verify samples outside sample_next_token_ids. The codec suppress
         set and process_sampling_logits depend on the request but not the position,
-        so applying them to each of a request's rows is exact.
+        so applying them to each of a request's rows is exact. A compact verify packs
+        each request's rows back to back, as many as rows_per_request holds for it on
+        the device, and pads the rest of its graph tier.
         """
-        rows = [request for request in requests for _ in range(rows_per_request)]
+        if not self.verify_rows_take_logits_hooks(requests):
+            return
+        elif isinstance(rows_per_request, torch.Tensor):
+            counts = rows_per_request.tolist()
+        else:
+            counts = [rows_per_request] * len(requests)
+        rows = [
+            request for request, count in zip(requests, counts) for _ in range(count)
+        ]
         self.apply_codec_suppress_tokens(logits_output, rows)
         self.process_sampling_logits(logits_output, rows)
+
+    def verify_rows_take_logits_hooks(self, requests: list[SchedulerRequest]) -> bool:
+        """Whether the logits hooks change any verify row of these requests.
+
+        A runner whose hooks leave most requests alone says so here, which spares a
+        compact verify the host copy of its per-request row counts.
+        """
+        return True
 
     def after_speculative_step(
         self,
