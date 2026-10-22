@@ -38,6 +38,7 @@ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.io_struct import AbortReq
 from sglang.srt.managers.overlap_utils import (
     decide_needs_confidence_relay,
+    decide_needs_cpu_seq_lens,
     resolve_forward_inputs,
 )
 from sglang.srt.managers.schedule_batch import (
@@ -661,14 +662,34 @@ class OmniScheduler(Generic[RequestDataT]):
         self.speculative_lookahead = (
             self.enable_overlap and self.draft_worker is not None
         )
+        # note (0xtoward): a backend that builds its page table on the device (FA3) lets the
+        # lookahead launch a step before the previous step's lengths reach the host.
+        needs_cpu_seq_lens = (
+            decide_needs_cpu_seq_lens(
+                getattr(
+                    self.draft_worker,
+                    "spec_v2_attn_backends",
+                    (tp_worker.model_runner.attn_backend,),
+                )
+            )
+            if self.speculative_lookahead
+            else True
+        )
         self.future_map = self.spec_algorithm.create_future_map(
             torch.device(self.device),
             self.req_to_token_pool,
-            needs_cpu_seq_lens=True,
+            needs_cpu_seq_lens=needs_cpu_seq_lens,
             needs_confidence_relay=(
                 self.speculative_lookahead and decide_needs_confidence_relay()
             ),
         )
+        if self.speculative_lookahead:
+            logger.info(
+                "Speculative decode runs with a one-step lookahead (host lengths %s)",
+                "awaited" if needs_cpu_seq_lens else "not needed",
+            )
+        else:
+            pass
         # note (0xtoward): under the lookahead the draft worker reads a verify budget planned
         # before the forward, as under SGLang's overlap scheduler.
         self.confidence_budget_prepare = (
@@ -3774,7 +3795,6 @@ class OmniScheduler(Generic[RequestDataT]):
         process the step in flight and then run synchronously, which keeps the
         same-iteration inflight_middle_chunks contract of the normal loop.
         """
-        logger.info("Speculative decode runs with a one-step lookahead")
         while self.running:
             self.process_admin_requests()
             recv_reqs = self.recv_requests()
