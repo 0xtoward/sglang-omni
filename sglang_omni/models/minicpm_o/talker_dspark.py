@@ -74,6 +74,11 @@ from sglang_omni.models.minicpm_o.talker_model_runner import (
     REP_PENALTY_WINDOW,
     TalkerSlotState,
 )
+from sglang_omni.models.minicpm_o.talker_slot_kernels import (
+    commit_slot_rows,
+    gather_slot_rows,
+    has_slot_kernels,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 
@@ -275,6 +280,19 @@ class StaticSamplingRows:
         ):
             getattr(self.state, name)[:count].copy_(getattr(state, name))
         self.loaded_count = count
+
+    def gather(
+        self, slots: TalkerSlotState, rows: torch.Tensor
+    ) -> TalkerSamplingState | None:
+        """Load the rows' state straight from the runner's slots in one launch; None past capacity."""
+        count = int(rows.shape[0])
+        if count > self.capacity:
+            self.loaded_count = 0
+            return None
+        else:
+            gather_slot_rows(slots, rows, self.state)
+            self.loaded_count = count
+            return self.rows(count)
 
 
 class FoldedTalkerDraw(DsparkDraftSampler):
@@ -1093,16 +1111,30 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
                 or batch.return_logprob
             )
             slots = self.runner_slot_state()
-            if slots is not None:
-                state = state_from_slots(slots, batch.req_pool_indices)
-            else:
-                state = build_sampling_state(batch, sampling_info, self.eos_id)
-            self.draft_model.markov_head.sampling_state = state
-            self.exact_verify_executor.sampling_state = state
-            if self.sampling_rows is not None:
-                self.sampling_rows.load(state)
+            rows = batch.req_pool_indices
+            state = None
+            if (
+                slots is not None
+                and self.sampling_rows is not None
+                and has_slot_kernels(rows.device)
+            ):
+                state = self.sampling_rows.gather(slots, rows)
             else:
                 pass
+            if state is not None:
+                pass
+            else:
+                state = (
+                    state_from_slots(slots, rows)
+                    if slots is not None
+                    else build_sampling_state(batch, sampling_info, self.eos_id)
+                )
+                if self.sampling_rows is not None:
+                    self.sampling_rows.load(state)
+                else:
+                    pass
+            self.draft_model.markov_head.sampling_state = state
+            self.exact_verify_executor.sampling_state = state
         else:
             pass
         result = super().forward_batch_generation(
@@ -1112,7 +1144,12 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
             pp_proxy_tensors=pp_proxy_tensors,
         )
         if is_decode and slots is not None:
-            commit_to_slots(
+            commit = (
+                commit_slot_rows
+                if has_slot_kernels(batch.req_pool_indices.device)
+                else commit_to_slots
+            )
+            commit(
                 slots,
                 batch.req_pool_indices,
                 result.next_token_ids.view(-1, self.gamma + 1),
