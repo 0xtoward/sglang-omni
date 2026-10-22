@@ -44,6 +44,7 @@ from sglang_omni.utils.channels_last_conv import (
     channels_last_conv_transpose1d,
     channels_last_weight,
 )
+from sglang_omni.utils.merged_projections import merge_projection_weights
 from sglang_omni.utils.snake_beta import FusedSnakeBeta
 
 
@@ -129,22 +130,7 @@ class FusedCode2WavTransformer(torch.nn.Module):
             torch.cat((angles.cos(), angles.sin()), dim=-1) * rotary.attention_scaling,
             persistent=False,
         )
-        # note (ratish): q, k, v and gate, up become views of one matrix each, so the
-        # fused GEMMs read the loaded weights without a second copy.
-        for layer in transformer.layers:
-            attention, mlp = layer.self_attn, layer.mlp
-            projections = (attention.q_proj, attention.k_proj, attention.v_proj)
-            attention.qkv_weight = torch.cat([p.weight.data for p in projections])
-            start = 0
-            for projection in projections:
-                rows = projection.weight.shape[0]
-                projection.weight.data = attention.qkv_weight[start : start + rows]
-                start += rows
-            mlp.gate_up_weight = torch.cat(
-                (mlp.gate_proj.weight.data, mlp.up_proj.weight.data)
-            )
-            mlp.gate_proj.weight.data = mlp.gate_up_weight[: mlp.intermediate_size]
-            mlp.up_proj.weight.data = mlp.gate_up_weight[mlp.intermediate_size :]
+        merge_projection_weights(transformer.layers)
 
     def forward(self, inputs_embeds: torch.Tensor) -> BaseModelOutputWithPast:
         batch_size, length, hidden_size = inputs_embeds.shape
