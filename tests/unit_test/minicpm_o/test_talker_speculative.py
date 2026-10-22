@@ -15,7 +15,9 @@ from sglang_omni.models.minicpm_o.talker_dspark import (
     FoldedTalkerDraw,
     StaticSamplingRows,
     accept_block,
+    commit_to_slots,
     draw_block,
+    state_from_slots,
 )
 from sglang_omni.models.minicpm_o.talker_dspark_sampling import (
     TalkerSamplingState,
@@ -346,3 +348,33 @@ def test_accept_graphs_replay_the_greedy_verify_on_the_folded_block() -> None:
     )
     assert torch.equal(accepted, expected_accepted)
     assert torch.equal(bonus, expected_bonus)
+
+
+def test_slot_state_gives_the_ordered_window_and_takes_committed_blocks() -> None:
+    histories = [[3, 5, 3], list(range(10)) * 2, []]
+    slots = TalkerSlotState.allocate(4, VOCAB_SIZE, CODEC_EOS_ID, torch.device("cpu"))
+    rows = torch.tensor([2, 0, 3])
+    for row, history in zip(rows.tolist(), histories):
+        for token in history:
+            slots.append(torch.tensor([row]), torch.tensor([token]))
+    slots.min_new_tokens[rows] = torch.tensor([6, 6, 6])
+    slots.penalties[rows] = torch.tensor([1.3, 1.3, 1.3])
+    slots.top_ks[rows] = torch.tensor([6, 6, 1], dtype=torch.int32)
+
+    state = state_from_slots(slots, rows)
+    expected = make_state(histories)
+    assert torch.equal(state.recent_tokens, expected.recent_tokens)
+    assert torch.equal(state.generated, expected.generated)
+    assert state.greedy.tolist() == [False, False, True]
+
+    # A committed block appends its first counts tokens, as the talker would one by one.
+    committed = torch.tensor([[7, 8, 9, 10], [1, 2, 3, 4], [5, 6, 7, 8]])
+    counts = torch.tensor([2, 4, 1])
+    commit_to_slots(slots, rows, committed, counts)
+    after = [
+        history + committed[i, : counts[i]].tolist()
+        for i, history in enumerate(histories)
+    ]
+    state = state_from_slots(slots, rows)
+    assert torch.equal(state.recent_tokens, make_state(after).recent_tokens)
+    assert state.generated.tolist() == [len(history) for history in after]

@@ -59,7 +59,10 @@ from sglang_omni.models.minicpm_o.talker_dspark_sampling import (
     exact_accept,
     sample_draft_block,
 )
-from sglang_omni.models.minicpm_o.talker_model_runner import REP_PENALTY_WINDOW
+from sglang_omni.models.minicpm_o.talker_model_runner import (
+    REP_PENALTY_WINDOW,
+    TalkerSlotState,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 
@@ -558,6 +561,52 @@ def build_sampling_state(
     )
 
 
+def state_from_slots(slots: TalkerSlotState, rows: torch.Tensor) -> TalkerSamplingState:
+    """The step's sampling state gathered from the talker runner's per-slot state.
+
+    The runner keeps each request's last outputs in a ring indexed by its output count;
+    reading the ring from that count on puts the window in order, oldest first, with
+    unwritten entries holding the vocabulary-size padding.
+    """
+    generated = slots.generated[rows]
+    order = (
+        generated.unsqueeze(1)
+        + torch.arange(REP_PENALTY_WINDOW, device=rows.device).unsqueeze(0)
+    ) % REP_PENALTY_WINDOW
+    top_ks = slots.top_ks[rows].long()
+    return TalkerSamplingState(
+        recent_tokens=slots.windows[rows].gather(1, order),
+        generated=generated,
+        min_new_tokens=slots.min_new_tokens[rows],
+        penalties=slots.penalties[rows],
+        suppress=slots.suppress[rows],
+        temperatures=slots.temperatures[rows].view(-1),
+        top_ks=top_ks,
+        top_ps=slots.top_ps[rows],
+        greedy=top_ks == 1,
+        eos_id=slots.eos_id,
+    )
+
+
+def commit_to_slots(
+    slots: TalkerSlotState,
+    rows: torch.Tensor,
+    committed: torch.Tensor,
+    counts: torch.Tensor,
+) -> None:
+    """Append each row's first counts committed tokens, as TalkerSlotState.append would one by one."""
+    generated = slots.generated[rows]
+    offsets = torch.arange(committed.shape[1], device=rows.device).unsqueeze(0)
+    positions = (generated.unsqueeze(1) + offsets) % REP_PENALTY_WINDOW
+    windows = slots.windows[rows]
+    kept = windows.gather(1, positions)
+    windows.scatter_(
+        1, positions, torch.where(offsets < counts.unsqueeze(1), committed.long(), kept)
+    )
+    slots.windows[rows] = windows
+    slots.generated[rows] = generated + counts.long()
+
+
 class ExactVerifyExecutor(TargetVerifyExecutor):
     """Accept drafts against the talker's exact per-position distribution."""
 
@@ -802,6 +851,7 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
             or batch.is_extend_in_batch
             or batch.forward_mode.is_idle()
         )
+        slots = None
         if is_decode:
             sampling_info = batch.sampling_info
             # The talker's request builder sets none of these, and the exact verify has
@@ -812,7 +862,11 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
                 or sampling_info.has_custom_logit_processor
                 or batch.return_logprob
             )
-            state = build_sampling_state(batch, sampling_info, self.eos_id)
+            slots = self.runner_slot_state()
+            if slots is not None:
+                state = state_from_slots(slots, batch.req_pool_indices)
+            else:
+                state = build_sampling_state(batch, sampling_info, self.eos_id)
             self.draft_model.markov_head.sampling_state = state
             self.exact_verify_executor.sampling_state = state
             if self.sampling_rows is not None:
@@ -821,9 +875,24 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
                 pass
         else:
             pass
-        return super().forward_batch_generation(
+        result = super().forward_batch_generation(
             batch,
             on_publish,
             grammar_barrier,
             pp_proxy_tensors=pp_proxy_tensors,
         )
+        if is_decode and slots is not None:
+            commit_to_slots(
+                slots,
+                batch.req_pool_indices,
+                result.next_token_ids.view(-1, self.gamma + 1),
+                result.accept_lens,
+            )
+        else:
+            pass
+        return result
+
+    def runner_slot_state(self) -> TalkerSlotState | None:
+        """The talker runner's per-slot sampling state, which its prefill sample resets."""
+        runner = self.target_worker.omni_runner
+        return getattr(runner, "slot_state", None)
