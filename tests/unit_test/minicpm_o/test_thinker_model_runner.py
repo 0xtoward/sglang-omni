@@ -220,6 +220,55 @@ def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
     torch.testing.assert_close(committed_rows(runner, "b"), prefill_hidden_rows[4:5])
 
 
+def test_each_emission_takes_the_rows_of_the_earliest_launched_step() -> None:
+    num_draft_tokens = 2
+    first_rows = torch.arange(num_draft_tokens * 2, dtype=torch.float32).reshape(-1, 2)
+    hidden_rows = first_rows.clone()
+    runner = speculative_runner(hidden_rows, None)
+    batch = SimpleNamespace(reqs=[SimpleNamespace(rid="a")])
+
+    runner.after_speculative_step(
+        batch, None, is_prefill=False, num_draft_tokens=num_draft_tokens
+    )
+    hidden_rows.add_(100)
+    runner.after_speculative_step(
+        batch, None, is_prefill=False, num_draft_tokens=num_draft_tokens
+    )
+    runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [PLAIN_TOKEN_ID])
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id="a"), [OTHER_TOKEN_ID, THIRD_TOKEN_ID]
+    )
+
+    torch.testing.assert_close(
+        committed_rows(runner, "a"),
+        torch.cat([first_rows[:1], first_rows + 100]),
+        msg="each step's tokens take that step's rows, in launch order",
+    )
+
+
+def test_a_prefill_drops_the_rows_of_steps_never_emitted() -> None:
+    prefill_hidden_rows = torch.arange(4 * 2, dtype=torch.float32).reshape(4, 2)
+    runner = speculative_runner(torch.ones(8, 2), prefill_hidden_rows)
+    request = SimpleNamespace(rid="a")
+
+    runner.after_speculative_step(
+        SimpleNamespace(reqs=[request]), None, is_prefill=False, num_draft_tokens=2
+    )
+    runner.after_speculative_step(
+        SimpleNamespace(reqs=[request], extend_lens=[3]),
+        None,
+        is_prefill=True,
+        num_draft_tokens=2,
+    )
+    runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [PLAIN_TOKEN_ID])
+
+    torch.testing.assert_close(
+        committed_rows(runner, "a"),
+        prefill_hidden_rows[2:3],
+        msg="the re-prefilled token takes the last prompt row",
+    )
+
+
 def duplex_tokenizer() -> Mock:
     tokenizer = Mock(unk_token_id=0, bad_token_ids=list(BAD_TOKEN_IDS))
     special_token_ids = range(

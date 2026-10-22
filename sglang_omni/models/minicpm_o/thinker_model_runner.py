@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from itertools import accumulate
 from typing import TYPE_CHECKING
 
@@ -74,7 +75,8 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
         self.hands_hidden_to_talker = output_processor.capture_hidden
-        self.speculative_hidden_queue: dict[str, torch.Tensor] = {}
+        # note (0xtoward): one entry per launched step; the lookahead launches a step before the last one's tokens are emitted.
+        self.speculative_hidden_queue: dict[str, deque[torch.Tensor]] = {}
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
@@ -188,26 +190,30 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             )
             rows = model.prefill_hidden_rows[last_rows - 1]
             for index, req in enumerate(batch.reqs):
-                self.speculative_hidden_queue[req.rid] = rows[index : index + 1]
+                # note (0xtoward): a prefill restarts the queue; a retracted request leaves the rows of steps never emitted.
+                self.speculative_hidden_queue[req.rid] = deque(
+                    [rows[index : index + 1]]
+                )
         else:
             block = model.speculative_hidden_rows[
                 : len(batch.reqs) * num_draft_tokens
             ].clone()
             for index, req in enumerate(batch.reqs):
                 start = index * num_draft_tokens
-                self.speculative_hidden_queue[req.rid] = block[
-                    start : start + num_draft_tokens
-                ]
+                self.speculative_hidden_queue.setdefault(req.rid, deque()).append(
+                    block[start : start + num_draft_tokens]
+                )
 
     def on_speculative_tokens(
         self, scheduler_request: SchedulerRequest, token_ids: list[int]
     ) -> None:
         """Append the queued rows of the committed tokens, which end at the stop."""
-        hidden = self.speculative_hidden_queue.pop(scheduler_request.request_id, None)
-        if hidden is None:
+        queued = self.speculative_hidden_queue.get(scheduler_request.request_id)
+        if not queued:
             return
         else:
             pass
+        hidden = queued.popleft()
         seq = self.pending_hidden.setdefault(scheduler_request.request_id, [])
         seq.extend(hidden[: len(token_ids)].unbind(0))
 

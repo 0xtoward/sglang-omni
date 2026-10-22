@@ -139,7 +139,10 @@ def create_talker_scheduler(
         result_adapter=result_adapter,
         session_adapter=TalkerAdapter(model) if session_mode else None,
         # note (0xtoward): the penalty and length floor read device state, never an unresolved token, so lookahead starts at one request.
-        # A draft worker verifies whole blocks in the synchronous loop.
+        # A draft worker verifies whole blocks in the speculative lookahead, which SGLang's overlap switch selects.
+        enable_overlap=speculative
+        and not session_mode
+        and not resolved_view(server_args).disable_overlap_schedule,
         enable_async_decode=not (session_mode or speculative),
         async_decode_min_batch_size=1,
     )
@@ -277,6 +280,8 @@ def create_thinker_scheduler(
         result_adapter=result_adapter,
         stream_output_builder=build_thinker_stream_output,
         abort_callback=model_runner.reset_request,
+        # note (0xtoward): SGLang's overlap switch also selects the speculative lookahead.
+        enable_overlap=speculative and not cfg.disable_overlap_schedule,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
     )
