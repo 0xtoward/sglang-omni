@@ -159,6 +159,49 @@ def test_each_verify_row_takes_its_request_length_penalty_and_suppress_set() -> 
     )
 
 
+def test_a_compact_verify_hooks_each_request_s_packed_rows_and_not_the_padding() -> (
+    None
+):
+    suppressed_token_id = 2
+    original = torch.tensor([[0.5, 2.0, -1.0, -4.0]]).repeat(4, 1)
+    logits_output = SimpleNamespace(next_token_logits=original.clone())
+
+    bare_runner().apply_speculative_verify_logits(
+        logits_output,
+        [verify_request(2.0, None), verify_request(1.0, [suppressed_token_id])],
+        torch.tensor([1, 2]),
+    )
+
+    penalized = original[0].clone()
+    penalized[EOS_TOKEN_IDS] = torch.tensor([2.0 / 2.0, -4.0 * 2.0])
+    suppressed = original[0].clone()
+    suppressed[suppressed_token_id] = float("-inf")
+    torch.testing.assert_close(logits_output.next_token_logits[0], penalized)
+    torch.testing.assert_close(
+        logits_output.next_token_logits[1:3], suppressed.expand(2, -1)
+    )
+    torch.testing.assert_close(
+        logits_output.next_token_logits[3],
+        original[3],
+        msg="the tier's padding row belongs to no request",
+    )
+
+
+def test_verify_rows_without_hooks_never_read_the_compact_row_counts() -> None:
+    original = torch.tensor([[0.5, 2.0, -1.0, -4.0]]).repeat(4, 1)
+    logits_output = SimpleNamespace(next_token_logits=original.clone())
+    # note (0xtoward): reading a meta tensor raises, as the host copy of device counts would cost a sync.
+    unreadable_counts = torch.empty(2, dtype=torch.int32, device="meta")
+
+    bare_runner().apply_speculative_verify_logits(
+        logits_output,
+        [verify_request(1.0, None), verify_request(1.0, None)],
+        unreadable_counts,
+    )
+
+    torch.testing.assert_close(logits_output.next_token_logits, original)
+
+
 def speculative_runner(
     hidden_rows: torch.Tensor, prefill_hidden_rows: torch.Tensor | None
 ) -> MiniCPMOThinkerModelRunner:

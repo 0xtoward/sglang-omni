@@ -440,7 +440,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         self,
         logits_output: LogitsProcessorOutput,
         requests: list[SchedulerRequest],
-        rows_per_request: int,
+        rows_per_request: int | torch.Tensor,
     ) -> None:
         """Leave verify rows raw; the talker's draft worker shapes every row itself.
 
