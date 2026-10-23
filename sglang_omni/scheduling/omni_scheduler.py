@@ -2866,22 +2866,24 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 loop_stream_context = contextlib.nullcontext()
             with loop_stream_context:
-                if self.enable_async_decode:
-                    self.event_loop_async_decode()
-                elif self.enable_overlap:
-                    self.overlap_device_drained = False
-                    self.event_loop_overlap()
-                else:
-                    self.event_loop_normal()
+                try:
+                    if self.enable_async_decode:
+                        self.event_loop_async_decode()
+                    elif self.enable_overlap:
+                        self.overlap_device_drained = False
+                        self.event_loop_overlap()
+                    else:
+                        self.event_loop_normal()
+                finally:
+                    if self.enable_overlap:
+                        self.device_module.current_stream().synchronize()
+                        self.overlap_device_drained = True
+                        self.resolve_pending_overlap()
+                    else:
+                        pass
             model_path_status = "aborted"
         finally:
             try:
-                if self.enable_overlap:
-                    self.device_module.current_stream().synchronize()
-                    self.overlap_device_drained = True
-                    self.resolve_pending_overlap()
-                else:
-                    pass
                 if self.session_bridge is not None:
                     self.resolve_pending_async()
                     self.session_bridge.close_open_sessions()

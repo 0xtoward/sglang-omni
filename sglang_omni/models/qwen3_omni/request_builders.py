@@ -1122,20 +1122,6 @@ def make_thinker_scheduler_adapters(
             thinker_config=thinker_config,
         )
         req_data.stage_payload = payload
-        sampling_params = req_data.req.sampling_params
-        # note (wilsonzheng0327): the native draft workers verify without these, so
-        # such a request would sample a different distribution or lose logprobs.
-        if is_speculative and (
-            sampling_params.repetition_penalty != 1.0
-            or sampling_params.min_p > 0.0
-            or req_data.return_logprob
-        ):
-            raise ValueError(
-                "repetition_penalty, min_p and logprobs are not supported with "
-                "speculative decoding"
-            )
-        else:
-            pass
         multimodal_inputs = req_data.req.multimodal_inputs
         if is_speculative and multimodal_inputs is not None:
             # note (wilsonzheng0327): verify adds the delta to integer positions without

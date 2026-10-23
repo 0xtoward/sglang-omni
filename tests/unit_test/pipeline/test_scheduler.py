@@ -13,6 +13,7 @@ from array import array
 from collections import deque
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from queue import Empty, Queue
 from types import SimpleNamespace
@@ -23,7 +24,12 @@ import pytest
 import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
 from sglang.srt.environ import envs
-from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ReqKvInfo, ScheduleBatch
+from sglang.srt.managers.schedule_batch import (
+    FINISH_LENGTH,
+    Req,
+    ReqKvInfo,
+    ScheduleBatch,
+)
 from sglang.srt.managers.scheduler_components.batch_result_processor import (
     SchedulerBatchResultProcessor,
 )
@@ -4705,9 +4711,11 @@ def test_speculative_overlap_stop_leaves_cleanup_to_scheduler_thread() -> None:
     scheduler.shutdown_resources.assert_not_called()
 
 
+@pytest.mark.parametrize("should_run_top_priority_stream", [False, True])
 @pytest.mark.parametrize("failure_stage", ["none", "forward", "drain"])
 def test_speculative_overlap_shutdown_drains_pending_results_before_resource_cleanup(
     failure_stage: Literal["none", "forward", "drain"],
+    should_run_top_priority_stream: bool,
 ) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_overlap = True
@@ -4729,6 +4737,9 @@ def test_speculative_overlap_shutdown_drains_pending_results_before_resource_cle
             raise RuntimeError("forward failed")
 
     def synchronize_device() -> None:
+        assert current_stream[0] is (
+            priority_stream if should_run_top_priority_stream else default_stream
+        )
         order.append("drain")
         if failure_stage == "drain":
             raise RuntimeError("device failed")
@@ -4747,9 +4758,28 @@ def test_speculative_overlap_shutdown_drains_pending_results_before_resource_cle
         assert scheduler.scheduler_thread_id is None
         order.append("release")
 
+    default_stream = SimpleNamespace(synchronize=synchronize_device)
+    priority_stream = SimpleNamespace(
+        synchronize=synchronize_device, wait_stream=Mock()
+    )
+    current_stream = [default_stream]
+
+    @contextmanager
+    def stream_context(stream: SimpleNamespace) -> Iterable[None]:
+        current_stream[0] = stream
+        try:
+            yield
+        finally:
+            current_stream[0] = default_stream
+
+    stream_factory = Mock(return_value=priority_stream)
+    stream_factory.priority_range.return_value = (0, -1)
+    scheduler.should_run_top_priority_stream = should_run_top_priority_stream
     scheduler.event_loop_overlap = run_until_shutdown
     scheduler.device_module = SimpleNamespace(
-        current_stream=lambda: SimpleNamespace(synchronize=synchronize_device)
+        Stream=stream_factory,
+        current_stream=lambda: current_stream[0],
+        stream=stream_context,
     )
     scheduler.process_batch_result = process_result
     scheduler.emit_remaining_model_path_ends = emit_terminal_events

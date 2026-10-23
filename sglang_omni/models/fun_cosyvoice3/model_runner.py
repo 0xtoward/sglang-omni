@@ -47,6 +47,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     tp_worker: ModelWorker
     model: FunCosyVoice3SGLangModel
+    # The DSpark worker verifies against this runner's own sampler, penalty included.
+    speculative_verifies_repetition_penalty: bool = True
 
     def __init__(
         self,

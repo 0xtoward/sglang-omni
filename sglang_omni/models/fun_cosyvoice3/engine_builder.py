@@ -300,8 +300,10 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             FunCosyVoice3DSparkWorker,
         )
 
-        return {"speculative_worker_class": FunCosyVoice3DSparkWorker}
-
+        return {
+            "supports_speculative_decoding": True,
+            "speculative_worker_class": FunCosyVoice3DSparkWorker,
+        }
 
     def make_abort_callback(self) -> Callable[[str], None]:
         return request_builders.cleanup_prepared_cosyvoice3_request

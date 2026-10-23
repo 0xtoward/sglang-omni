@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from array import array
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -16,6 +18,7 @@ from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardMode, PPProxyTensors
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
+from sglang.srt.speculative.dspark_components.dspark_verify import TargetVerifyExecutor
 from sglang.srt.speculative.dspark_components.dspark_worker_v2 import DSparkWorkerV2
 
 from sglang_omni.models.fun_cosyvoice3 import dspark_draft, dspark_worker
@@ -24,16 +27,20 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     DRAFT_TOKENS_PER_STEP,
     MASK_TOKEN_ID,
     UNIFIED_MASK_TOKEN_ID,
+    MirroredMarkovHead,
     materialize_draft_checkpoint,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     EMPTY_HISTORY_TOKEN,
+    DraftSamplingState,
     exact_accept,
     rejection_sample,
     sample_draft_block,
     target_probabilities,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
+    CosyVoice3DraftBlockProposer,
+    ExactVerifyExecutor,
     FunCosyVoice3DSparkWorker,
     GrammarStateAdvancer,
     RequestHistories,
@@ -43,6 +50,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
 from sglang_omni.models.fun_cosyvoice3.engine_builder import FunCosyVoice3EngineBuilder
 from sglang_omni.models.fun_cosyvoice3.model_runner import COSYVOICE3_RAS_WINDOW_SIZE
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE, VOCAB_SIZE
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
 )
@@ -540,7 +548,10 @@ def test_dspark_draft_reserves_its_verify_windows_in_the_kv_pool_cap(
         speculative_draft_model_path="yuekai/cosyvoice3_llm_dspark",
     )
 
-    assert builder.extra_scheduler_kwargs()["enable_overlap"] is enable_async_decode
+    assert builder.extra_scheduler_kwargs() == {
+        "enable_overlap": enable_async_decode,
+        "should_run_top_priority_stream": current_platform.is_cuda(),
+    }
     assert overrides["disable_overlap_schedule"] is not enable_async_decode
     assert overrides["speculative_algorithm"] == "DSPARK"
     assert overrides["speculative_draft_model_path"] == materialized_draft
@@ -549,7 +560,8 @@ def test_dspark_draft_reserves_its_verify_windows_in_the_kv_pool_cap(
         builder.context_length + 2 * (DRAFT_TOKENS_PER_STEP + 1)
     )
     assert builder.infra_kwargs() == {
-        "speculative_worker_class": FunCosyVoice3DSparkWorker
+        "supports_speculative_decoding": True,
+        "speculative_worker_class": FunCosyVoice3DSparkWorker,
     }
 
 
@@ -837,3 +849,70 @@ def test_device_history_ignores_padding_that_aliases_a_real_token(
     assert histories.recent_token_ids_by_slot[0].tolist() == (
         [EMPTY_HISTORY_TOKEN] * (COSYVOICE3_RAS_WINDOW_SIZE - 1) + [0]
     )
+
+
+def test_dspark_proposer_preserves_stage_sampling_and_its_verify_logits() -> None:
+    """A changed native proposal path must still apply stop and repetition rules."""
+    markov_head = MirroredMarkovHead(vocab_size=TOTAL_VOCAB_SIZE, markov_rank=4)
+    with torch.no_grad():
+        markov_head.markov_w1.weight.zero_()
+        markov_head.markov_w2.weight.zero_()
+    presence_mask = torch.zeros((1, TOTAL_VOCAB_SIZE), dtype=torch.bool)
+    presence_mask[:, 42] = True
+    markov_head.sampling_state = DraftSamplingState(
+        presence_mask=presence_mask,
+        repetition_penalties=torch.tensor([100.0]),
+        output_lengths=torch.tensor([0]),
+        min_new_tokens=torch.tensor([10]),
+        temperatures=torch.tensor([1.0]),
+        greedy=torch.tensor([True]),
+    )
+    base_logits = torch.full((2, TOTAL_VOCAB_SIZE), -10.0)
+    base_logits[:, VOCAB_SIZE] = 100.0
+    base_logits[:, 42] = 20.0
+    base_logits[:, 7] = 10.0
+    proposer = object.__new__(CosyVoice3DraftBlockProposer)
+    proposer.gamma = 2
+    proposer.draft_model = SimpleNamespace(
+        embed_tokens=None,
+        compute_base_logits=lambda hidden: (base_logits, None),
+        markov_head=markov_head,
+    )
+    proposer._run_forward = Mock(  # noqa: leading-underscore  # mock GPU draft forward
+        return_value=SimpleNamespace(
+            draft_block_ids=torch.tensor([[42, MASK_TOKEN_ID, MASK_TOKEN_ID]]),
+            raw_hidden=torch.empty((2, 4)),
+        )
+    )
+
+    proposal = proposer.propose(
+        batch=None,
+        draft_input=None,
+        verify_window=None,
+        bs=1,
+        device="cpu",
+        target_model=None,
+        sampling_info=None,
+    )
+
+    assert proposal.draft_block.draft_tokens.tolist() == [[7, 42]]
+    assert torch.isneginf(
+        proposal.draft_block.corrected_logits[:, :, VOCAB_SIZE:]
+    ).all()
+    torch.testing.assert_close(
+        proposal.draft_block.corrected_logits[0, 0, 42], torch.tensor(0.2)
+    )
+    assert proposal.draft_block_ids.tolist() == [[42, MASK_TOKEN_ID]]
+    assert not proposal.folded
+    assert not proposal.draft_block.greedy_draft
+
+
+def test_dspark_overrides_accept_current_native_call_arguments() -> None:
+    """Native 0.5.22 changed both verify and folded-sampler call signatures."""
+    native_parameters = inspect.signature(TargetVerifyExecutor.accept_and_finalize)
+    native_arguments = {name: None for name in native_parameters.parameters}
+    inspect.signature(ExactVerifyExecutor.accept_and_finalize).bind(**native_arguments)
+    worker = object.__new__(FunCosyVoice3DSparkWorker)
+    assert (
+        worker._maybe_build_draft_sampler() is None
+    )  # noqa: leading-underscore  # native allocation hook

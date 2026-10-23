@@ -32,7 +32,12 @@ from sglang.srt.speculative.dflash_info_v2 import DFlashDraftInputV2
 from sglang.srt.speculative.dspark_components.dspark_config import (
     get_dspark_sample_from_anchor,
 )
-from sglang.srt.speculative.dspark_components.dspark_draft import DraftBlockResult
+from sglang.srt.speculative.dspark_components.dspark_draft import (
+    DraftBlockProposer,
+    DraftBlockResult,
+    DraftProposal,
+)
+from sglang.srt.speculative.dspark_components.dspark_planner import VerifyWindow
 from sglang.srt.speculative.dspark_components.dspark_verify import (
     AcceptOuts,
     TargetVerifyExecutor,
@@ -55,7 +60,10 @@ from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     sample_draft_block,
 )
 from sglang_omni.models.fun_cosyvoice3.model_runner import COSYVOICE3_RAS_WINDOW_SIZE
-from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
+from sglang_omni.models.fun_cosyvoice3.sglang_model import (
+    TOTAL_VOCAB_SIZE,
+    FunCosyVoice3SGLangModel,
+)
 
 
 @dataclass(kw_only=True)
@@ -212,6 +220,57 @@ def build_step_sampling_state(
     )
 
 
+class CosyVoice3DraftBlockProposer(DraftBlockProposer):
+    """Reuse draft execution and draw proposals with the stage's sampling rules."""
+
+    draft_model: FunCosyVoice3DSparkDraftModel
+
+    def propose(
+        self,
+        *,
+        batch: ScheduleBatch,
+        draft_input: DFlashDraftInputV2,
+        verify_window: VerifyWindow,
+        bs: int,
+        device: str,
+        target_model: FunCosyVoice3SGLangModel,
+        sampling_info: SamplingBatchInfo,
+    ) -> DraftProposal:
+        """This draft uses its own embeddings; target_model is the native interface."""
+        forward_result = (
+            self._run_forward(  # noqa: leading-underscore  # native draft execution
+                batch=batch,
+                draft_input=draft_input,
+                verify_window=verify_window,
+                bs=bs,
+                device=device,
+                embed_module=self.draft_model.embed_tokens,
+                draft_sampler=None,
+                sampling_info=sampling_info,
+            )
+        )
+        base_logits, _ = self.draft_model.compute_base_logits(forward_result.raw_hidden)
+        markov_head = self.draft_model.markov_head
+        state = markov_head.sampling_state
+        assert state is not None, "a draft step needs its sampling state"
+        draft_tokens, corrected_logits = markov_head.sample_block(
+            base_logits.view(bs, self.gamma, -1),
+            first_prev_tokens=forward_result.draft_block_ids[:, 0],
+        )
+        return DraftProposal(
+            draft_block_ids=forward_result.draft_block_ids[
+                :, : self.gamma
+            ].contiguous(),
+            draft_block=DraftBlockResult(
+                draft_tokens=draft_tokens,
+                corrected_logits=corrected_logits,
+                greedy_mask=state.greedy,
+                temperatures=state.temperatures,
+                greedy_draft=False,
+            ),
+        )
+
+
 class ExactVerifyExecutor(TargetVerifyExecutor):
     """Accept drafts against the stage's exact per-position distribution."""
 
@@ -231,7 +290,9 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
         layout: None,
         prefix_lens: torch.Tensor,
         draft_tokens: torch.Tensor,
+        simulate_bonus_sampling_info: SamplingBatchInfo | None = None,
     ) -> AcceptOuts:
+        """Use exact sampling; worker initialization rejects simulated acceptance."""
         state = self.step_state
         assert not folded_accept and layout is None and target_logits is not None
         assert state is not None, "a verify step needs its sampling state"
@@ -370,6 +431,16 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
         )
         # The engine builder always materializes the draft under this class.
         assert isinstance(self.draft_model, FunCosyVoice3DSparkDraftModel)
+        self._proposer = CosyVoice3DraftBlockProposer(  # noqa: leading-underscore  # native draft worker hook
+            draft_model=self.draft_model,
+            draft_model_runner=self.draft_model_runner,
+            gamma=self.gamma,
+            mask_token_id=self._mask_token_id,  # noqa: leading-underscore  # native draft worker configuration
+            draft_block_spec_info=self._draft_block_spec_info,  # noqa: leading-underscore  # native draft worker configuration
+            tp_sync=self._tp_sync,  # noqa: leading-underscore  # native tensor parallel interface
+            random_seed=target_worker.random_seed,
+            greedy_draft=False,
+        )
         self.exact_verify_executor = ExactVerifyExecutor(
             target_worker=self.target_worker,
             gamma=self.gamma,
@@ -478,7 +549,7 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
             )
 
     def _maybe_build_draft_sampler(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        self, *, available_memory_gb: float
+        self,
     ) -> None:
         """The folded in-graph sampler would skip the mirrored Markov head."""
         return None

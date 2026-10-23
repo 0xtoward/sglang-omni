@@ -1338,11 +1338,14 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     )
     monkeypatch.setattr(bootstrap, "QwenThinkerSessionAdapter", session_adapter)
     scheduler = bootstrap.create_thinker_scheduler(
-        server_args, speech_enabled=speech_enabled, execution_mode=execution_mode,
+        server_args,
+        speech_enabled=speech_enabled,
+        execution_mode=execution_mode,
         enable_overlap=enable_overlap,
     )
 
     assert scheduler.enable_overlap is enable_overlap
+    assert infrastructure_kwargs[0]["supports_speculative_decoding"] is True
     assert infrastructure_saw_graph_disabled == [False]
     assert "defer_cuda_graph_capture" not in infrastructure_kwargs[0]
     assert graph_init_workers == []

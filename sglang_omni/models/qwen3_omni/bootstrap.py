@@ -71,6 +71,7 @@ def create_thinker_scheduler(
         model_arch_override="Qwen3OmniThinkerForCausalLM",
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         enable_prefill_input_embeds=enable_prefill_input_embeds,
+        supports_speculative_decoding=True,
     )
 
     (

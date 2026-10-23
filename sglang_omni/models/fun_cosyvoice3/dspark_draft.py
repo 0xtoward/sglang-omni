@@ -17,7 +17,7 @@ from collections.abc import Iterable
 import torch
 from huggingface_hub import snapshot_download
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
-from sglang.srt.models.dspark import Qwen3DSparkModel, StepSampler, VanillaMarkov
+from sglang.srt.models.dspark import Qwen3DSparkModel, VanillaMarkov
 from torch import nn
 from transformers import Qwen3Config
 
@@ -155,15 +155,8 @@ class MirroredMarkovHead(VanillaMarkov):
         base_logits: torch.Tensor,
         *,
         first_prev_tokens: torch.Tensor,
-        hidden_states: torch.Tensor | None,
-        sampler: StepSampler,
-        collect_corrected: bool = True,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Draw the block from the stage-shaped logits.
-
-        sampler, hidden_states and collect_corrected go unused: the given step sampler
-        would skip the shaping, and the shaped logits are always returned.
-        """
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Draw the block and retain the exact logits used for each proposal."""
         state = self.sampling_state
         assert state is not None, "a draft step needs its sampling state"
         return self.block_sampler(
