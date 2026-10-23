@@ -590,10 +590,12 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
 ```
 
 `--concurrency N` processes up to N variants at once, including post-processing.
-Connections above the server's `max_sessions` may receive HTTP 503; a session
-fails if admission retries are exhausted. Latencies recorded under load are not
-comparable to N=1, and `run.json` gains a `load`
-block (p50/p90/max initial delay, pacing violations, admission diagnostics).
+Each finished session is replayed in a worker process, and `run.json` is rewritten
+at most every 10 seconds while recording, so neither delays the 80 ms input
+pacing of the sessions still open. Connections above the server's `max_sessions`
+may receive HTTP 503; a session fails if admission retries are exhausted.
+Latencies recorded under load are not comparable to N=1, and `run.json` gains a
+`load` block (p50/p90/max initial delay, pacing violations, admission diagnostics).
 `load.input_pacing_violations` counts variants with measured out-of-tolerance
 appends; a session that sends no appends is excluded. The
 `load.variants_with_admission_denials` count includes each variant with recorded

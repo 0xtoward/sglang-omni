@@ -6,8 +6,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import multiprocessing
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -51,6 +54,11 @@ RUNNER_FILES = (
     "benchmarks/duplex/v15_runner.py",
 )
 VARIANT_STATUSES = ("pending", "invalid", "error", "fail", "not_exercised", "pass")
+# note (0xtoward): Finishing a session takes about 30 ms of CPU, so 8 workers clear a
+# burst of 32 sessions in about 120 ms.
+FINISH_WORKERS = 8
+# note (0xtoward): Each run.json rewrite blocks the loop for about 10 ms.
+RUN_SNAPSHOT_INTERVAL_S = 10.0
 
 
 class DuplexDataset(Protocol):
@@ -391,13 +399,23 @@ async def run_samples(
     session_slots = asyncio.Semaphore(concurrency)
     open_sessions = 0
     recording_started_s = time.perf_counter()
+    last_snapshot_s = recording_started_s
+    loop = asyncio.get_running_loop()
+    finish_workers = min(concurrency, FINISH_WORKERS)
+    finish_pool = ProcessPoolExecutor(
+        max_workers=finish_workers, mp_context=multiprocessing.get_context("forkserver")
+    )
+    # note (0xtoward): Starting the first worker blocks the loop for about 40 ms, so
+    # every worker starts now, while no session is open.
+    for _ in range(finish_workers):
+        finish_pool.submit(int)
 
     async def record_variant(
         sample_record: dict[str, JsonValue],
         variant: str,
         variant_state: dict[str, JsonValue],
     ) -> None:
-        nonlocal open_sessions
+        nonlocal open_sessions, last_snapshot_s
         async with session_slots:
             variant_dir = output / variant_state["directory"]
             variant_state["session"] = {
@@ -416,15 +434,18 @@ async def run_samples(
                     turn_detection=turn_detection,
                     tail_s=legacy_tail_s,
                 )
-                # note (wenyao): trace parsing and WAV writes run off the loop so
-                # they do not stall the 80 ms pacing of the other open sessions.
-                protocol_report = await asyncio.to_thread(replay_run, variant_dir)
+                # note (0xtoward): A thread would take the GIL from the loop and delay
+                # the 80 ms pacing of the other open sessions.
+                protocol_report = await loop.run_in_executor(
+                    finish_pool, replay_run, variant_dir
+                )
                 await asyncio.to_thread(
                     write_json, variant_dir / "report.json", protocol_report
                 )
                 (case_report,) = protocol_report["cases"]
-                playout_report = await asyncio.to_thread(
-                    reconstruct_output, variant_dir, profile=profile
+                playout_report = await loop.run_in_executor(
+                    finish_pool,
+                    partial(reconstruct_output, variant_dir, profile=profile),
                 )
             except Exception as exc:
                 logger.exception(f"variant {sample_record['id']}/{variant} failed")
@@ -459,7 +480,15 @@ async def run_samples(
                 for path in sorted(variant_dir.iterdir())
                 if not path.name.startswith(".")
             }
-            save("running")
+            snapshot_s = time.perf_counter()
+            if snapshot_s - last_snapshot_s >= RUN_SNAPSHOT_INTERVAL_S:
+                last_snapshot_s = snapshot_s
+                save("running")
+            else:
+                pass
 
-    await asyncio.gather(*(record_variant(*entry) for entry in pending))
+    try:
+        await asyncio.gather(*(record_variant(*entry) for entry in pending))
+    finally:
+        finish_pool.shutdown()
     return save("complete")

@@ -8,8 +8,11 @@ import base64
 import itertools
 import json
 import time
+from concurrent.futures import Future, ProcessPoolExecutor
+from functools import partial
 from http import HTTPStatus
 from pathlib import Path
+from types import FunctionType
 
 import numpy as np
 import pytest
@@ -679,6 +682,65 @@ def test_slow_report_write_does_not_delay_another_sessions_input(
     assert json.loads((output / "run.json").read_text()) == result
 
 
+@pytest.mark.parametrize(
+    "interval_s,running_snapshots",
+    [(0.0, 3), (3600.0, 1)],
+    ids=["every session", "one snapshot before the sessions"],
+)
+def test_run_samples_snapshots_run_json_at_most_once_per_interval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interval_s: float,
+    running_snapshots: int,
+) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+    write_json = v15_runner.write_json
+    statuses: list[str] = []
+
+    def record_run_status(path: Path, value: JsonValue) -> None:
+        if path.name == "run.json":
+            statuses.append(value["status"])
+        else:
+            pass
+        write_json(path, value)
+
+    monkeypatch.setattr(v15_runner, "write_json", record_run_status)
+    monkeypatch.setattr(v15_runner, "RUN_SNAPSHOT_INTERVAL_S", interval_s)
+    result = asyncio.run(
+        CappedPeerServer().record(dataset, output, sample_ids=["user_interruption/1"])
+    )
+
+    assert result["summary"]["variants"]["pass"] == 2
+    assert statuses.count("running") == running_snapshots
+    assert statuses[-1] == "complete"
+    assert json.loads((output / "run.json").read_text()) == result
+
+
+def test_run_samples_finishes_sessions_in_worker_processes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+    submitted: list[str] = []
+
+    class RecordingPool(ProcessPoolExecutor):
+        def submit(
+            self, function: FunctionType | partial[dict[str, JsonValue]], /, *args: Path
+        ) -> Future[dict[str, JsonValue]]:
+            submitted.append(getattr(function, "func", function).__name__)
+            return super().submit(function, *args)
+
+    monkeypatch.setattr(v15_runner, "ProcessPoolExecutor", RecordingPool)
+    result = asyncio.run(
+        CappedPeerServer().record(dataset, output, sample_ids=["user_interruption/1"])
+    )
+
+    assert result["summary"]["variants"]["pass"] == 2
+    assert submitted.count("replay_run") == 2
+    assert submitted.count("reconstruct_output") == 2
+
+
 def test_run_samples_accounts_sessions_the_server_refuses_past_its_cap(
     tmp_path: Path,
 ) -> None:
@@ -711,7 +773,10 @@ def test_run_samples_accounts_sessions_the_server_refuses_past_its_cap(
     assert all(
         variant["status"] == "pass" for variant in variants if variant not in denied
     )
-    assert result["load"]["variants_with_admission_denials"] == len(denied)
+    refused = [
+        variant for variant in variants if variant["output"]["admission_denials"] > 0
+    ]
+    assert result["load"]["variants_with_admission_denials"] == len(refused)
     assert result["load"]["variants_passed"] == len(variants) - len(denied)
     assert result["load"]["input_pacing_violations"] == 0
 
