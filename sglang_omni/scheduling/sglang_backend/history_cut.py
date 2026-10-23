@@ -51,9 +51,10 @@ class LayerKVCache(Protocol):
 
 @dataclass(frozen=True)
 class HistoryCut:
-    """Retained session positions to drop before the next unit: [start, end) ranges, ascending and apart."""
+    """Retained session positions to drop before the next unit: [start, end) ranges, ascending and apart, that hold unit_count whole units."""
 
     ranges: tuple[tuple[int, int], ...]
+    unit_count: int
 
     def __post_init__(self) -> None:
         bounds = [bound for cut_range in self.ranges for bound in cut_range]
