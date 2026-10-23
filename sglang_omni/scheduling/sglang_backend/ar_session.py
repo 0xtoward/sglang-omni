@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from array import array
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -237,6 +238,8 @@ class SessionUnit:
     embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     native_offset: int = 0
     prompt_length: int = 0
+    # note (0xtoward): Set only on a unit that carried a history cut.
+    cut_start_s: float | None = None
 
 
 @dataclass(kw_only=True)
@@ -247,6 +250,10 @@ class BridgeSession:
     embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     # The session's read; an AR stage emits only inside appends, so the close answers it.
     output_read: StagePayload | None = None
+    # note (0xtoward): Named as the checkpoint's StreamDecoder counters.
+    sliding_event_count: int = 0
+    total_dropped_tokens: int = 0
+    total_dropped_units: int = 0
 
 
 class ARSessionBridge:
@@ -435,7 +442,9 @@ class ARSessionBridge:
             unit.session_identity, request_data, history_length, history_capacity
         )
         if history_cut is not None:
-            self.drop_history(session, native_session, history_cut)
+            self.drop_history(
+                session, native_session, unit, history_cut, history_length
+            )
             history_length -= history_cut.length
         else:
             pass
@@ -519,9 +528,16 @@ class ARSessionBridge:
         self.adapter.bind_request(unit.session_identity, request_data, unit)
 
     def drop_history(
-        self, session: BridgeSession, native_session: Session, cut: HistoryCut
+        self,
+        session: BridgeSession,
+        native_session: Session,
+        unit: SessionUnit,
+        cut: HistoryCut,
+        history_length: int,
     ) -> None:
         """Drop the cut from an idle session's ids, KV and embedding spans; later positions move down."""
+        started = time.perf_counter()
+        unit.cut_start_s = started
         cut_token_ids(native_session, cut)
         record = self.bridge_scheduler.tree_cache.session_records().get(
             native_session.session_id
@@ -546,12 +562,17 @@ class ARSessionBridge:
             for span in session.embedding_spans
             if not cut.drops(span.start, span.end)
         ]
+        session.sliding_event_count += 1
+        session.total_dropped_tokens += cut.length
+        session.total_dropped_units += cut.unit_count
         logger.info(
-            "Session %s: dropped %d history tokens in %d ranges, %d kept",
-            native_session.session_id,
-            cut.length,
-            len(cut.ranges),
-            native_session.committed_origin_len,
+            f"Session {native_session.session_id}: history cut {session.sliding_event_count}, "
+            f"history {history_length} -> {history_length - cut.length} tokens, "
+            f"dropped {cut.length} tokens / {cut.unit_count} units / {len(cut.ranges)} ranges, "
+            f"scheduler-thread time {(time.perf_counter() - started) * 1000:.2f} ms, "
+            f"sliding_event_count={session.sliding_event_count} "
+            f"total_dropped_tokens={session.total_dropped_tokens} "
+            f"total_dropped_units={session.total_dropped_units}"
         )
 
     def release_append_unit(self, request_id: str) -> None:
@@ -733,6 +754,13 @@ class ARSessionBridge:
             session = self.sessions[unit.session_identity.id]
             session.unit = None
             session.embedding_spans.extend(unit.embedding_spans)
+            if unit.cut_start_s is not None:
+                logger.info(
+                    f"Session {unit.session_identity.id}: the unit that carried history cut {session.sliding_event_count} "
+                    f"took {(time.perf_counter() - unit.cut_start_s) * 1000:.1f} ms from the cut to completion"
+                )
+            else:
+                pass
             if (
                 request_data is not None
                 and request_data.input_embeds_are_projected

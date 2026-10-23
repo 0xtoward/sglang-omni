@@ -49,7 +49,7 @@ class MiniCPMOThinkerSessionState:
         if not ranges:
             return None
         else:
-            cut = HistoryCut(tuple(ranges))
+            cut = HistoryCut(tuple(ranges), unit_count=len(dropped))
             self.unit_starts = [
                 cut.new_position(unit_start)
                 for index, unit_start in enumerate(self.unit_starts)

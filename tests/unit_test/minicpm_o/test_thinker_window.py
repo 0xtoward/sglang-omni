@@ -146,7 +146,7 @@ def test_window_cuts_early_when_the_next_unit_would_not_fit() -> None:
     assert adapter.plan_history_cut(IDENTITY, request, 409, 500) is None
     cut = adapter.plan_history_cut(IDENTITY, request, 409, 250)
 
-    assert cut == HistoryCut(((10, 210),))
+    assert cut == HistoryCut(((10, 210),), unit_count=2)
     assert adapter.states[IDENTITY].unit_starts == [10, 110]
 
 
@@ -200,7 +200,7 @@ def test_cut_token_ids_follow_the_sglang_streaming_session() -> None:
     session.finish_req(first)
 
     assert retained_history_length(session) == 23
-    cut_token_ids(session, HistoryCut(((2, 5), (10, 12))))
+    cut_token_ids(session, HistoryCut(((2, 5), (10, 12)), unit_count=2))
     second = session.create_req(tokenized("b", [300, 301]), None, 1000)
 
     kept = [
@@ -287,7 +287,13 @@ def test_cut_moves_the_kept_kv_down_the_session_row(
         shifts.append(distances.cpu())
         return keys
 
-    cut_retained_kv(rows, kv_cache, kv, HistoryCut(((10, 30), (50, 60))), record_shift)
+    cut_retained_kv(
+        rows,
+        kv_cache,
+        kv,
+        HistoryCut(((10, 30), (50, 60)), unit_count=2),
+        record_shift,
+    )
 
     kept = [*range(10), *range(30, 50), *range(60, 100)]
     old_slots = slots[kept].to(torch.int64).to(device)
