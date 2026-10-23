@@ -576,7 +576,7 @@ def test_an_ar_stage_holds_the_read_takes_a_control_and_answers_the_read_at_clos
     scheduler.session_controller = Mock()
     scheduler.session_controller.open.return_value = SimpleNamespace(success=True)
     scheduler.session_controller.get.return_value = None
-    scheduler.tree_cache = SimpleNamespace(slots={})
+    scheduler.tree_cache = SimpleNamespace(session_records=lambda: {})
     scheduler.outbox = queue.Queue()
     scheduler.aborted_request_ids = set()
     adapter = Mock()
@@ -660,10 +660,11 @@ def test_ar_bridge_binds_the_native_request_and_hands_an_aborted_unit_to_the_ada
     adapter.bind_request = Mock()
     order: list[str] = []
     adapter.on_abort = Mock(side_effect=lambda identity, unit: order.append("model"))
-    scheduler = Mock()
+    scheduler = Mock(max_req_len=100)
     scheduler.model_config.vocab_size = 100
     native = scheduler.session_controller.get.return_value
     native.session_id = identity.id
+    native.req_nodes = {}
     native.abort_req.side_effect = lambda: order.append("native")
     native_request = Mock(origin_input_ids=[10, 20, 30], to_finish=None)
     native.create_req.return_value = native_request
