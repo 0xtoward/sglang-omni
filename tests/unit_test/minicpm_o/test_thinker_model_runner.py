@@ -10,7 +10,6 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
@@ -218,7 +217,9 @@ def test_duplex_sample_masks_bad_tokens_and_closes_at_budget(
             tokenizer,
             VOCAB_SIZE,
             window=DEFAULT_WINDOW_SETTINGS,
-            rotary_embedding=RotaryEmbedding(64, 64, 16, 10_000, True, torch.float32),
+            rotary_embedding=SimpleNamespace(
+                head_size=64, rotary_dim=64, is_neox_style=True, cos_sin_cache=None
+            ),
         ).special
         runner = duplex_runner(special_tokens)
     logits = unit_logits(
