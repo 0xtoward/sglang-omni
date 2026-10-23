@@ -867,12 +867,7 @@ Reorganized the V1 unit tests into component-focused folders so each file maps d
 
 _State: MERGED 2026-05-13. Part of #376._
 
-Adds the SGLang-Omni Router: a standalone process (`sgl-omni-router`) that fronts complete V1 server replicas behind one OpenAI-compatible endpoint. Selects one routable worker per request and forwards the original bytes.
-
-- **Worker sources:** homogeneous URL pool (`--worker-urls`), heterogeneous JSON manifest with per-worker capabilities (`--worker-config`), or managed local launcher from YAML (`--launcher-config`)
-- **Selection pipeline:** payload-size guard → bounded metadata extraction → routable / capability / model filters → safe-superset resolution → policy (`round_robin` / `least_request` / `random`)
-- **Health and admin:** per-worker failure tracking drives `/ready`; exposes admin and merged `/v1/models` endpoints
-- **Managed launcher:** spawns workers from YAML and waits for all to pass `/health` in parallel before accepting traffic
+Introduced the original Python router for complete V1 server replicas, with worker selection, health checks, administrative broadcasts, and managed local workers. That implementation has been retired. See the [Omni Router guide](../basic_usage/omni_router.md) for the current Rust executable and TOML configuration.
 
 **Why it matters:** Decouples horizontal scaling from the pipeline architecture. Each worker remains a full V1 replica with its own Coordinator — the router never splits a request across stages — which keeps the V1 boundary intact while letting deployments scale by replication.
 
