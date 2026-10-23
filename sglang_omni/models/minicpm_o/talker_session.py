@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Incremental speech conditions over the shared SGLang talker and native KV."""
 
+import logging
+import time
 from dataclasses import dataclass, field
 
 import torch
@@ -24,6 +26,8 @@ from sglang_omni.scheduling.sglang_backend.request_data import (
     SGLangARRequestData,
 )
 
+logger = logging.getLogger(__name__)
+
 # note (Junnan Li): One 1 s unit of codec tokens plus one, as in the checkpoint's duplex TTS.
 TALKER_TOKENS_PER_UNIT = CODEC_CHUNK_SIZE + 1
 
@@ -36,11 +40,15 @@ class TalkerSessionState:
     # note (0xtoward): Tokens the turn's talker history holds, and the turn's newest finished units (condition, codes) that a rollover can keep.
     history_length: int = 0
     recent_units: list[tuple[torch.Tensor, list[int]]] = field(default_factory=list)
+    rollover_count: int = 0
+    total_carried_units: int = 0
+    total_carried_tokens: int = 0
 
 
 @dataclass(kw_only=True)
 class TalkerUnitRequestData(SGLangARRequestData):
-    pass
+    # note (0xtoward): Set only on a unit that rebuilt the turn's history.
+    rollover_start_s: float | None = None
 
 
 class TalkerAdapter(ARSessionAdapter):
@@ -121,6 +129,7 @@ class TalkerAdapter(ARSessionAdapter):
         payload: StagePayload,
     ) -> TalkerUnitRequestData:
         state = self.states[session_identity]
+        rollover_start_s = time.perf_counter() if state.is_rollover_pending else None
         talker_conditions = payload.data["talker_conditions"]
         tts_condition = build_tts_condition(
             torch.tensor(
@@ -190,6 +199,22 @@ class TalkerAdapter(ARSessionAdapter):
             vocab_size=self.model.num_audio_tokens,
         )
         request.tokenizer = self.tokenizer
+        if state.is_rollover_pending:
+            state.rollover_count += 1
+            state.total_carried_units += len(state.recent_units)
+            state.total_carried_tokens += len(carried_token_ids)
+            logger.info(
+                f"Session {session_identity.id}: talker rollover {state.rollover_count}, "
+                f"history {state.history_length} tokens, "
+                f"carried {len(state.recent_units)} units / {len(carried_token_ids)} tokens, "
+                f"new unit rows {condition_rows}, "
+                f"rebuild prefill {len(request.origin_input_ids)} tokens, "
+                f"rollover_count={state.rollover_count} "
+                f"total_carried_units={state.total_carried_units} "
+                f"total_carried_tokens={state.total_carried_tokens}"
+            )
+        else:
+            pass
         return TalkerUnitRequestData(
             req=request,
             stage_payload=payload,
@@ -198,6 +223,7 @@ class TalkerAdapter(ARSessionAdapter):
             talker_model_inputs={
                 "rep_penalty": payload.request.params["talker_repetition_penalty"]
             },
+            rollover_start_s=rollover_start_s,
         )
 
     def result(
@@ -218,4 +244,11 @@ class TalkerAdapter(ARSessionAdapter):
             )
         )
         state.recent_units = self.units_to_carry(state.recent_units, 0)
+        if request_data.rollover_start_s is not None:
+            logger.info(
+                f"Session {session_identity.id}: the unit that carried talker rollover {state.rollover_count} "
+                f"took {(time.perf_counter() - request_data.rollover_start_s) * 1000:.1f} ms from build to result"
+            )
+        else:
+            pass
         return payload
