@@ -9,7 +9,6 @@ from unittest.mock import Mock
 import pytest
 import torch
 from pydantic import ValidationError
-from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang.srt.managers.io_struct import SessionParams, TokenizedGenerateReqInput
 from sglang.srt.mem_cache.memory_pool import (
     MHATokenToKVPool,
@@ -48,12 +47,21 @@ def make_adapter(window: MiniCPMODuplexWindow) -> ThinkerAdapter:
     tokenizer.convert_tokens_to_ids.side_effect = dict(
         zip(REQUIRED_SPECIAL_TOKENS, range(1, len(REQUIRED_SPECIAL_TOKENS) + 1))
     ).__getitem__
+    # note (0xtoward): SGLang's RotaryEmbedding imports a vLLM kernel when no GPU is visible, so the tests build its cos_sin_cache rows.
+    angles = torch.outer(
+        torch.arange(8192, dtype=torch.float32),
+        1.0
+        / ROPE_THETA ** (torch.arange(0, HEAD_DIM, 2, dtype=torch.float32) / HEAD_DIM),
+    )
     adapter = ThinkerAdapter(
         tokenizer,
         64,
         window=window,
-        rotary_embedding=RotaryEmbedding(
-            HEAD_DIM, HEAD_DIM, 8192, ROPE_THETA, True, torch.float32
+        rotary_embedding=SimpleNamespace(
+            head_size=HEAD_DIM,
+            rotary_dim=HEAD_DIM,
+            is_neox_style=True,
+            cos_sin_cache=torch.cat((angles.cos(), angles.sin()), dim=-1),
         ),
     )
     adapter.states[IDENTITY] = MiniCPMOThinkerSessionState(
