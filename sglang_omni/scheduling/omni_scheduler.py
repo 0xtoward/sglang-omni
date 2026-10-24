@@ -2294,36 +2294,44 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
-        with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            self, batch, overlap=self.enable_overlap
-        ):
-            if self.enable_overlap:
-                forward_kwargs = {
-                    "on_publish": partial(
-                        self.future_map.publish, batch.req_pool_indices
+        target_worker = self.tp_worker.speculative_target_worker
+        target_worker.verify_requests = [
+            SchedulerRequest(request_id=req.rid, data=req.omni_data)
+            for req in batch.reqs
+        ]
+        try:
+            with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                self, batch, overlap=self.enable_overlap
+            ):
+                if self.enable_overlap:
+                    forward_kwargs = {
+                        "on_publish": partial(
+                            self.future_map.publish, batch.req_pool_indices
+                        )
+                    }
+                    if batch.spec_algorithm.supports_grammar_overlap():
+                        forward_kwargs["grammar_barrier"] = (
+                            self._advance_pending_grammar  # noqa: leading-underscore  # native scheduler callback
+                        )
+                    else:
+                        pass
+                    result = self.draft_worker.forward_batch_generation(
+                        batch, **forward_kwargs
                     )
-                }
-                if batch.spec_algorithm.supports_grammar_overlap():
-                    forward_kwargs["grammar_barrier"] = (
-                        self._advance_pending_grammar  # noqa: leading-underscore  # native scheduler callback
+                    self.future_map.stash(
+                        batch.req_pool_indices,
+                        RelayPayload.from_draft_input(result.next_draft_input),
                     )
+                    if result.extra_keep_alive_refs:
+                        self.batch_record_buf[self.batch_record_ct].extend(
+                            result.extra_keep_alive_refs
+                        )
+                    else:
+                        pass
                 else:
-                    pass
-                result = self.draft_worker.forward_batch_generation(
-                    batch, **forward_kwargs
-                )
-                self.future_map.stash(
-                    batch.req_pool_indices,
-                    RelayPayload.from_draft_input(result.next_draft_input),
-                )
-                if result.extra_keep_alive_refs:
-                    self.batch_record_buf[self.batch_record_ct].extend(
-                        result.extra_keep_alive_refs
-                    )
-                else:
-                    pass
-            else:
-                result = self.draft_worker.forward_batch_generation(batch)
+                    result = self.draft_worker.forward_batch_generation(batch)
+        finally:
+            target_worker.verify_requests = []
         self.model_runner.after_speculative_step(
             batch,
             result,
