@@ -17,6 +17,12 @@ from benchmarks.duplex.oracle_models import MediaTime, TraceRecord, WireEvent
 from benchmarks.duplex.profiles import PROFILES, ProfileName
 from benchmarks.duplex.run_artifacts import load_run
 from benchmarks.duplex.v15_audio import AUDIO_DELTA, LEGACY_AUDIO_DELTA
+from benchmarks.metrics.server_probes import (
+    level_event_dir,
+    level_memory_path,
+    stage_memory,
+    stage_split,
+)
 
 INPUT_BYTES_PER_MS = SAMPLE_RATE * 2 / 1000
 # note (jeffro): a not_exercised session kept the protocol; its model output just
@@ -340,6 +346,16 @@ def summarize_level(
             }
             for prebuffer_s in prebuffers_s
         ],
+        "stages": (
+            stage_split(level_event_dir(run_dir))
+            if level_event_dir(run_dir).is_dir()
+            else None
+        ),
+        "gpu_memory": (
+            stage_memory(level_memory_path(run_dir), level_event_dir(run_dir))
+            if level_memory_path(run_dir).is_file()
+            else None
+        ),
         "real_time_factor": real_time_factor,
         "unmet_targets": [
             target

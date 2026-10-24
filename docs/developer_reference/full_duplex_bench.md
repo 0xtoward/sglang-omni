@@ -317,6 +317,11 @@ python -m benchmarks.eval.benchmark_duplex_serving sweep --dataset sessions --co
 
 Any 16 kHz mono PCM16 question WAVs work for `build`; `--questions-per-session` and `--pause-s` make sessions minutes long, which is how a session reaches the thinker's history window. `--instructions` sets the session instructions, and `--frames-dir` sends the JPEGs of a directory as camera frames, one per unit in name order and cycled; a camera session fills the thinker context about five times faster than an audio-only one. The recorder's `--timeout` defaults to 600 s per session.
 
+With `--server-url http://127.0.0.1:8097`, the sweep adds two server-side views. Run it on the server's host, since the server writes them to this filesystem:
+
+- `--stage-events` records the request event recorder during each level, groups requests by the stages they went through (a listening unit stops at the thinker, a speaking one reaches the speech stage) and adds a table of the longest group: median (p90) milliseconds from admission to response, in each stage's queue, prefill, decode, compute or first chunk, and in the hops between stages.
+- `--gpu-memory` samples every GPU's used memory and busy share and every compute process's memory once a second, and adds a table of peaks per process. With `--stage-events`, each process is named by the stage that wrote its events. Under MPS the memory stays per process, but `nvidia-smi` charges all SM time to the MPS server, so the busy share is the whole card's.
+
 ### MiniCPM-o 4.5 on one H100
 
 One H100 80 GB ran a short v1.5 audio cohort with the native session protocol. Each recording selected the first 16 naturally sorted pairs from each of the four v1.5 subsets, including both clean and overlap variants: 128 sessions and 1,744 nominal input units per recording. The server allowed 64 session slots, but its memory pools were sized for this short cohort. A warmup pair was excluded. Each recording used a fresh client process against the same continuously running server.

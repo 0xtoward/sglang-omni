@@ -308,6 +308,117 @@ def test_prebuffer_curve_matches_the_simulated_player_and_speaking_units(
     assert level["speaking_unit_lag_s"]["p50"] == pytest.approx(0.6)
 
 
+def test_level_splits_requests_by_stage_path_and_names_memory_by_stage(
+    tmp_path: Path,
+) -> None:
+    """Request events beside a level group requests by the stages they reached and split each stage's time; their file names name the GPU processes."""
+    run_dir = record_run(tmp_path / "concurrency-1", 1, [("pass", ON_TIME)])
+    event_dir = tmp_path / "concurrency-1.events"
+    event_dir.mkdir()
+    events: dict[tuple[str, int], list[tuple[str, str, float]]] = {
+        ("coordinator", 11): [
+            ("listening", "request_admission", 0.0),
+            ("listening", "terminal_response", 60.0),
+            ("speaking", "request_admission", 0.0),
+            ("speaking", "terminal_response", 205.0),
+        ],
+        ("perception", 12): [
+            (request_id, event_name, time_ms)
+            for request_id in ("listening", "speaking")
+            for event_name, time_ms in (
+                ("stage_input_received", 1.0),
+                ("stage_dispatch", 2.0),
+                ("stage_complete", 8.0),
+            )
+        ],
+        ("thinker", 13): [
+            (request_id, event_name, time_ms)
+            for request_id in ("listening", "speaking")
+            for event_name, time_ms in (
+                ("stage_input_received", 9.0),
+                ("stage_dispatch", 10.0),
+                ("scheduler_prefill_start", 11.0),
+                ("scheduler_prefill_end", 26.0),
+                ("model_path_end", 56.0),
+                ("stage_complete", 57.0),
+            )
+        ],
+        ("talker", 22): [
+            ("speaking", "stage_input_received", 60.0),
+            ("speaking", "stage_dispatch", 60.0),
+            ("speaking", "stage_complete", 160.0),
+            ("speaking", "stage_complete", 170.0),
+        ],
+        ("speech", 23): [
+            ("speaking", "stage_input_received", 161.0),
+            ("speaking", "stage_dispatch", 161.0),
+            ("speaking", "stage_first_stream_chunk_sent", 200.0),
+        ],
+    }
+    for (stage, pid), stage_events in events.items():
+        (event_dir / f"events_{stage}_{pid}.jsonl").write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "request_id": request_id,
+                        "stage": stage,
+                        "event_name": event_name,
+                        "timestamp_ns": int(time_ms * 1e6),
+                    }
+                )
+                + "\n"
+                for request_id, event_name, time_ms in stage_events
+            )
+        )
+    (tmp_path / "concurrency-1.gpu-memory.jsonl").write_text(
+        json.dumps(
+            {
+                "time_s": 1.0,
+                "card_used_mib": [9000],
+                "card_busy_percent": [40],
+                "process_used_mib": {"22": 700, "33": 50},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "time_s": 2.0,
+                "card_used_mib": [9500],
+                "card_busy_percent": [60],
+                "process_used_mib": {"22": 900},
+            }
+        )
+        + "\n"
+    )
+
+    level = summarize_level(run_dir, PLAYBACK_RESERVE_S, PREBUFFERS_S)
+
+    listening = level["stages"]["perception > thinker"]
+    speaking = level["stages"]["perception > thinker > talker > speech"]
+    assert listening["admission_to_response_ms"]["p50"] == pytest.approx(60.0)
+    assert listening["segments_ms"]["thinker to response"]["p50"] == pytest.approx(3.0)
+    assert speaking["admission_to_response_ms"]["p50"] == pytest.approx(205.0)
+    expected_ms = {
+        "admission to perception": 1.0,
+        "thinker prefill": 15.0,
+        "thinker decode": 30.0,
+        "thinker to talker": 3.0,
+        # A stage's repeated event keeps its first time.
+        "talker compute": 100.0,
+        "speech first chunk": 39.0,
+        "speech to response": 5.0,
+    }
+    assert {
+        name: speaking["segments_ms"][name]["p50"] for name in expected_ms
+    } == pytest.approx(expected_ms)
+    assert level["gpu_memory"] == {
+        "samples": 2,
+        "card_peak_mib": 9500,
+        "card_busy_percent_mean": 50.0,
+        "process_peak_mib": {"pid 33": 50, "talker": 900},
+    }
+
+
 def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> None:
     passing = [("pass", ON_TIME)]
     report = serving_report(
