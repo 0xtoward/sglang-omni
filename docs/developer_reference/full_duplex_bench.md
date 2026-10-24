@@ -301,6 +301,8 @@ A level meets the targets when no session failed, no session was denied admissio
 
 These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
 
+By default every level starts its sessions as concurrency slots free up, so the first `N` start together and their one-second units stay aligned for the whole session. `--arrival-mean-gap-s G --arrival-seed S` starts sessions at seeded Poisson arrival times instead, which spreads the units' phases as independent users do; `--concurrency` still caps the sessions open at once. `--warmup-wav q.wav` runs one unscored session before a level, so a fresh server's first shapes do not land in the measurement. Both recorders take these options.
+
 ### MiniCPM-o 4.5 on one H100
 
 One H100 80 GB ran a short v1.5 audio cohort with the native session protocol. Each recording selected the first 16 naturally sorted pairs from each of the four v1.5 subsets, including both clean and overlap variants: 128 sessions and 1,744 nominal input units per recording. The server allowed 64 session slots, but its memory pools were sized for this short cohort. A warmup pair was excluded. Each recording used a fresh client process against the same continuously running server.

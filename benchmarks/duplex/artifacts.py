@@ -108,6 +108,22 @@ def add_protocol_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_load_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--arrival-mean-gap-s",
+        type=float,
+        help="Start sessions at Poisson arrival times with this mean gap instead of as "
+        "concurrency slots free up; --concurrency still caps the open sessions",
+    )
+    parser.add_argument("--arrival-seed", type=int, default=0)
+    parser.add_argument(
+        "--warmup-wav",
+        type=Path,
+        help="Unscored session run before the recorded ones, so a fresh server's "
+        "first shapes do not land in the measurement",
+    )
+
+
 def served_models(url: str) -> dict[str, JsonValue]:
     url_parts = urllib.parse.urlsplit(url)
     scheme = {"ws": "http", "wss": "https"}.get(url_parts.scheme, url_parts.scheme)
