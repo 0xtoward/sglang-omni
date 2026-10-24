@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 from importlib import import_module
 from pathlib import Path
@@ -12,6 +13,12 @@ from pydantic import JsonValue
 
 from benchmarks.duplex.serving import serving_report
 from benchmarks.duplex.v15_audio import write_json
+from benchmarks.metrics.server_probes import (
+    gpu_memory_samples,
+    level_event_dir,
+    level_memory_path,
+    request_events,
+)
 
 logger = logging.getLogger(__name__)
 RECORDERS = {
@@ -94,7 +101,88 @@ def format_table(report: dict[str, JsonValue]) -> str:
             f"Every recorded concurrency meets the targets; capacity is at least "
             f"{capacity}."
         )
-    return "\n".join(rows) + f"\n\n{verdict}\n"
+    return "\n".join(rows) + f"\n\n{verdict}\n" + format_server_tables(report)
+
+
+def format_server_tables(report: dict[str, JsonValue]) -> str:
+    """Per-segment times of the requests that went through the most stages, and peak GPU memory per process, for the levels that recorded them."""
+    tables = ""
+    staged = [level for level in report["levels"] if level["stages"] is not None]
+    if staged:
+        full_path = max(
+            (stage_path for level in staged for stage_path in level["stages"]),
+            key=lambda stage_path: stage_path.count(">"),
+        )
+        groups = [level["stages"].get(full_path) for level in staged]
+        segment_names = list(
+            dict.fromkeys(
+                name for group in groups if group for name in group["segments_ms"]
+            )
+        )
+        tables += (
+            f"\nRequests through {full_path}, median (p90) ms:\n\n| segment | "
+            + " | ".join(f"N={level['concurrency']}" for level in staged)
+            + " |\n|---|"
+            + "---:|" * len(staged)
+            + "\n"
+        )
+        for segment_name in ["admission to response", *segment_names]:
+            cells = []
+            for group in groups:
+                value = (
+                    None
+                    if group is None
+                    else (
+                        group["admission_to_response_ms"]
+                        if segment_name == "admission to response"
+                        else group["segments_ms"].get(segment_name)
+                    )
+                )
+                cells.append(
+                    "-"
+                    if value is None or value["p50"] is None
+                    else f"{value['p50']:.0f} ({value['p90']:.0f})"
+                )
+            tables += f"| {segment_name} | " + " | ".join(cells) + " |\n"
+    else:
+        pass
+    sampled = [level for level in report["levels"] if level["gpu_memory"] is not None]
+    if sampled:
+        process_names = sorted(
+            {
+                name
+                for level in sampled
+                for name in level["gpu_memory"]["process_peak_mib"]
+            }
+        )
+        tables += (
+            "\nPeak GPU memory (MiB) and mean GPU busy share:\n\n| process | "
+            + " | ".join(f"N={level['concurrency']}" for level in sampled)
+            + " |\n|---|"
+            + "---:|" * len(sampled)
+            + "\n"
+        )
+        for name in ["card", *process_names]:
+            cells = [
+                str(
+                    level["gpu_memory"]["card_peak_mib"]
+                    if name == "card"
+                    else level["gpu_memory"]["process_peak_mib"].get(name, "-")
+                )
+                for level in sampled
+            ]
+            tables += f"| {name} | " + " | ".join(cells) + " |\n"
+        tables += (
+            "| busy | "
+            + " | ".join(
+                ratio(level["gpu_memory"]["card_busy_percent_mean"] / 100, ".0%")
+                for level in sampled
+            )
+            + " |\n"
+        )
+    else:
+        pass
+    return tables
 
 
 def concurrency_levels(text: str) -> list[int]:
@@ -137,18 +225,29 @@ def sweep(args: argparse.Namespace) -> int:
         logger.info(
             f"Recording {args.dataset} at concurrency {concurrency} -> {run_dir}"
         )
-        # note (jeffro): the recorder exits nonzero when a session fails, which under
-        # load is a result to report, not a reason to stop the sweep.
-        recorder(
-            [
-                "record",
-                *args.recorder_args,
-                "--concurrency",
-                str(concurrency),
-                "--output",
-                str(run_dir),
-            ]
-        )
+        with contextlib.ExitStack() as probes:
+            if args.stage_events:
+                probes.enter_context(
+                    request_events(args.server_url, level_event_dir(run_dir))
+                )
+            else:
+                pass
+            if args.gpu_memory:
+                probes.enter_context(gpu_memory_samples(level_memory_path(run_dir)))
+            else:
+                pass
+            # note (jeffro): the recorder exits nonzero when a session fails, which under
+            # load is a result to report, not a reason to stop the sweep.
+            recorder(
+                [
+                    "record",
+                    *args.recorder_args,
+                    "--concurrency",
+                    str(concurrency),
+                    "--output",
+                    str(run_dir),
+                ]
+            )
         run_dirs.append(run_dir)
     serving = serving_report(
         run_dirs, args.playback_reserve_ms / 1000, args.prebuffer_ms
@@ -214,12 +313,30 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="New directory for the level runs, serving.json and SERVING.md",
     )
+    sweep_parser.add_argument(
+        "--server-url",
+        help="HTTP base URL of the server, such as http://127.0.0.1:8000, for the "
+        "server-side probes; the server must run on this host",
+    )
+    sweep_parser.add_argument(
+        "--stage-events",
+        action="store_true",
+        help="Record the profiler's request events at every level and split requests by stage",
+    )
+    sweep_parser.add_argument(
+        "--gpu-memory",
+        action="store_true",
+        help="Sample GPU memory and utilization at every level; with --stage-events, "
+        "processes are named by stage",
+    )
     sweep_parser.add_argument("recorder_args", nargs=argparse.REMAINDER)
     sweep_parser.set_defaults(handler=sweep)
 
     args = parser.parse_args(argv)
     if args.playback_reserve_ms < 0:
         parser.error("--playback-reserve-ms must be nonnegative")
+    elif args.command == "sweep" and args.stage_events and args.server_url is None:
+        parser.error("--stage-events needs --server-url")
     elif args.command == "sweep":
         args.recorder_args = [arg for arg in args.recorder_args if arg != "--"]
         if any(arg.split("=")[0] in SWEEP_OPTIONS for arg in args.recorder_args):
