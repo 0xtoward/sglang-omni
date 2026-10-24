@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import queue as _queue_mod
 import threading
 import time
@@ -2023,7 +2024,8 @@ class OmniScheduler(Generic[RequestDataT]):
                 (
                     "seed",
                     sampling_params.sampling_seed is not None
-                    and sampling_params.top_k != 1,
+                    and sampling_params.top_k != 1
+                    and os.environ.get("SGLANG_OMNI_SPECULATIVE_IGNORE_SEED") != "1",
                 ),
                 ("frequency_penalty", sampling_params.frequency_penalty != 0.0),
                 ("presence_penalty", sampling_params.presence_penalty != 0.0),
