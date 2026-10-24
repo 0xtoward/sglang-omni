@@ -294,6 +294,8 @@ Each level is one row:
 | `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
 | `buffer needed` | The smallest startup buffer with which a reply plays without a gap. It does not depend on `--playback-reserve-ms` |
 | `underrun replies` | Replies that a player starting `--playback-reserve-ms` (80 ms by default) after their first audio would have to pause. This column depends on the reserve: at concurrency 8 on MiniCPM-o, 21 of 35 replies pause at 80 ms while `buffer needed` p90 is 251 ms |
+| `gap-free replies` | The share of replies that a player holding each reply's first audio for each `--prebuffer-ms` value (0, 200 and 300 ms by default) plays without a gap; a reply stalls for its `buffer needed` minus the prebuffer. `serving.json` has the stall seconds at each prebuffer |
+| `speaking unit lag` | Native profiles only. The unit lag of the units during which reply audio arrived, which is the latency a listener hears |
 | `RTF p90` | Turn-based only. The time from a reply's first to its last audio arrival over the audio before the last chunk. Native profiles show `-`, because a native reply comes out one unit per input unit and its factor stays near 1 whatever the load |
 | `meets targets` | `yes`, or the targets the level misses |
 

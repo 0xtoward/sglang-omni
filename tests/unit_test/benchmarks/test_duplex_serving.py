@@ -19,6 +19,7 @@ PROFILE = "minicpmo-native-pr2377"
 # Qwen3-Omni behind server VAD: legacy protocol, 24 kHz output.
 TURN_BASED_PROFILE = "qwen3-omni-half-duplex"
 PLAYBACK_RESERVE_S = 0.3
+PREBUFFERS_S = [0.0, 0.2, 0.3]
 START_S = 100.0
 INPUT_S = 2.5
 OUTPUT_SECOND = base64.b64encode(b"\x00\x00" * 24000).decode()
@@ -262,6 +263,7 @@ def test_level_counts_every_unit_of_a_failed_session_as_missed(tmp_path: Path) -
     level = summarize_level(
         record_run(tmp_path / "run", 2, [("pass", ON_TIME), ("fail", [101.16])]),
         PLAYBACK_RESERVE_S,
+        PREBUFFERS_S,
     )
 
     assert level["sessions_failed"] == 1
@@ -277,6 +279,35 @@ def test_level_counts_every_unit_of_a_failed_session_as_missed(tmp_path: Path) -
     ]
 
 
+def test_prebuffer_curve_matches_the_simulated_player_and_speaking_units(
+    tmp_path: Path,
+) -> None:
+    """A reply that needs 0.2 s of prebuffer stalls for exactly what the simulated player underruns at each smaller prebuffer, and only the unit after reply audio counts as speaking."""
+    prebuffers_s = [0.0, 0.08, 0.3]
+    run_dir = record_run(
+        tmp_path / "run",
+        1,
+        [("pass", [101.16, 103.0, 103.1])],
+        reply_audio_s=[103.0, 104.2],
+    )
+
+    level = summarize_level(run_dir, PLAYBACK_RESERVE_S, prebuffers_s)
+
+    underruns_s = [
+        score_session(run_dir / "samples/0/input", PROFILE, prebuffer_s)["replies"][0][
+            "underrun_s"
+        ]
+        for prebuffer_s in prebuffers_s
+    ]
+    assert [entry["stall_s"] for entry in level["continuity"]] == pytest.approx(
+        underruns_s
+    )
+    assert [entry["gap_free_replies"] for entry in level["continuity"]] == [0, 0, 1]
+    # The padded last unit waits for the input end at 102.5.
+    assert level["speaking_unit_lag_s"]["count"] == 1
+    assert level["speaking_unit_lag_s"]["p50"] == pytest.approx(0.6)
+
+
 def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> None:
     passing = [("pass", ON_TIME)]
     report = serving_report(
@@ -286,6 +317,7 @@ def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> N
             record_run(tmp_path / "c2", 2, passing),
         ],
         PLAYBACK_RESERVE_S,
+        PREBUFFERS_S,
     )
 
     assert [level["concurrency"] for level in report["levels"]] == [1, 2, 4]
@@ -298,7 +330,9 @@ def test_capacity_is_unbounded_when_every_level_meets_the_targets(
     tmp_path: Path,
 ) -> None:
     report = serving_report(
-        [record_run(tmp_path / "c1", 1, [("pass", ON_TIME)])], PLAYBACK_RESERVE_S
+        [record_run(tmp_path / "c1", 1, [("pass", ON_TIME)])],
+        PLAYBACK_RESERVE_S,
+        PREBUFFERS_S,
     )
 
     assert report["max_concurrency_meeting_targets"] == 1
@@ -338,6 +372,7 @@ def test_turn_based_level_is_judged_by_reply_real_time_factor(tmp_path: Path) ->
             reply_audio_s=[102.8, 104.0],
         ),
         PLAYBACK_RESERVE_S,
+        PREBUFFERS_S,
     )
 
     assert level["unit_miss_rate"] is None
