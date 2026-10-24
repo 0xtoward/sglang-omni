@@ -159,11 +159,16 @@ async def run_samples(
     concurrency: int = 1,
     turn_detection: TurnDetection | None = None,
     legacy_tail_s: float = LEGACY_TAIL_S,
+    arrival_mean_gap_s: float | None = None,
+    arrival_seed: int = 0,
+    warmup_wav: Path | None = None,
 ) -> dict[str, JsonValue]:
     """Run selected sample variants, retaining failures in the selected denominator.
 
     turn_detection configures legacy-protocol and turn-based sessions and
     legacy_tail_s legacy-protocol ones; see benchmarks.duplex.client.run_session.
+    Sessions start as concurrency slots free up or, with arrival_mean_gap_s, at
+    Poisson arrival times; warmup_wav is one unscored session run first.
     """
     if not dataset_revision:
         raise ValueError("dataset_revision must be nonempty")
@@ -175,6 +180,8 @@ async def run_samples(
         pass
     if concurrency < 1:
         raise ValueError("concurrency must be at least 1")
+    elif arrival_mean_gap_s is not None and arrival_mean_gap_s <= 0:
+        raise ValueError("arrival_mean_gap_s must be positive")
     else:
         pass
     protocol = profile_protocol(profile, turn_detection)
@@ -261,6 +268,16 @@ async def run_samples(
                 "variants": variants,
                 "timeout_s": timeout_s,
                 "concurrency": concurrency,
+                "arrival": (
+                    None
+                    if arrival_mean_gap_s is None
+                    else {
+                        "process": "poisson",
+                        "mean_gap_s": arrival_mean_gap_s,
+                        "seed": arrival_seed,
+                    }
+                ),
+                "warmup_wav": None if warmup_wav is None else str(warmup_wav),
                 "packet_ms": PACKET_MS,
                 "pacing_tolerance_s": PACING_TOLERANCE_S,
                 "transport": TRANSPORT,
@@ -381,6 +398,19 @@ async def run_samples(
                 )
                 save("preparing")
 
+    if warmup_wav is not None:
+        warmup_pcm, _ = normalize_audio(warmup_wav)
+        await run_session(
+            url,
+            warmup_pcm,
+            trace_path=output / "warmup.jsonl",
+            timeout_s=timeout_s,
+            profile=profile,
+            turn_detection=turn_detection,
+            tail_s=legacy_tail_s,
+        )
+    else:
+        pass
     save("running")
     pending = [
         (sample_record, variant, variant_state)
@@ -388,6 +418,13 @@ async def run_samples(
         for variant, variant_state in sample_record["variants"].items()
         if variant_state["status"] == "pending"
     ]
+    if arrival_mean_gap_s is None:
+        arrivals_s = [0.0] * len(pending)
+    else:
+        gaps_s = np.random.default_rng(arrival_seed).exponential(
+            arrival_mean_gap_s, len(pending)
+        )
+        arrivals_s = [0.0, *np.cumsum(gaps_s[:-1]).tolist()][: len(pending)]
     session_slots = asyncio.Semaphore(concurrency)
     open_sessions = 0
     recording_started_s = time.perf_counter()
@@ -396,11 +433,16 @@ async def run_samples(
         sample_record: dict[str, JsonValue],
         variant: str,
         variant_state: dict[str, JsonValue],
+        arrival_s: float,
     ) -> None:
         nonlocal open_sessions
+        await asyncio.sleep(
+            max(0.0, arrival_s - (time.perf_counter() - recording_started_s))
+        )
         async with session_slots:
             variant_dir = output / variant_state["directory"]
             variant_state["session"] = {
+                "arrival_s": arrival_s,
                 "started_s": time.perf_counter() - recording_started_s,
                 "finished_s": None,
                 "open_sessions_at_start": open_sessions,
@@ -461,5 +503,10 @@ async def run_samples(
             }
             save("running")
 
-    await asyncio.gather(*(record_variant(*entry) for entry in pending))
+    await asyncio.gather(
+        *(
+            record_variant(*entry, arrival_s)
+            for entry, arrival_s in zip(pending, arrivals_s, strict=True)
+        )
+    )
     return save("complete")

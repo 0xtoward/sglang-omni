@@ -1273,6 +1273,8 @@ python -m benchmarks.eval.benchmark_duplex_serving sweep \
 
 The options after `--` go unchanged to the `record` command of `benchmark_duplex_v15` (or `benchmark_duplex_v10` with `--dataset v1.0`); the sweep adds `--concurrency N` and `--output <output>/concurrency-N` for each level. It writes `serving.json`, `SERVING.md` and one run directory per level, and keeps going when a level has failed sessions, since those are part of the result. `report --run <run> --run <run> ... --output serving.json` builds the same table from runs that are already recorded.
 
+By default every level starts its sessions as concurrency slots free up, so the first `N` start together and their one-second units stay aligned for the whole session. `--arrival-mean-gap-s G --arrival-seed S` starts sessions at seeded Poisson arrival times instead, which spreads the units' phases as independent users do; `--concurrency` still caps the sessions open at once. `--warmup-wav q.wav` runs one unscored session before a level, so a fresh server's first shapes do not land in the measurement. Both recorders take these options.
+
 Each level is one row:
 
 | Column | Meaning |

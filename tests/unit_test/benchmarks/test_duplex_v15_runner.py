@@ -648,6 +648,50 @@ def test_run_samples_keeps_at_most_concurrency_sessions_open(tmp_path: Path) -> 
     assert json.loads((output / "run.json").read_text()) == result
 
 
+def test_run_samples_starts_sessions_at_seeded_poisson_arrivals_after_a_warmup(
+    tmp_path: Path,
+) -> None:
+    """Open-loop load: no session starts before its seeded arrival time, and the unscored warm-up session runs first."""
+    dataset, output, warmup_wav = (
+        tmp_path / "data",
+        tmp_path / "run",
+        tmp_path / "warmup.wav",
+    )
+    write_dataset(dataset)
+    soundfile.write(warmup_wav, np.zeros(1600, dtype=np.int16), 16000, subtype="PCM_16")
+    peer_server = CappedPeerServer()
+
+    result = asyncio.run(
+        peer_server.record(
+            dataset,
+            output,
+            concurrency=8,
+            arrival_mean_gap_s=0.05,
+            arrival_seed=3,
+            warmup_wav=warmup_wav,
+        )
+    )
+
+    sessions = [
+        variant["session"]
+        for sample in result["samples"]
+        for variant in sample["variants"].values()
+    ]
+    gaps_s = np.random.default_rng(3).exponential(0.05, len(sessions))
+    assert [session["arrival_s"] for session in sessions] == pytest.approx(
+        [0.0, *np.cumsum(gaps_s[:-1])]
+    )
+    assert all(session["started_s"] >= session["arrival_s"] for session in sessions)
+    assert result["summary"]["variants"]["pass"] == 8
+    assert (output / "warmup.jsonl").stat().st_size > 0
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["config"]["arrival"] == {
+        "process": "poisson",
+        "mean_gap_s": 0.05,
+        "seed": 3,
+    }
+
+
 def test_slow_report_write_does_not_delay_another_sessions_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
