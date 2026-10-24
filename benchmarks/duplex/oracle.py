@@ -176,6 +176,7 @@ def evaluate_trace(
     acknowledgments = {
         "session.updated": "session.update",
         "sglang.input_audio.accepted": "input_audio_buffer.append",
+        "sglang.input_image.accepted": "sglang.input_image.append",
         "sglang.input_audio.ended": "sglang.input_audio.end",
         "sglang.input_audio.drained": "sglang.input_audio.end",
         "session.closed": "session.close",
@@ -261,6 +262,11 @@ def evaluate_trace(
                     input_byte_count += len(pcm_bytes(event.audio))
                     next_sequence += 1
                     input_times.append(event_time_s)
+                elif event_type == "sglang.input_image.append":
+                    check(updated, "image input before session.updated")
+                    check(
+                        not counts["send", "sglang.input_audio.end"], "input after EOS"
+                    )
                 elif event_type == "sglang.input_audio.end":
                     check(updated, "EOS before session.updated")
                 elif event_type == "session.close":
@@ -359,6 +365,9 @@ def evaluate_trace(
                 else:
                     pass
                 updated = True
+            elif event_type == "sglang.input_image.accepted":
+                # note (0xtoward): the acknowledgment check already tied the receipt to its frame.
+                pass
             elif event_type == "sglang.input_audio.accepted":
                 if client_command is not None:
                     check(

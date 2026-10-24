@@ -305,6 +305,18 @@ These are client-side times on the client's host: they include the network to th
 
 By default every level starts its sessions as concurrency slots free up, so the first `N` start together and their one-second units stay aligned for the whole session. `--arrival-mean-gap-s G --arrival-seed S` starts sessions at seeded Poisson arrival times instead, which spreads the units' phases as independent users do; `--concurrency` still caps the sessions open at once. `--warmup-wav q.wav` runs one unscored session before a level, so a fresh server's first shapes do not land in the measurement. Both recorders take these options.
 
+`--dataset sessions` records scripted multi-turn sessions instead of Full-Duplex-Bench samples. Speak the questions once on macOS, join them into sessions with random pauses for the answers, and point the recorder at the session directory:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_sessions say --output-dir duplex-input/questions
+python -m benchmarks.eval.benchmark_duplex_sessions build --questions-dir duplex-input/questions --output-dir duplex-input/sessions16 --sessions 16
+python -m benchmarks.eval.benchmark_duplex_serving sweep --dataset sessions --concurrency 8,16 --output runs/sessions -- \
+  --dataset-root duplex-input/sessions16 --url ws://127.0.0.1:8097/v1/realtime --profile minicpmo-native-pr2377 \
+  --server-revision "$(git rev-parse HEAD)" --model openbmb/MiniCPM-o-4_5
+```
+
+Any 16 kHz mono PCM16 question WAVs work for `build`; `--questions-per-session` and `--pause-s` make sessions minutes long, which is how a session reaches the thinker's history window. `--instructions` sets the session instructions, and `--frames-dir` sends the JPEGs of a directory as camera frames, one per unit in name order and cycled; a camera session fills the thinker context about five times faster than an audio-only one. The recorder's `--timeout` defaults to 600 s per session.
+
 ### MiniCPM-o 4.5 on one H100
 
 One H100 80 GB ran a short v1.5 audio cohort with the native session protocol. Each recording selected the first 16 naturally sorted pairs from each of the four v1.5 subsets, including both clean and overlap variants: 128 sessions and 1,744 nominal input units per recording. The server allowed 64 session slots, but its memory pools were sized for this short cohort. A warmup pair was excluded. Each recording used a fresh client process against the same continuously running server.

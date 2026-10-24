@@ -8,6 +8,7 @@ import base64
 import json
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -81,9 +82,21 @@ def profile_protocol(
         return protocol
 
 
+@dataclass(frozen=True, kw_only=True)
+class SessionInputs:
+    """A native session's instructions and the camera frames it sends, one per native unit, cycled."""
+
+    instructions: str | None = None
+    frames: tuple[bytes, ...] = ()
+
+
 class InputAudioMetadata(TypedDict):
     seq: int
     t_start_ms: float
+
+
+class InputImageMetadata(TypedDict):
+    t_ms: float
 
 
 class SendReceipt(TypedDict):
@@ -102,6 +115,7 @@ async def run_session(
     profile: ProfileName = DEFAULT_PROFILE,
     turn_detection: TurnDetection | None = None,
     tail_s: float = LEGACY_TAIL_S,
+    inputs: SessionInputs | None = None,
 ) -> None:
     """Save observations and failures; classification belongs to offline replay.
 
@@ -113,11 +127,24 @@ async def run_session(
     else:
         pass
     protocol = profile_protocol(profile, turn_detection)
+    session_inputs = inputs if inputs is not None else SessionInputs()
+    if session_inputs != SessionInputs() and protocol != "native":
+        raise ValueError("instructions and frames are inputs of native sessions")
+    else:
+        pass
+    unit_ms = PROFILES[profile].native_unit_ms
+    frame_payloads = tuple(
+        base64.b64encode(frame).decode("ascii") for frame in session_inputs.frames
+    )
     legacy = protocol == "legacy"
     requested_type = turn_detection.type if turn_detection is not None else None
     configure: dict[str, JsonValue]
     if turn_detection is None:
         configure = {"output_modalities": ["audio"]}
+        if session_inputs.instructions is not None:
+            configure["instructions"] = session_inputs.instructions
+        else:
+            pass
     elif legacy:
         configure = {
             "modalities": ["text", "audio"],
@@ -194,13 +221,15 @@ async def run_session(
                     event_type: Literal[
                         "session.update",
                         "input_audio_buffer.append",
+                        "sglang.input_image.append",
                         "sglang.input_audio.end",
                         "session.close",
                     ],
                     *,
                     session: dict[str, JsonValue] | None = None,
                     audio: str | None = None,
-                    sglang: InputAudioMetadata | None = None,
+                    image: str | None = None,
+                    sglang: InputAudioMetadata | InputImageMetadata | None = None,
                 ) -> None:
                     event_id = uuid.uuid4().hex
                     event: dict[str, JsonValue] = {
@@ -219,7 +248,14 @@ async def run_session(
                         event["sglang"] = sglang
                     else:
                         pass
-                    send_started_s = record("send", event)
+                    if image is not None:
+                        # note (0xtoward): the trace keeps a frame's size, not its bytes, so long camera sessions stay small.
+                        send_started_s = record(
+                            "send", {**event, "image_chars": len(image)}
+                        )
+                        event["image"] = image
+                    else:
+                        send_started_s = record("send", event)
                     await websocket.send(json.dumps(event))
                     if event_type == "input_audio_buffer.append":
                         assert sglang is not None
@@ -311,6 +347,7 @@ async def run_session(
                             pass
                         streamed = True
                         start_s = time.perf_counter()
+                        next_frame_unit = 0
                         for sequence, byte_offset in enumerate(
                             range(0, len(pcm), PACKET_BYTES)
                         ):
@@ -327,6 +364,25 @@ async def run_session(
                                 break
                             else:
                                 pass
+                            packet_end_ms = (
+                                min(byte_offset + PACKET_BYTES, len(pcm))
+                                / 2
+                                / SAMPLE_RATE
+                                * 1000
+                            )
+                            # note (0xtoward): a unit's frame goes out before the first audio of that unit, while the unit is still open.
+                            while (
+                                frame_payloads
+                                and next_frame_unit * unit_ms < packet_end_ms
+                            ):
+                                await send(
+                                    "sglang.input_image.append",
+                                    image=frame_payloads[
+                                        next_frame_unit % len(frame_payloads)
+                                    ],
+                                    sglang={"t_ms": float(next_frame_unit * unit_ms)},
+                                )
+                                next_frame_unit += 1
                             await send(
                                 "input_audio_buffer.append",
                                 audio=base64.b64encode(
