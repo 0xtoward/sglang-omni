@@ -84,3 +84,14 @@ audio = client.audio.speech.create(
 ```
 
 The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
+
+## Speech Stage Placement
+
+code2wav runs in the Talker's process by default, where its CUDA stream overlaps the Talker's kernels; separate processes on one GPU take turns on it. For many concurrent requests, give code2wav its own process and let the processes share the GPU through CUDA MPS (see [Same-GPU Data Parallelism with CUDA MPS](../basic_usage/mps_dp.md)):
+
+```bash
+python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --port 8000 \
+  --code2wav.process code2wav --mps on
+```
+
+With 16 to 128 concurrent Seed-TTS voice-clone requests on an H200, this produces 21–43% more audio per second than the default, at a lower p95 latency; on an H100 at 16 it produces 10% more. One request at a time it is 1% slower on an H200 and 9% slower on an H100, so keep the default for single-stream use. Either change alone gains at most 10%.
