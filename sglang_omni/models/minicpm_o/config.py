@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -191,8 +191,8 @@ def speech_stages() -> list[StageConfig]:
         decode_stage(process="pipeline"),
         # note (MayDomine): each engine requires a separate process-global TP group.
         talker_stage(gpu=0, process="talker"),
-        # note (zhaochenyang20): sharing a CUDA context lets the stage streams overlap.
-        code2wav_stage(gpu=0, process="talker"),
+        # note (0xtoward): its own process keeps vocoding off the talker's GIL.
+        code2wav_stage(gpu=0, process="code2wav"),
     ]
 
 
@@ -226,6 +226,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
 
     terminal_stages_fn: str | None = f"{PKG}.routing.resolve_terminal_stages"
     stages: list[StageConfig] = Field(default_factory=speech_stages)
+    mps: Literal["off", "on", "auto"] = "auto"
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
         if stage_name in (THINKER_STAGE, "preprocessing"):
