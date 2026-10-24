@@ -25,6 +25,7 @@ from benchmarks.duplex.client import (
     SAMPLE_RATE,
     TRANSPORT,
     TURN_BASED_TRANSPORT,
+    SessionInputs,
     TurnDetection,
     profile_protocol,
     run_session,
@@ -159,6 +160,8 @@ async def run_samples(
     concurrency: int = 1,
     turn_detection: TurnDetection | None = None,
     legacy_tail_s: float = LEGACY_TAIL_S,
+    session_inputs: SessionInputs | None = None,
+    max_timeout_s: float = MAX_TIMEOUT_S,
 ) -> dict[str, JsonValue]:
     """Run selected sample variants, retaining failures in the selected denominator.
 
@@ -169,8 +172,8 @@ async def run_samples(
         raise ValueError("dataset_revision must be nonempty")
     else:
         pass
-    if not 0 < timeout_s <= MAX_TIMEOUT_S:
-        raise ValueError(f"timeout_s must be positive and at most {MAX_TIMEOUT_S}")
+    if not 0 < timeout_s <= max_timeout_s:
+        raise ValueError(f"timeout_s must be positive and at most {max_timeout_s}")
     else:
         pass
     if concurrency < 1:
@@ -261,6 +264,14 @@ async def run_samples(
                 "variants": variants,
                 "timeout_s": timeout_s,
                 "concurrency": concurrency,
+                "session_inputs": (
+                    None
+                    if session_inputs is None
+                    else {
+                        "instructions": session_inputs.instructions,
+                        "frames": len(session_inputs.frames),
+                    }
+                ),
                 "packet_ms": PACKET_MS,
                 "pacing_tolerance_s": PACING_TOLERANCE_S,
                 "transport": TRANSPORT,
@@ -415,6 +426,7 @@ async def run_samples(
                     profile=profile,
                     turn_detection=turn_detection,
                     tail_s=legacy_tail_s,
+                    inputs=session_inputs,
                 )
                 # note (wenyao): trace parsing and WAV writes run off the loop so
                 # they do not stall the 80 ms pacing of the other open sessions.

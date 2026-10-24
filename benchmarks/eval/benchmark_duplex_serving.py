@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 RECORDERS = {
     "v1.0": "benchmarks.eval.benchmark_duplex_v10",
     "v1.5": "benchmarks.eval.benchmark_duplex_v15",
+    "sessions": "benchmarks.eval.benchmark_duplex_sessions",
 }
 # Options the sweep sets on every recorder run itself.
 SWEEP_OPTIONS = ("--concurrency", "--output")
