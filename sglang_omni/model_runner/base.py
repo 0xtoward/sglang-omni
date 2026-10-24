@@ -743,8 +743,14 @@ class ModelRunner(Generic[RequestDataInput]):
         *,
         is_prefill: bool,
         num_draft_tokens: int,
+        verify_layout: object | None = None,
     ) -> None:
-        """Hook right after a speculative step, before its tokens are emitted."""
+        """Hook right after a speculative step, before its tokens are emitted.
+
+        verify_layout is the step's ragged verify layout under a compact verify, with
+        each request's rows packed back to back, and None when every request has
+        num_draft_tokens rows.
+        """
         return None
 
     def on_speculative_tokens(
