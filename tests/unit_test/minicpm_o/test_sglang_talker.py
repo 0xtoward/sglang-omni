@@ -11,12 +11,12 @@ import torch.nn.functional as F
 from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req
 from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
-from sglang.srt.mem_cache.chunk_cache import ChunkCache
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.srt.model_loader.utils import resolve_language_model
 from sglang.srt.session.session_controller import SessionController
-from sglang.srt.session.streaming_session import StreamingSession
 from torch import nn
 
 from sglang_omni.models.minicpm_o import stages
@@ -213,14 +213,15 @@ class TalkerSessionScheduler:
             ),
             need_sort=False,
         )
-        self.tree_cache = StreamingSession(
-            ChunkCache(
-                CacheInitParams(
-                    disable=True,
-                    req_to_token_pool=self.req_to_token_pool,
-                    token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
-                    page_size=1,
-                )
+        self.tree_cache = UnifiedRadixCache(
+            CacheInitParams(
+                disable=True,
+                req_to_token_pool=self.req_to_token_pool,
+                token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+                page_size=1,
+                enable_kv_cache_events=False,
+                eviction_policy="lru",
+                tree_components=(ComponentType.FULL,),
             )
         )
         self.session_controller = SessionController(self.tree_cache)
@@ -242,7 +243,7 @@ class TalkerSessionScheduler:
             pass
         else:
             self.req_to_token_pool.alloc([request])
-        reused_length = len(request.prefix_indices)
+        reused_length = request.prefix_len
         kv_length = len(request.full_untruncated_fill_ids) + len(codec_tokens) - 1
         slots = self.token_to_kv_pool_allocator.alloc(kv_length - reused_length)
         self.req_to_token_pool.req_to_token[
@@ -250,9 +251,10 @@ class TalkerSessionScheduler:
         ] = slots.to(torch.int32)
         request.kv.kv_allocated_len = kv_length
         request.kv.kv_committed_len = kv_length
+        self.tree_cache.maybe_hand_to_session(request)
         request.output_ids.extend(codec_tokens)
         request.finished_reason = FINISH_LENGTH(length=len(codec_tokens))
-        release_kv_cache(request, self.tree_cache)
+        release_kv_cache(request, self.tree_cache, checkpoint=True)
 
 
 def talker_unit_payload(unit_index: int) -> StagePayload:
@@ -298,7 +300,7 @@ def test_a_turn_past_the_talker_context_keeps_its_newest_units() -> None:
             payload, SessionOperation("append", IDENTITY, ("talker",), chunk)
         )
         is_bypassed = bridge.prepare_unit(unit, payload)
-        holds_history = IDENTITY.id in scheduler.tree_cache.slots
+        holds_history = IDENTITY.id in scheduler.tree_cache.session_records()
         request_data = adapter.build(IDENTITY, chunk, payload)
         bridge.create_session_request(payload, request_data)
         request_token_ids = list(request_data.req.origin_input_ids)
