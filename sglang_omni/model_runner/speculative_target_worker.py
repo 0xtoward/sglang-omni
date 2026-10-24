@@ -34,6 +34,8 @@ class SpeculativeTargetWorker:
         # their config does not name, and every supported draft names it.
         self.tokenizer: None = None
         self.omni_runner: ModelRunner | None = None
+        # note (0xtoward): the step in flight, in verify-row order; set by the scheduler.
+        self.verify_requests: list[SchedulerRequest] = []
 
     def attach_runner(self, omni_runner: ModelRunner) -> None:
         if omni_runner.tp_worker is not self.model_worker:
@@ -63,6 +65,24 @@ class SpeculativeTargetWorker:
                 skip_attn_backend_init
             )
             output = self.model_runner.forward(forward_batch=forward_batch)
+            requests = self.verify_requests
+            logits = output.logits_output.next_token_logits
+            if self.omni_runner is not None and requests and logits is not None:
+                layout = getattr(forward_batch.spec_info, "ragged_verify_layout", None)
+                if layout is None:
+                    assert logits.shape[0] % len(requests) == 0, (
+                        f"{logits.shape[0]} verify rows do not split over "
+                        f"{len(requests)} requests"
+                    )
+                    rows_per_request = logits.shape[0] // len(requests)
+                else:
+                    # note (0xtoward): a compact verify packs each request's rows back to back and pads to its graph tier.
+                    rows_per_request = layout.verify_lens
+                self.omni_runner.apply_speculative_verify_logits(
+                    output.logits_output, requests, rows_per_request
+                )
+            else:
+                pass
             return GenerationBatchResult(
                 logits_output=output.logits_output,
                 can_run_cuda_graph=output.can_run_graph,
