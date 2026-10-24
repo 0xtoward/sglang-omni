@@ -23,6 +23,8 @@ SWEEP_OPTIONS = ("--concurrency", "--output")
 
 # note (jeffro): this is a small default startup buffer, and other values can be passed to trace the underrun curve.
 DEFAULT_PLAYBACK_RESERVE_MS = 80.0
+# note (0xtoward): players hold 200-400 ms of a reply's first audio; 0 shows what an unbuffered one hears.
+DEFAULT_PREBUFFERS_MS = "0,200,300"
 
 
 def milliseconds(value_s: JsonValue) -> str:
@@ -34,20 +36,37 @@ def ratio(value: JsonValue, form: str) -> str:
 
 
 def format_table(report: dict[str, JsonValue]) -> str:
+    prebuffers_ms = [
+        f"{entry['prebuffer_s'] * 1000:g}"
+        for entry in report["levels"][0]["continuity"]
+    ]
     rows = [
         (
             "| N | mean open | sessions failed | 503 | pacing violations | unit miss "
             "| unit lag p50 / p90 / p99 (ms) | first audio p50 / p90 (ms) "
             "| buffer needed p50 / p90 (ms) | underrun replies | RTF p90 "
-            "| meets targets |"
+            f"| gap-free replies at {' / '.join(prebuffers_ms)} ms "
+            "| speaking unit lag p50 / p90 (ms) | meets targets |"
         ),
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for level in report["levels"]:
         real_time_factor = level["real_time_factor"]
         unit_lag = level["unit_lag_s"]
         first_audio = level["first_audio_latency_s"]
         buffer_needed = level["startup_buffer_needed_s"]
+        speaking_lag = level["speaking_unit_lag_s"]
+        gap_free = " / ".join(
+            ratio(
+                (
+                    entry["gap_free_replies"] / level["replies"]
+                    if level["replies"]
+                    else None
+                ),
+                ".0%",
+            )
+            for entry in level["continuity"]
+        )
         rows.append(
             f"| {level['concurrency']} | {level['mean_open_sessions']:.1f} "
             f"| {level['sessions_failed']}/{level['sessions']} "
@@ -60,6 +79,8 @@ def format_table(report: dict[str, JsonValue]) -> str:
             f"{milliseconds(buffer_needed['p90'])} "
             f"| {level['replies_with_underrun']}/{level['replies']} "
             f"| {ratio(None if real_time_factor is None else real_time_factor['p90'], '.2f')} "
+            f"| {gap_free} "
+            f"| {milliseconds(speaking_lag['p50'])} / {milliseconds(speaking_lag['p90'])} "
             f"| {'yes' if not level['unmet_targets'] else '; '.join(level['unmet_targets'])} |"
         )
     capacity = report["max_concurrency_meeting_targets"]
@@ -86,8 +107,21 @@ def concurrency_levels(text: str) -> list[int]:
         return sorted(levels)
 
 
+def prebuffer_list(text: str) -> list[float]:
+    """Nonnegative prebuffers in ms separated by commas, such as 0,200,300; returned in seconds."""
+    prebuffers_ms = [float(part) for part in text.split(",")]
+    if min(prebuffers_ms) < 0:
+        raise argparse.ArgumentTypeError(
+            f"prebuffers must be nonnegative, got {text!r}"
+        )
+    else:
+        return [prebuffer_ms / 1000 for prebuffer_ms in prebuffers_ms]
+
+
 def report(args: argparse.Namespace) -> int:
-    serving = serving_report(args.run, args.playback_reserve_ms / 1000)
+    serving = serving_report(
+        args.run, args.playback_reserve_ms / 1000, args.prebuffer_ms
+    )
     write_json(args.output, serving)
     print(format_table(serving))
     return 0
@@ -115,7 +149,9 @@ def sweep(args: argparse.Namespace) -> int:
             ]
         )
         run_dirs.append(run_dir)
-    serving = serving_report(run_dirs, args.playback_reserve_ms / 1000)
+    serving = serving_report(
+        run_dirs, args.playback_reserve_ms / 1000, args.prebuffer_ms
+    )
     write_json(args.output / "serving.json", serving)
     table = format_table(serving)
     (args.output / "SERVING.md").write_text(table)
@@ -131,6 +167,13 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=DEFAULT_PLAYBACK_RESERVE_MS,
         help="Simulated player startup buffer (default: %(default)s)",
+    )
+    playback.add_argument(
+        "--prebuffer-ms",
+        type=prebuffer_list,
+        default=prebuffer_list(DEFAULT_PREBUFFERS_MS),
+        help="Player prebuffers, in ms separated by commas, at which to count "
+        f"gap-free replies (default: {DEFAULT_PREBUFFERS_MS})",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
