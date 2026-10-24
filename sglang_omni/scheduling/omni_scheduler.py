@@ -2625,13 +2625,26 @@ class OmniScheduler(Generic[RequestDataT]):
                 metadata=metadata,
             )
 
-    def emit_model_path_end_once(self, request_id: str, *, status: str) -> None:
+    def emit_model_path_end_once(
+        self, request_id: str, *, status: str, req: Req | None = None
+    ) -> None:
         if request_id not in self.prefill_start_done:
             return
         else:
             pass
         self.prefill_start_done.discard(request_id)
-        _emit_model_path_end(request_id, status=status)
+        # note (0xtoward): SGLang's batch result processor already counts each request's
+        # verify steps and correct drafts on the host, so reporting them costs no sync.
+        if req is not None and self.draft_worker is not None:
+            _emit_model_path_end(
+                request_id,
+                status=status,
+                spec_verify_steps=req.spec_verify_ct,
+                spec_correct_drafts=req.spec_num_correct_drafts,
+                output_tokens=len(req.output_ids),
+            )
+        else:
+            _emit_model_path_end(request_id, status=status)
 
     def emit_remaining_model_path_ends(self, *, status: str) -> None:
         for request_id in tuple(self.prefill_start_done):
@@ -2783,6 +2796,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.emit_model_path_end_once(
                     rid,
                     status="error" if terminal_error is not None else "success",
+                    req=req,
                 )
                 abort_cleanup_needed = self.close_completed_request(req)
                 data.prefill_input_embeds = None

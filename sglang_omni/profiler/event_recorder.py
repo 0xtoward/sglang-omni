@@ -391,7 +391,7 @@ def read_host_boot_id() -> str | None:
         return None
 
 
-def emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
+def emit_model_path(event_name: str, request_id: str, **extra: str | int) -> None:
     if not _RECORDER.is_active():
         return
     else:
@@ -413,5 +413,5 @@ def emit_model_path_start(request_id: str) -> None:
     emit_model_path("model_path_start", request_id)
 
 
-def emit_model_path_end(request_id: str, *, status: str) -> None:
-    emit_model_path("model_path_end", request_id, status=status)
+def emit_model_path_end(request_id: str, *, status: str, **extra: int) -> None:
+    emit_model_path("model_path_end", request_id, status=status, **extra)
