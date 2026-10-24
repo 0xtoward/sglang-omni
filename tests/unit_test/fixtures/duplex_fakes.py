@@ -522,6 +522,14 @@ class DuplexPeer:
                         "client_event_id": event["event_id"],
                     },
                 )
+            elif kind == "sglang.input_image.append":
+                await self.send(
+                    websocket,
+                    {
+                        "type": "sglang.input_image.accepted",
+                        "client_event_id": event["event_id"],
+                    },
+                )
             elif kind == "session.close":
                 await self.close_session(websocket, "client_closed", event["event_id"])
                 if self.mode == "linger":

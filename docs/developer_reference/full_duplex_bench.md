@@ -294,12 +294,33 @@ Each level is one row:
 | `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
 | `buffer needed` | The smallest startup buffer with which a reply plays without a gap. It does not depend on `--playback-reserve-ms` |
 | `underrun replies` | Replies that a player starting `--playback-reserve-ms` (80 ms by default) after their first audio would have to pause. This column depends on the reserve: at concurrency 8 on MiniCPM-o, 21 of 35 replies pause at 80 ms while `buffer needed` p90 is 251 ms |
+| `gap-free replies` | The share of replies that a player holding each reply's first audio for each `--prebuffer-ms` value (0, 200 and 300 ms by default) plays without a gap; a reply stalls for its `buffer needed` minus the prebuffer. `serving.json` has the stall seconds at each prebuffer |
+| `speaking unit lag` | Native profiles only. The unit lag of the units during which reply audio arrived, which is the latency a listener hears |
 | `RTF p90` | Turn-based only. The time from a reply's first to its last audio arrival over the audio before the last chunk. Native profiles show `-`, because a native reply comes out one unit per input unit and its factor stays near 1 whatever the load |
 | `meets targets` | `yes`, or the targets the level misses |
 
 A level meets the targets when no session failed, no session was denied admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
 
 These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
+
+By default every level starts its sessions as concurrency slots free up, so the first `N` start together and their one-second units stay aligned for the whole session. `--arrival-mean-gap-s G --arrival-seed S` starts sessions at seeded Poisson arrival times instead, which spreads the units' phases as independent users do; `--concurrency` still caps the sessions open at once. `--warmup-wav q.wav` runs one unscored session before a level, so a fresh server's first shapes do not land in the measurement. Both recorders take these options.
+
+`--dataset sessions` records scripted multi-turn sessions instead of Full-Duplex-Bench samples. Speak the questions once on macOS, join them into sessions with random pauses for the answers, and point the recorder at the session directory:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_sessions say --output-dir duplex-input/questions
+python -m benchmarks.eval.benchmark_duplex_sessions build --questions-dir duplex-input/questions --output-dir duplex-input/sessions16 --sessions 16
+python -m benchmarks.eval.benchmark_duplex_serving sweep --dataset sessions --concurrency 8,16 --output runs/sessions -- \
+  --dataset-root duplex-input/sessions16 --url ws://127.0.0.1:8097/v1/realtime --profile minicpmo-native-pr2377 \
+  --server-revision "$(git rev-parse HEAD)" --model openbmb/MiniCPM-o-4_5
+```
+
+Any 16 kHz mono PCM16 question WAVs work for `build`; `--questions-per-session` and `--pause-s` make sessions minutes long, which is how a session reaches the thinker's history window. `--instructions` sets the session instructions, and `--frames-dir` sends the JPEGs of a directory as camera frames, one per unit in name order and cycled; a camera session fills the thinker context about five times faster than an audio-only one. The recorder's `--timeout` defaults to 600 s per session.
+
+With `--server-url http://127.0.0.1:8097`, the sweep adds two server-side views. Run it on the server's host, since the server writes them to this filesystem:
+
+- `--stage-events` records the request event recorder during each level, groups requests by the stages they went through (a listening unit stops at the thinker, a speaking one reaches the speech stage) and adds a table of the longest group: median (p90) milliseconds from admission to response, in each stage's queue, prefill, decode, compute or first chunk, and in the hops between stages.
+- `--gpu-memory` samples every GPU's used memory and busy share and every compute process's memory once a second, and adds a table of peaks per process. With `--stage-events`, each process is named by the stage that wrote its events. Under MPS the memory stays per process, but `nvidia-smi` charges all SM time to the MPS server, so the busy share is the whole card's.
 
 ### MiniCPM-o 4.5 on one H100
 

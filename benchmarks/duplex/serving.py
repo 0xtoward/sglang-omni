@@ -17,6 +17,12 @@ from benchmarks.duplex.oracle_models import MediaTime, TraceRecord, WireEvent
 from benchmarks.duplex.profiles import PROFILES, ProfileName
 from benchmarks.duplex.run_artifacts import load_run
 from benchmarks.duplex.v15_audio import AUDIO_DELTA, LEGACY_AUDIO_DELTA
+from benchmarks.metrics.server_probes import (
+    level_event_dir,
+    level_memory_path,
+    stage_memory,
+    stage_split,
+)
 
 INPUT_BYTES_PER_MS = SAMPLE_RATE * 2 / 1000
 # note (jeffro): a not_exercised session kept the protocol; its model output just
@@ -93,6 +99,9 @@ def score_session(
             return max(packet_ready_s, input_end_s)
 
     unit_lags_s: list[float] = []
+    speaking_unit_lags_s: list[float] = []
+    # note (0xtoward): a unit speaks if reply audio arrived since the previous unit.done.
+    has_audio_since_unit = False
     reply_created_s: dict[str, float] = {}
     reply_opening_unit: dict[str, MediaTime] = {}
     reply_first_audio_unit: dict[str, MediaTime] = {}
@@ -103,8 +112,13 @@ def score_session(
             media_time = unit_media_time(event)
             if media_time.duration_ms > 0:
                 unit_lags_s.append(record.time_s - ready_s(media_time))
+                if has_audio_since_unit:
+                    speaking_unit_lags_s.append(unit_lags_s[-1])
+                else:
+                    pass
             else:
                 pass
+            has_audio_since_unit = False
         elif event.type == "response.created":
             assert event.response is not None
             reply_created_s[event.response.id] = record.time_s
@@ -113,6 +127,7 @@ def score_session(
             else:
                 pass
         elif event.type in (AUDIO_DELTA, LEGACY_AUDIO_DELTA):
+            has_audio_since_unit = True
             assert event.response_id is not None and event.delta is not None
             if is_native:
                 reply_first_audio_unit.setdefault(
@@ -193,11 +208,14 @@ def score_session(
             else None
         ),
         "unit_lag_s": unit_lags_s,
+        "speaking_unit_lag_s": speaking_unit_lags_s,
         "replies": replies,
     }
 
 
-def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonValue]:
+def summarize_level(
+    run_dir: Path, playback_reserve_s: float, prebuffers_s: list[float]
+) -> dict[str, JsonValue]:
     """Pool every attempted session of one recording, made at one concurrency."""
     manifest, run, _ = load_run(run_dir)
     if run["status"] != "complete":
@@ -296,6 +314,9 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         "unit_lag_s": quantiles(
             [lag_s for session in sessions for lag_s in session["unit_lag_s"]]
         ),
+        "speaking_unit_lag_s": quantiles(
+            [lag_s for session in sessions for lag_s in session["speaking_unit_lag_s"]]
+        ),
         "replies": len(replies),
         "replies_with_audio_after_text": (
             sum(reply["units_before_first_audio"] > 0 for reply in replies)
@@ -311,6 +332,30 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         "playback_reserve_s": playback_reserve_s,
         "replies_with_underrun": sum(reply["underrun_s"] > 0 for reply in replies),
         "underrun_s": sum(reply["underrun_s"] for reply in replies),
+        # note (0xtoward): a player holding a reply's first audio for B plays it without a gap when B covers the buffer it needs, and stalls for the rest.
+        "continuity": [
+            {
+                "prebuffer_s": prebuffer_s,
+                "gap_free_replies": sum(
+                    reply["startup_buffer_needed_s"] <= prebuffer_s for reply in replies
+                ),
+                "stall_s": sum(
+                    max(0.0, reply["startup_buffer_needed_s"] - prebuffer_s)
+                    for reply in replies
+                ),
+            }
+            for prebuffer_s in prebuffers_s
+        ],
+        "stages": (
+            stage_split(level_event_dir(run_dir))
+            if level_event_dir(run_dir).is_dir()
+            else None
+        ),
+        "gpu_memory": (
+            stage_memory(level_memory_path(run_dir), level_event_dir(run_dir))
+            if level_memory_path(run_dir).is_file()
+            else None
+        ),
         "real_time_factor": real_time_factor,
         "unmet_targets": [
             target
@@ -326,11 +371,14 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
 
 
 def serving_report(
-    run_dirs: list[Path], playback_reserve_s: float
+    run_dirs: list[Path], playback_reserve_s: float, prebuffers_s: list[float]
 ) -> dict[str, JsonValue]:
     """Concurrency levels of one system and the highest one that meets the targets."""
     levels = sorted(
-        (summarize_level(run_dir, playback_reserve_s) for run_dir in run_dirs),
+        (
+            summarize_level(run_dir, playback_reserve_s, prebuffers_s)
+            for run_dir in run_dirs
+        ),
         key=lambda level: level["concurrency"],
     )
     concurrencies = [level["concurrency"] for level in levels]
