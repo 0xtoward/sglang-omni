@@ -343,6 +343,32 @@ async def test_reply_cut_at_max_tokens_ends_its_turn(backends):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backends", ["long_audio"], indirect=True)
+async def test_a_reply_still_playing_after_its_audio_left_is_interruptible(backends):
+    """A reply whose audio had all left the server ended while the client still played it, so speaking over its tail interrupted nothing."""
+    config = backends[0].model_copy(update={"max_output_lead_ms": 5000})
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: sum(o.duration_ms for o in session.outputs if o.format == PCM_F32)
+            == 2000
+        )
+        await session.coordinator.control_session(
+            session.identity,
+            control_chunk(INTERRUPT, session.clock),
+            should_preempt=True,
+        )
+        await session.until(
+            lambda: any(control_type(o) == TURN_INTERRUPTED for o in session.outputs)
+        )
+        assert not any(
+            control_type(o) == TURN_DONE and o.turn == 1 for o in session.outputs
+        )
+        await session.audio(eos=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["long_audio"], indirect=True)
 async def test_audio_stays_paced_and_held_turn_is_interruptible(backends):
     config = backends[0].model_copy(update={"max_output_lead_ms": 100})
     async with conversation(config) as session:
