@@ -12,6 +12,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     UNIT_SAMPLES,
 )
 from sglang_omni.models.minicpm_o.native_config import (
+    DEFAULT_SPEECH_SETTINGS,
     MiniCPMODuplexPipelineConfig,
     MiniCPMODuplexSampling,
 )
@@ -283,7 +284,11 @@ def test_stage_reference_precedence_is_per_session(
         side_effect=lambda reference_audio: reference_audio
     )
     runtime = Mock()
-    speech = SpeechHooks(runtime, b"default")
+    speech = SpeechHooks(
+        runtime,
+        b"default",
+        gather_window_ms=DEFAULT_SPEECH_SETTINGS.gather_window_ms,
+    )
     for session_id, params in (
         ("separate", {"reference_audio": b"input", "tts_reference_audio": b"output"}),
         ("shared", {"reference_audio": b"input"}),
