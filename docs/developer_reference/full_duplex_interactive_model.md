@@ -59,7 +59,7 @@ curl --fail http://localhost:8000/v1/realtime/capabilities
 The results should be as follows:
 
 ```json
-{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":false,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30}}#
+{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":false,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"supports_instruction_updates":false,"supports_sampling_updates":false,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30}}#
 ```
 
 The duplex server only accepts `/v1/realtime` requests; other chat completions or voice cloning against it fail.
@@ -323,7 +323,7 @@ Send 16 kHz mono PCM16 audio at real-time pace as `{"type": "input_audio_buffer.
 
 To end turns yourself instead of by silence, set `"turn_detection": null` in the first `session.update`; `input_audio_buffer.commit` then ends the utterance after the audio sent before it.
 
-Instructions and turn detection can change with a later `session.update` and apply from the next turn; sampling (`sglang.sampling.temperature`, `max_new_tokens_per_unit`) is set by the first one. [Session settings](#session-settings) lists every field.
+Instructions and sampling (`sglang.sampling.temperature`, `max_new_tokens_per_unit`) can change with a later `session.update` and apply from the next reply; a reply in progress keeps the settings it started with. Turn detection can change the same way and applies from the next audio unit. `session.updated` reports `supports_instruction_updates` and `supports_sampling_updates`, false in a profile whose nodes have no `system_prompt` or no `temperature` and `max_tokens`, respectively. [Session settings](#session-settings) lists every field.
 
 ### Turn Detection
 
@@ -423,8 +423,8 @@ A realtime client sends its settings in `session.update`. The first `session.upd
 | Field | Reaches | When it can change |
 | --- | --- | --- |
 | `instructions` | `system_prompt` of every node that has it (the `dialog`) | Any time; applies to the next prompt. At most 65536 characters, else `instructions exceed context or have invalid type`. |
-| `sglang.sampling.temperature` | `temperature` of every node that has it (`openai_chat`), 0 to 2 | First `session.update` only. |
-| `sglang.sampling.max_new_tokens_per_unit` | `max_tokens` of `openai_chat`, at least 1 | First `session.update` only. |
+| `sglang.sampling.temperature` | `temperature` of every node that has it (`openai_chat`), 0 to 2 | Any time; applies to the next reply, a reply in progress keeps its value. |
+| `sglang.sampling.max_new_tokens_per_unit` | `max_tokens` of `openai_chat`, at least 1 | Any time; applies to the next reply, a reply in progress keeps its value. |
 | `audio.input.turn_detection` | `type: server_vad` reaches the session's `vad` stage: `threshold`, `prefix_padding_ms`, `silence_duration_ms`; with a `turn_detection` node, `type: semantic_vad` and its `eagerness` reach that node, and `server_vad` makes it pass the VAD's boundaries through | Any time. `null` turns detection off and utterances end only at `input_audio_buffer.commit`; send it in the first `session.update` (see [Allowed, with consequences](#allowed-with-consequences)). `interrupt_response` is accepted and has no effect. |
 | `output_modalities` | `["text", "audio"]` or `["text"]` | Any time. |
 
@@ -623,7 +623,7 @@ Each rule is followed by the error it raises.
 ### Rejected in a realtime session
 
 - A sampling parameter other than `temperature` and `max_new_tokens_per_unit` — `unsupported sampling parameters: ...`.
-- `sglang.sampling` or another non-hot field changed after the first `session.update` — `session field is frozen`.
+- A field other than the hot ones in [Session settings](#session-settings) changed after the first `session.update`, or `instructions` or `sglang.sampling` in a profile whose capabilities report `supports_instruction_updates` or `supports_sampling_updates` as false — `session field is frozen`.
 - `instructions` longer than 65536 characters — `instructions exceed context or have invalid type`.
 - A `model` other than the deployment's — `model differs from deployment`.
 - An audio format other than 16 kHz input or 24 kHz output PCM — `unsupported PCM format or sample rate`.
@@ -692,11 +692,13 @@ A healthy start logs each service as `starting service '<name>': ...` and `servi
   "native_unit_ms": 200,
   "supports_truncate": true,
   "sampling_parameters": ["temperature", "max_new_tokens_per_unit"],
+  "supports_instruction_updates": true,
+  "supports_sampling_updates": true,
   "limits": {"max_input_bytes": 1920000, "max_output_bytes": 33554432, "max_history_chars": 65536, "cleanup_timeout_s": 30}
 }
 ```
 
-with further fields omitted here. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, and `sampling_parameters` is empty when no node takes `temperature` or `max_tokens`. A first conversation turn through the playground or the [turn latency benchmark](#benchmarking) confirms the whole chain.
+with further fields omitted here. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, `sampling_parameters` is empty and `supports_sampling_updates` false when no node takes `temperature` or `max_tokens`, and `supports_instruction_updates` is false when no node has a `system_prompt`. A first conversation turn through the playground or the [turn latency benchmark](#benchmarking) confirms the whole chain.
 
 ### Known Limitations
 
