@@ -37,17 +37,16 @@ from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
-from sglang.srt.models.dspark import Qwen3DSparkModel, StepSampler, VanillaMarkov
-from sglang.srt.runtime_context import get_exec, get_parallel
+from sglang.srt.models.dspark import Qwen3DSparkModel
+from sglang.srt.runtime_context import get_exec, get_parallel, get_spec
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.dflash_info_v2 import DFlashDraftInputV2
 from sglang.srt.speculative.dspark_components.dspark_draft import (
+    DraftBlockProposer,
     DraftBlockResult,
+    DraftProposal,
     select_draft_hidden_without_anchor,
-)
-from sglang.srt.speculative.dspark_components.dspark_draft_sampler import (
-    DsparkDraftSampler,
 )
 from sglang.srt.speculative.dspark_components.dspark_planner import VerifyWindow
 from sglang.srt.speculative.dspark_components.dspark_verify import (
@@ -59,12 +58,14 @@ from sglang.srt.speculative.ragged_verify import (
     RaggedVerifyMode,
     read_ragged_verify_mode,
 )
-from sglang.srt.speculative.spec_tp_sync import SpecTpSync
 from sglang.srt.utils import DynamicGradMode
 from torch import nn
 from transformers import Qwen3Config
 
 from sglang_omni.model_runner.speculative_target_worker import SpeculativeTargetWorker
+from sglang_omni.models.minicpm_o.components.sglang_talker import (
+    MiniCPMOTalkerForCausalLM,
+)
 from sglang_omni.models.minicpm_o.talker_dspark_sampling import (
     TalkerSamplingState,
     exact_accept,
@@ -295,13 +296,14 @@ class StaticSamplingRows:
             return self.rows(count)
 
 
-class FoldedTalkerDraw(DsparkDraftSampler):
-    """The talker-shaped draft draw as a tail hook of the draft model's graph.
+class FoldedTalkerDraw:
+    """The talker-shaped draft draw as the tail hook of the draft model's graph.
 
-    SGLang's folded sampler draws each proposal with its own Gumbel sampling; this one
-    draws it from the talker's shaping, reading the step's state from rows loaded before
-    the replay, and keeps the shaped logits in float32 because the exact verify divides
-    by them. The noise stays eager so each replay draws from the graph's random state.
+    It stands in for SGLang's folded draft sampler, whose draw skips the talker's
+    shaping. It draws each block from the step's state in rows loaded before the
+    replay and keeps the shaped logits in float32, because the exact verify divides by
+    them. The noise stays eager so each replay draws from the graph's random state;
+    TalkerDraftProposer reads the block from out and corrected_out.
     """
 
     def __init__(
@@ -311,24 +313,17 @@ class FoldedTalkerDraw(DsparkDraftSampler):
         gamma: int,
         max_bs: int,
         device: torch.device,
-        tp_sync: SpecTpSync,
         rows: StaticSamplingRows,
         draw_kernel: Callable[..., tuple[torch.Tensor, torch.Tensor]],
     ) -> None:
-        super().__init__(
-            model=model,
-            gamma=gamma,
-            max_bs=max_bs,
-            device=device,
-            tp_sync=tp_sync,
-            folded_sampling=False,
-        )
+        self.model = model
+        self.gamma = gamma
+        self.sample_from_anchor = bool(model.sample_from_anchor)
+        self.query_token_num = gamma if self.sample_from_anchor else gamma + 1
         vocab = int(model.lm_head.weight.shape[0])
-        self.folded_sampling = True
-        self.temperatures = torch.ones((max_bs,), dtype=torch.float32, device=device)
-        self.greedy_mask = torch.zeros((max_bs,), dtype=torch.bool, device=device)
+        self.out = torch.empty((max_bs * gamma,), dtype=torch.long, device=device)
         self.corrected_out = torch.empty(
-            (max_bs * self.gamma, vocab), dtype=torch.float32, device=device
+            (max_bs * gamma, vocab), dtype=torch.float32, device=device
         )
         self.sampling_rows = rows
         self.draw_kernel = draw_kernel
@@ -618,40 +613,82 @@ class DraftKvInjectionGraphs:
         return True
 
 
-class MirroredMarkovHead(VanillaMarkov):
-    """Markov head that draws each draft step from the talker's shaping of it.
+class TalkerDraftProposer(DraftBlockProposer):
+    """Draft proposer that draws every block from the talker's shaping of it.
 
-    Rejection sampling divides by the proposal distribution, so the returned corrected
-    logits are exactly the shaped logits the draft drew from.
+    A replay of the draft graph leaves the folded draw's block in its buffers; any
+    other draft forward draws the block here, because SGLang's own draw samples the
+    Markov-corrected logits unshaped. Rejection sampling divides by the proposal
+    distribution, so the block's corrected logits are exactly the shaped logits the
+    draft drew from.
     """
 
-    def __init__(self, *, vocab_size: int, markov_rank: int) -> None:
-        super().__init__(vocab_size=vocab_size, markov_rank=markov_rank)
-        self.sampling_state: TalkerSamplingState | None = None
-        self.block_sampler: BlockDraw = draw_block
+    sampling_state: TalkerSamplingState | None = None
+    block_sampler: BlockDraw = staticmethod(draw_block)
 
-    def sample_block(
+    def propose(
         self,
-        base_logits: torch.Tensor,
         *,
-        first_prev_tokens: torch.Tensor,
-        hidden_states: torch.Tensor | None,
-        sampler: StepSampler,
-        collect_corrected: bool = True,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Draw the block from the talker-shaped logits.
-
-        sampler, hidden_states and collect_corrected go unused: the given step sampler
-        would skip the shaping, and the shaped logits are always returned.
-        """
+        batch: ScheduleBatch,
+        draft_input: DFlashDraftInputV2,
+        verify_window: VerifyWindow,
+        bs: int,
+        device: str,
+        target_model: MiniCPMOTalkerForCausalLM,
+        sampling_info: SamplingBatchInfo,
+    ) -> DraftProposal:
         state = self.sampling_state
         assert state is not None, "a draft step needs its sampling state"
-        return self.block_sampler(
-            base_logits,
-            first_prev_tokens.long(),
-            self.markov_w1.weight,
-            self.markov_w2.weight,
-            state,
+        folded_draw = (
+            self._draft_sampler
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        draft_forward = self._run_forward(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            batch=batch,
+            draft_input=draft_input,
+            verify_window=verify_window,
+            bs=bs,
+            device=device,
+            embed_module=(
+                target_model.get_input_embeddings()
+                if self.sample_from_anchor
+                else self.draft_model.embed_tokens
+            ),
+            draft_sampler=folded_draw,
+            sampling_info=sampling_info,
+        )
+        draft_block_ids = draft_forward.draft_block_ids
+        is_folded = folded_draw is not None and draft_forward.can_run_graph
+        if is_folded:
+            draft_tokens = folded_draw.out[: bs * self.gamma].view(bs, self.gamma)
+            shaped_logits = folded_draw.corrected_out[: bs * self.gamma].view(
+                bs, self.gamma, -1
+            )
+        else:
+            base_logits, _ = self.draft_model.compute_base_logits(
+                draft_forward.raw_hidden
+            )
+            markov_head = self.draft_model.markov_head
+            draft_tokens, shaped_logits = self.block_sampler(
+                base_logits.view(bs, self.gamma, -1),
+                draft_block_ids[:, 0],
+                markov_head.markov_w1.weight,
+                markov_head.markov_w2.weight,
+                state,
+            )
+        return DraftProposal(
+            draft_block_ids=(
+                draft_block_ids
+                if self.sample_from_anchor
+                else draft_block_ids[:, : self.gamma].contiguous()
+            ),
+            draft_block=DraftBlockResult(
+                draft_tokens=draft_tokens,
+                corrected_logits=shaped_logits,
+                greedy_mask=state.greedy,
+                temperatures=state.temperatures,
+                greedy_draft=False,
+            ),
+            folded=is_folded,
         )
 
 
@@ -671,9 +708,6 @@ class MiniCPMOTalkerDSparkDraftModel(Qwen3DSparkModel):
         hidden_size = int(config.hidden_size)
         self.embed_tokens = nn.Embedding(vocab_size, hidden_size)
         self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
-        self.markov_head = MirroredMarkovHead(
-            vocab_size=vocab_size, markov_rank=int(config.markov_rank)
-        )
 
     def compute_base_logits(
         self, hidden: torch.Tensor
@@ -810,9 +844,11 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
         layout: None,
         prefix_lens: torch.Tensor,
         draft_tokens: torch.Tensor,
+        simulate_bonus_sampling_info: None,
     ) -> AcceptOuts:
         state = self.sampling_state
         assert not folded_accept and layout is None and target_logits is not None
+        assert simulate_bonus_sampling_info is None
         assert state is not None, "a verify step needs its sampling state"
         draft_tokens = draft_tokens.long()
         if self.accept_graphs is not None:
@@ -869,7 +905,9 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
             and hidden is not None
             and self.kv_graphs.write(
                 hidden=hidden,
-                cache_loc_2d=verify_window.verify_cache_loc_2d,
+                cache_loc_2d=self.kv_injector.ids_for(verify_window.kv_loc_plan).view(
+                    verify_window.verify_cache_loc_2d.shape
+                ),
                 positions=verify_window.positions_2d.reshape(-1),
                 commit_lens=commit_lens,
             )
@@ -916,6 +954,15 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
                 "MiniCPM-o talker speculative decoding verifies whole blocks; unset "
                 "SGLANG_RAGGED_VERIFY_MODE and SGLANG_SIMULATE_ACC_LEN"
             )
+        elif (
+            envs.SGLANG_DSPARK_USE_GREEDY_DRAFT.get()
+            or get_spec().speculative_use_block_verification
+        ):
+            raise ValueError(
+                "MiniCPM-o talker speculative decoding drafts and verifies with the "
+                "talker's own sampling; unset SGLANG_DSPARK_USE_GREEDY_DRAFT and "
+                "--speculative-use-block-verification"
+            )
         else:
             pass
         super().__init__(
@@ -938,12 +985,24 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
         self._verify_executor = (
             self.exact_verify_executor
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        markov_head = self.draft_model.markov_head
+        self.talker_proposer = TalkerDraftProposer(
+            draft_model=self.draft_model,
+            draft_model_runner=self.draft_model_runner,
+            gamma=self.gamma,
+            mask_token_id=self._mask_token_id,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            draft_block_spec_info=self._draft_block_spec_info,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            tp_sync=self._tp_sync,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            random_seed=self.target_worker.random_seed,
+            greedy_draft=False,
+        )
+        self._proposer = (
+            self.talker_proposer
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         # note (0xtoward): batches the graphs do not cover draw and verify compiled; eager,
         # each is about a hundred small kernels per step.
         self.compiled_draw = torch.compile(draw_block, dynamic=True)
         self.compiled_accept = torch.compile(accept_block, dynamic=True)
-        markov_head.block_sampler = self.compiled_draw
+        self.talker_proposer.block_sampler = self.compiled_draw
         self.exact_verify_executor.accept_function = self.compiled_accept
         self.warm_up_compiled_sampling()
 
@@ -1022,7 +1081,7 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
             base_logits = torch.zeros(
                 (batch_size, self.gamma, vocab), device=self.device
             )
-            draft_tokens, shaped_logits = markov_head.block_sampler(
+            draft_tokens, shaped_logits = self.talker_proposer.block_sampler(
                 base_logits,
                 zeros,
                 markov_head.markov_w1.weight,
@@ -1037,14 +1096,13 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
             )
 
     def _maybe_build_draft_sampler(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        self, *, available_memory_gb: float
+        self,
     ) -> FoldedTalkerDraw:
         """Fold the talker-shaped draw into the draft model's graph.
 
-        SGLang's own folded sampler would skip the mirrored Markov head; its rows hold
+        SGLang's own folded sampler would skip the talker's shaping; its rows hold
         about 0.2 MB per request.
         """
-        del available_memory_gb
         device = torch.device(self.device)
         max_bs = max(get_exec().graph.cuda_graph_config.decode.bs)
         vocab = int(self.draft_model.lm_head.weight.shape[0])
@@ -1057,7 +1115,6 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
             gamma=self.gamma,
             max_bs=max_bs,
             device=device,
-            tp_sync=self._tp_sync,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             rows=self.sampling_rows,
             draw_kernel=draw_kernel,
         )
@@ -1133,7 +1190,7 @@ class MiniCPMOTalkerDSparkWorker(DSparkWorkerV2):
                     self.sampling_rows.load(state)
                 else:
                     pass
-            self.draft_model.markov_head.sampling_state = state
+            self.talker_proposer.sampling_state = state
             self.exact_verify_executor.sampling_state = state
         else:
             pass

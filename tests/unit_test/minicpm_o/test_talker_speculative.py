@@ -3,14 +3,11 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 import torch
 from sglang.kernels.ops.speculative.dspark.dspark_accept import finalize_accept_lens
 from sglang.kernels.ops.speculative.dspark.dspark_verify_window import build_out_tokens
 from sglang.srt.models.dspark import VanillaMarkov
-from sglang.srt.speculative.spec_tp_sync import SpecTpSync
 from torch import nn
 
 from sglang_omni.models.minicpm_o.talker_dspark import (
@@ -265,7 +262,6 @@ def test_folded_draw_hook_draws_the_talker_shaped_block() -> None:
         gamma=gamma,
         max_bs=4,
         device=torch.device("cpu"),
-        tp_sync=SpecTpSync(SimpleNamespace(world_size=1, rank_in_group=0)),
         rows=rows,
         draw_kernel=sample_draft_block,
     )
