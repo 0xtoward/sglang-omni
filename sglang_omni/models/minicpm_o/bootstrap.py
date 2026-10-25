@@ -139,6 +139,7 @@ def create_thinker_scheduler(
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
+    enable_overlap: bool = False,
     async_decode_min_batch_size: int = 1,
     speech_enabled: bool = False,
 ) -> OmniScheduler[SGLangARRequestData]:
@@ -263,6 +264,7 @@ def create_thinker_scheduler(
         result_adapter=result_adapter,
         stream_output_builder=build_thinker_stream_output,
         abort_callback=model_runner.reset_request,
+        enable_overlap=enable_overlap,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
     )

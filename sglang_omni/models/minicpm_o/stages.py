@@ -394,11 +394,14 @@ def create_sglang_thinker_executor_from_config(
     overrides.setdefault("trust_remote_code", False)
     overrides["tp_size"] = tp_size
     if overrides.get("speculative_algorithm") is not None:
-        # note (0xtoward): the draft worker verifies whole blocks in a synchronous loop.
+        # note (0xtoward): experiment on #3030 -- async decode asks for its speculative
+        # overlap loop; the draft worker then needs SGLang's overlap-ready path too.
         overrides["enable_mixed_chunk"] = False
+        enable_overlap = bool(enable_async_decode)
         enable_async_decode = False
+        overrides["disable_overlap_schedule"] = not enable_overlap
     else:
-        pass
+        enable_overlap = False
     server_args = build_sglang_server_args(
         model_path,
         context_length=max_seq_len,
@@ -423,6 +426,7 @@ def create_sglang_thinker_executor_from_config(
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         enable_async_decode=enable_async_decode,
+        enable_overlap=enable_overlap,
         async_decode_min_batch_size=async_decode_min_batch_size,
         speech_enabled=speech_enabled,
     )
