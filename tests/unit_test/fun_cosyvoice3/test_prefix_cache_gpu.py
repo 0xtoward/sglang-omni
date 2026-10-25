@@ -5,6 +5,8 @@ graph replayed hops and whole-history solves their eager solves."""
 from __future__ import annotations
 
 import copy
+import gc
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -29,6 +31,7 @@ from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
 )
 from sglang_omni.models.fun_cosyvoice3.prefix_cuda_graph import PrefixCudaGraphRunner
 from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import SolveGraphCapture
+from sglang_omni.models.fun_cosyvoice3.stages import build_prefix_pool
 from sglang_omni.models.fun_cosyvoice3.whole_history_cuda_graph import (
     WholeHistoryCudaGraphRunner,
 )
@@ -419,6 +422,47 @@ def test_grow_rows_takes_nothing_on_a_shortfall() -> None:
     assert pool.free_blocks == []
     release_rows(pool, rows)
     assert sorted(pool.free_blocks) == [0, 1, 2] and rows[0].committed_frames == 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_prefix_pool_leaves_its_reserve_under_the_allocator_cap() -> None:
+    """A pool sized under an allocator cap took its padding block and the allocator's
+    rounding out of its reserve, so the step it was sized beside failed to allocate."""
+    device = torch.device("cuda", torch.cuda.current_device())
+    attention = SimpleNamespace(heads=16, inner_dim=1024)
+    flow = SimpleNamespace(
+        decoder=SimpleNamespace(
+            estimator=SimpleNamespace(
+                transformer_blocks=[SimpleNamespace(attn=attention)] * 22,
+                input_embed=SimpleNamespace(proj=SimpleNamespace(out_features=1024)),
+            )
+        )
+    )
+    reserve_bytes = 6 * 2**30
+    gc.collect()
+    torch.cuda.empty_cache()
+    total_bytes = torch.cuda.get_device_properties(device).total_memory
+    entry_fraction = torch.cuda.get_per_process_memory_fraction(device)
+    torch.cuda.set_per_process_memory_fraction(
+        (torch.cuda.memory_reserved(device) + 8 * 2**30) / total_bytes, device
+    )
+    try:
+        pool = build_prefix_pool(
+            flow,
+            device,
+            torch.bfloat16,
+            size_gb=None,
+            max_blocks=None,
+            stage_reserve_bytes=reserve_bytes,
+            headroom_bytes=0,
+            share_ceiling_bytes=None,
+        )
+        assert pool is not None
+        step = torch.empty(reserve_bytes, dtype=torch.uint8, device=device)
+        del step, pool
+    finally:
+        torch.cuda.set_per_process_memory_fraction(entry_fraction, device)
+        torch.cuda.empty_cache()
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
