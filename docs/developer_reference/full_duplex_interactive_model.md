@@ -32,16 +32,19 @@ sgl-omni config resolve --model-path openbmb/MiniCPM-o-4_5 --variant session
 | Setting | Default | Meaning |
 |---|---|---|
 | `max_sessions` | 2 | Conversations at the same time. Further connections get HTTP 503. The thinker and talker reserve GPU memory for this many full-length conversations, so raise it only as far as the GPU has room. Startup warms up perception at each batch size up to this value |
+| `batch_sessions` | `true` | Perception and speech handle the ready second of every conversation in one call. `false` gives each conversation's second a call of its own, one call at a time; `max_sessions`, memory and startup stay the same, and the thinker and talker still batch conversations |
 | `reference_audio` | checkpoint default | Voice used when a session sends no reference |
 | `speech_state_bytes_per_session` | 2 GiB | Memory the speech stage may hold per conversation. A conversation that needs more is closed and the others keep running |
 | `speech.dtype` | `float32` | Precision of the voice decoder's flow model: `float32`, `float16` or `bfloat16`; the lower precisions change the voice slightly |
 | `speech.enable_dit_torch_compile` | `false` | Compile the voice decoder's flow model with `torch.compile` while the server starts; CUDA only |
 | `speech.n_timesteps` | 5 | Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality |
+| `speech.enable_chunk_cuda_graph` | `true` | Replay the voice decoder's flow from the CUDA graphs described below; `false` decodes every chunk eagerly and skips their capture at startup |
+| `speech.gather_window_ms` | 22.5 | How long an idle speech stage waits for the other conversations' next second so it can decode them together; the wait ends once every open conversation has one. `0` decodes what is ready |
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
 | `sampling` | `MiniCPMODuplexSampling` in `sglang_omni/models/minicpm_o/native_config.py` | Default sampling when a session does not set its own; `--sampling.<field>` changes one, such as `--sampling.temperature 0.5` |
 | `vision` | `MiniCPMODuplexVision` in the same file | Camera-frame limits per unit (1 s of audio); `--vision.<field>` changes one, such as `--vision.max_frames_per_unit 2` |
 
-While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them.
+While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them. `speech.enable_chunk_cuda_graph: false` turns them off.
 
 Speech settings also accept dotted CLI flags, such as `--speech.dtype float16 --speech.n_timesteps 10`. Stage settings use `--speech.factory.<field>` or `--speech.process`. The automatic thinker KV budget follows `thinker.engine.dtype` and `thinker.engine.kv_cache_dtype`; block-quantized KV caches require an explicit `thinker.engine.kv_cache_bytes` budget.
 
@@ -73,7 +76,16 @@ Thanks to the OpenMoss team for the demo page.
 
 Once the terminal prints `Running on`, open <http://localhost:8080> and click **Start talking** to talk through your microphone; the camera can be turned on during the call. If the server is remote, first run `ssh -N -L 8080:127.0.0.1:8080 USER@SERVER` on your own machine. Open the page through `localhost`, or the browser will not grant microphone access.
 
-The settings panel switches between English and Chinese, changes the voice and adjusts sampling. The download button in the top bar saves the conversation trace; attach it when reporting a problem.
+The settings panel shows only the controls the deployment declares in `/v1/realtime/capabilities`: the system prompt, the presets and a reference voice when `supports_reference_audio` is true (a preset pairs a MiniCPM-o duplex prompt with a voice, so no other backend gets them), a named voice when `voices` is listed, turn detection when `turn_control` lists `server_vad` or `semantic_vad`, camera detail when `input_image_format` allows more than one slice, and one numeric field per key in `sampling_parameters`, labelled for that backend (`max_new_tokens_per_unit` is tokens per 1 s unit on a native model and the reply token limit on a turn-based one). An empty field is not sent, so the deployment's default applies. The page sends every setting in its first `session.update`, so a change applies to the next conversation. Everything under `sglang` (sampling, voice, reference audio, image detail) is fixed once the session is open. Turn detection and `output_modalities` may change in a later `session.update`, and `instructions` only on a deployment that supports instruction updates, which is the cascade with a `system_prompt` node; MiniCPM-o, PersonaPlex and Qwen3-Omni freeze them with the first `session.update`. Settings are kept in the browser per deployment model. The download button in the top bar saves the conversation trace; attach it when reporting a problem.
+
+An empty field falls back to the deployment's default, which lives here:
+
+| Backend | Sampling | Turn detection and voice |
+| --- | --- | --- |
+| MiniCPM-o | `MiniCPMODuplexSampling` in `sglang_omni/models/minicpm_o/native_config.py`; `--sampling.<field>` changes one | No turn detection. The voice is the deployment's `reference_audio` |
+| PersonaPlex | `PersonaPlexSessionSampling` in `sglang_omni/models/personaplex/config.py` (`--sampling.<field>`); a field left unset there keeps the offline value in `sglang_omni/models/personaplex/architecture.py` and `request_builders.py` | No turn detection. Voice `NATF2` unless the deployment sets `voice` |
+| Qwen3-Omni | `QwenSessionSampling` in `sglang_omni/models/qwen3_omni/session_preprocessing.py`; the deployment has no override, only a session changes them | `silence_duration_ms` 800 from the `vad` stage in `sglang_omni/models/vad/node.py`; `--vad.factory.silence_duration_ms` changes it |
+| Streaming cascade | The profile's node options; `--session_nodes.llm.<option>` changes one. `max_tokens` is 512 in the bundled profiles, and a `temperature` the profile leaves unset is not sent, so the chat service applies its own | The `vad` stage as above unless the profile sets it: `qwen3-asr-qwen3-tts-base-clone` runs it at 160 ms as Smart Turn's candidate pause, so picking server VAD in the panel prefills 800 ms. `eagerness` `medium` from `sglang_omni/models/turn_detection/node.py`; `--turn_detection.factory.eagerness` changes it |
 
 
 ### Full-duplex protocol
@@ -264,7 +276,7 @@ PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/
 python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
 ```
 
-It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). The page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; when a reply is interrupted it sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply when the server sends `sglang.response.progress`; a cut reply then shows the part the history kept, from `sglang.response.heard`. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
+It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). Its settings panel is the [browser demo's](#browser-demo): the system prompt, turn detection (`server_vad` with its silence, `semantic_vad` with its eagerness, as `turn_control` lists them) and one field per key in `sampling_parameters`, labelled for the cascade (`max_new_tokens_per_unit` is the reply token limit). It offers no text-only replies, because its captions and `conversation.item.truncate` follow audio playback. The fields are empty until you fill them, kept per deployment model in this browser, and cleared by Reset to defaults. While they are empty the page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; a filled field is sent in the first `session.update` and applies to the next conversation, with sampling fixed for the session as [Session settings](#session-settings) describes. When a reply is interrupted it sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply when the server sends `sglang.response.progress`; a cut reply then shows the part the history kept, from `sglang.response.heard`. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
 
 ### An OpenAI Realtime client or the Session API
 
@@ -355,6 +367,7 @@ A setting comes from one of three places: the profile file, read at launch; comm
 | `stages` | none | Settings of stage routes by stage name, such as `asr: {gpu: 0}` or `vad: {factory: {silence_duration_ms: 800}}`. |
 | `timeout_s` | `120` | How long one input or control operation on a cascade node may take, including the wait for the last replies once the input has ended; past it the session fails with `component '<name>' append timed out`. |
 | `unit_ms` | `200` | The length of the input audio units the server forwards into the session; reported as `native_unit_ms`. |
+| `max_sessions` | `16` | Sessions that every component node, the VAD node and the turn detection node hold at once. A session beyond them is refused when it opens; raise it, for example with `--max_sessions 32`, when the services have room for more. |
 | `max_output_lead_ms` | `1000` | How far ahead of real time reply audio is delivered; audio already delivered cannot be taken back by an interruption. |
 | `max_pending_output_chunks` | `1024` | Reply chunks held for a client that has stopped reading before the session fails. |
 | `max_pending_output_bytes` | `33554432` | The same bound in bytes. |
@@ -427,7 +440,7 @@ What needs a restart and what does not:
 
 | Setting | Changes |
 | --- | --- |
-| `services`, the node set, `inputs`, `session_publish`, `stages`, `timeout_s`, `unit_ms`, `max_output_lead_ms`, `max_pending_output_*` | Restart the server. |
+| `services`, the node set, `inputs`, `session_publish`, `stages`, `timeout_s`, `unit_ms`, `max_sessions`, `max_output_lead_ms`, `max_pending_output_*` | Restart the server. |
 | Default node options and VAD defaults | Restart, or per session as above. |
 | Node options through `nodes` | When a `/v1/session` session opens, and later through `configure` for nodes that read `input`. |
 | `sglang.sampling` | When a realtime session opens. |
@@ -618,7 +631,7 @@ Each rule is followed by the error it raises.
 - `nodes` in `session.update` — `invalid session configuration`.
 - `response.create` — `manual turn commands are not granted`.
 - `response.cancel` in a profile where no node takes `interrupt` from `input` on a control edge — `no node takes the control 'interrupt' from 'input'`.
-- A new session beyond the 16 that every cascade node holds at once — the first `session.update` is refused with `admission_rejected`.
+- A new session beyond the `max_sessions` (16 unless the profile or `--max_sessions` sets another) that every cascade node holds at once — the first `session.update` is refused with `admission_rejected`.
 - A `session.update` that changes `instructions`, or a `configure` that changes a node, while the user is speaking, between `speech_started` and `speech_stopped` — the session fails with `cannot replace '<node>' while speech is in progress`.
 
 ### Rejected by the speech service
@@ -733,7 +746,7 @@ End-of-turn detection is a stage node beside the VAD: `sglang_omni.models.turn_d
 
 ### Interruption
 
-An `interrupt` naming a turn that reaches a node on a control edge first drops that turn's chunks from other nodes still queued for the node, on its edges and among its unsent appends, and a chunk of that turn that a node emits later no longer reaches it; the client's own input is never dropped. The node's own output of that turn, whether already buffered or emitted later, reaches neither its readers nor the client, except the `turn.interrupted` that ends the turn. Control edges are delivered upstream first, so a node's stale output is fenced before its readers hear the event. An `interrupt` without a turn, such as the client's `response.cancel`, means the open reply, which only the node knows; the Session leaves its queues to the node.
+An `interrupt` naming a turn that reaches a node on a control edge first drops that turn's chunks from other nodes still queued for the node, on its edges and among its unsent appends, and a chunk of that turn that a node emits later no longer reaches it; the client's own input is never dropped. The node's own output of that turn, whether already buffered or emitted later, reaches neither its readers nor the client. The controls about the interruption pass both ways: the node's `interrupt` and `turn.interrupted` of that turn, and the `reply.delivered` that reports its audio, so a node the client interrupts by turn still stops the nodes it controls and hears what was delivered. Control edges are delivered upstream first, so a node's stale output is fenced before its readers hear the event. An `interrupt` without a turn, such as the client's `response.cancel`, means the open reply, which only the node knows; the Session leaves its queues to the node.
 
 ### Delivery pacing
 

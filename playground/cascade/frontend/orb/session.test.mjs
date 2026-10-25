@@ -69,6 +69,20 @@ test("a reply that ends cut keeps only its heard prefix, nothing when none of it
   assert.deepEqual(silent.captionParts("resp_0"), { heard: "", pending: "" });
 });
 
+test("a session sends only output_modalities unless instructions, turn detection or sglang settings are given", () => {
+  const sent = [];
+  const transport = (event) => sent.push(JSON.parse(JSON.stringify(event)));
+  new DuplexSession({ transport, now: () => 0 }).handle({ type: "session.created", session: { id: "s" } });
+  assert.deepEqual(sent.at(-1).session, { output_modalities: ["audio"] });
+  new DuplexSession({ transport, now: () => 0, outputModalities: ["text"], instructions: "Answer briefly.", extension: { sampling: { temperature: 0.2 } }, turnDetection: { type: "server_vad", silence_duration_ms: 800 } }).handle({ type: "session.created", session: { id: "s" } });
+  assert.deepEqual(sent.at(-1).session, {
+    output_modalities: ["text"],
+    instructions: "Answer briefly.",
+    audio: { input: { turn_detection: { type: "server_vad", silence_duration_ms: 800 } } },
+    sglang: { sampling: { temperature: 0.2 } },
+  });
+});
+
 // The interrupted replies below come from a recorded session of the qwen3-asr-qwen3-tts-customvoice profile.
 const STOCK_REPLY = "I cannot access live stock market data, but I can explain trading basics or discuss recent market trends.";
 const MODEL_REPLY = "I’m Qwen, a large language model independently developed by Alibaba Group’s Tongyi Lab.";
