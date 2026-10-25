@@ -242,11 +242,10 @@ async def test_speech_that_resumes_before_the_reply_is_heard_interrupts_it(
         assert any(
             control_type(o) == TURN_DONE and o.turn == 2 for o in session.outputs
         )
-        assert messages[-1][-3:] == [
-            {"role": "user", "content": "test question"},
-            {"role": "assistant", "content": ""},
-            {"role": "user", "content": "test question"},
-        ]
+        assert messages[-1][-1] == {
+            "role": "user",
+            "content": "test question test question",
+        }
 
 
 @pytest.mark.asyncio
@@ -389,7 +388,9 @@ async def test_audio_stays_paced_and_held_turn_is_interruptible(backends):
         last = len(session.outputs)
         await session.command(TRUNCATE, t_ms=0)
         await session.audio(eos=True)
-        assert backends[3][1][-2] == {"role": "assistant", "content": ""}
+        assert backends[3][1][1:] == [
+            {"role": "user", "content": "test question test question"}
+        ]
         assert not any(
             o.turn == 1 and o.format == PCM_F32 for o in session.outputs[last:]
         )
