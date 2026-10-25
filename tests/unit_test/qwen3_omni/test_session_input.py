@@ -71,11 +71,10 @@ def test_speech_during_a_reply_interrupts_it_and_the_next_turn_follows(dialog) -
     append(hooks, context, control_chunk(COMMIT))
     append(hooks, context, control_chunk(TURN_STARTED, turn=1))
     append(hooks, context, control_chunk(SPEECH_STARTED, t_ms=40))
-    assert events(outputs)[3:] == [
-        (INTERRUPT, 1),
-        (TURN_INTERRUPTED, 1),
-        ("qwen.unit", 2),
-    ]
+    assert events(outputs)[3:] == [(INTERRUPT, 1), (TURN_INTERRUPTED, 1)]
+    append(hooks, context, control_chunk(REPLY_DELIVERED, turn=1, audio_ms=320.0))
+    assert events(outputs)[5:] == [(TRUNCATE_FORMAT, None), ("qwen.unit", 2)]
+    assert outputs[5].payload == {"turn": 1, "t_ms": 320.0}
     assert outputs[-1].payload["carried_turns"] == []
     append(hooks, context, control_chunk(TRUNCATE, t_ms=250))
     truncate = outputs[-1]
@@ -96,6 +95,45 @@ def test_the_delivered_audio_of_an_interrupted_reply_reaches_the_model_as_a_trun
     delivered = outputs[-1]
     assert delivered.format == TRUNCATE_FORMAT
     assert delivered.turn is None and delivered.payload == {"turn": 1, "t_ms": 500.0}
+
+
+def test_a_reply_none_of_whose_audio_reached_the_client_is_asked_again(dialog) -> None:
+    """A reply interrupted after its turn.started but before any of its audio reached the client stayed in the history and its utterance was not asked again."""
+    hooks, outputs, context = dialog
+    append(hooks, context, audio(0))
+    append(hooks, context, control_chunk(COMMIT))
+    append(hooks, context, audio(20))
+    append(hooks, context, control_chunk(COMMIT))
+    append(hooks, context, control_chunk(TURN_STARTED, turn=1))
+    append(hooks, context, control_chunk(SPEECH_STARTED, t_ms=40))
+    append(hooks, context, control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0.0))
+    assert events(outputs)[3:] == [
+        (INTERRUPT, 1),
+        (TURN_INTERRUPTED, 1),
+        ("qwen.unit", 2),
+    ]
+    unit = outputs[-1]
+    assert unit.payload["carried_turns"] == [1]
+    assert len(unit.payload["pcm"]) == 2 * 640
+
+
+def test_two_unheard_interruptions_ask_both_utterances_again(dialog) -> None:
+    """A unit that asked a carried utterance again kept only its newest utterance when it was interrupted unheard too, so the next unit lost the first."""
+    hooks, outputs, context = dialog
+    append(hooks, context, audio(0))
+    append(hooks, context, control_chunk(COMMIT))
+    append(hooks, context, audio(20))
+    append(hooks, context, control_chunk(COMMIT))
+    append(hooks, context, audio(40))
+    append(hooks, context, control_chunk(COMMIT))
+    for turn, t_ms in ((1, 60), (2, 80)):
+        append(hooks, context, control_chunk(TURN_STARTED, turn=turn))
+        append(hooks, context, control_chunk(SPEECH_STARTED, t_ms=t_ms))
+        append(hooks, context, control_chunk(REPLY_DELIVERED, turn=turn, audio_ms=0.0))
+    unit = outputs[-1]
+    assert unit.format == UNIT_FORMAT and unit.turn == 3
+    assert unit.payload["carried_turns"] == [2]
+    assert len(unit.payload["pcm"]) == 3 * 640
 
 
 def test_a_client_interrupt_targets_the_turn_being_answered(dialog) -> None:
@@ -154,6 +192,7 @@ def test_an_utterance_interrupted_before_its_reply_is_asked_again_with_the_next(
     append(hooks, context, audio(0))
     append(hooks, context, control_chunk(COMMIT))
     hooks.control(IDENTITY, control_chunk(INTERRUPT))
+    append(hooks, context, control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0.0))
     append(hooks, context, audio(20))
     append(hooks, context, control_chunk(COMMIT))
     unit = outputs[-1]
