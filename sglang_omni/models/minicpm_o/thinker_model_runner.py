@@ -181,6 +181,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         *,
         is_prefill: bool,
         num_draft_tokens: int,
+        verify_layout: object | None = None,
     ) -> None:
         """Queue each request's hidden rows for the tokens this step commits.
 
@@ -200,14 +201,27 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             for index, req in enumerate(batch.reqs):
                 self.speculative_hidden_queue[req.rid] = rows[index : index + 1]
         else:
-            block = model.speculative_hidden_rows[
-                : len(batch.reqs) * num_draft_tokens
-            ].clone()
+            rows = model.speculative_hidden_rows
+            if verify_layout is None:
+                starts = (
+                    torch.arange(len(batch.reqs), device=rows.device) * num_draft_tokens
+                )
+            else:
+                # note (0xtoward): a compact verify packs each request's rows back to back; the
+                # starts stay on the device, and the rows gathered past a request's own are
+                # never emitted, since it commits at most as many tokens as it verified.
+                starts = verify_layout.extend_start_loc[: len(batch.reqs)].to(
+                    torch.long
+                )
+            offsets = torch.arange(num_draft_tokens, device=rows.device)
+            rows_index = (starts[:, None] + offsets[None, :]).clamp_(
+                max=rows.shape[0] - 1
+            )
+            block = rows.index_select(0, rows_index.reshape(-1)).view(
+                len(batch.reqs), num_draft_tokens, -1
+            )
             for index, req in enumerate(batch.reqs):
-                start = index * num_draft_tokens
-                self.speculative_hidden_queue[req.rid] = block[
-                    start : start + num_draft_tokens
-                ]
+                self.speculative_hidden_queue[req.rid] = block[index]
 
     def on_speculative_tokens(
         self, scheduler_request: SchedulerRequest, token_ids: list[int]
