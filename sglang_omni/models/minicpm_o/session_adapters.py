@@ -37,7 +37,10 @@ from sglang_omni.scheduling.sglang_backend.ar_session import (
 )
 from sglang_omni.scheduling.sglang_backend.request_data import EmbeddingSpan
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
-from sglang_omni.serve.realtime.manager import RealtimeDeployment
+from sglang_omni.serve.realtime.manager import (
+    RealtimeDeployment,
+    runtime_limits_for_pipeline,
+)
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
@@ -406,5 +409,6 @@ def build_realtime_deployment(
             sampling_parameters=tuple(MiniCPMODuplexSampling.model_fields),
         ),
         factory,
+        limits=runtime_limits_for_pipeline(config),
         max_connections=config.max_sessions,
     )
