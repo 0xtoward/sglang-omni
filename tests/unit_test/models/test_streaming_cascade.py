@@ -427,6 +427,45 @@ def prompts(outputs: list[TimedChunk]) -> list[list[tuple[str, str]]]:
     ]
 
 
+SECOND_REPLY = "Sure. Here it is."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "during, after, second",
+    [
+        ([control_chunk(TRUNCATE, turn=1, t_ms=1200)], [], SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, turn=1, t_ms=200)], SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, turn=2, t_ms=1000)] * 2, "Sure."),
+        ([], [control_chunk(TRUNCATE, turn=2, t_ms=60000)], SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, t_ms=1000)], "Sure."),
+    ],
+    ids=["late", "stale", "repeated", "past-the-end", "unnamed"],
+)
+async def test_a_truncate_cuts_only_the_reply_of_its_turn(during, after, second):
+    """A truncate cut whichever ended reply the dialog still held, so one for an earlier reply cut the next one."""
+    dialog, inputs = interrupted_dialog(
+        control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
+        control_chunk(SPEECH_STOPPED),
+        transcript_chunk("next", True),
+        text_chunk(SECOND_REPLY, 2),
+        *during,
+        lambda: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=2, text_end=5, audio_ms=800)
+        ),
+        lambda: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=2, text_end=17, audio_ms=1600)
+        ),
+        control_chunk(TURN_DONE, turn=2),
+        *after,
+    )
+    await drain(dialog, inputs)
+    assert [message.content for message in dialog.messages[2::2]] == [
+        "One two.\nThree four.",
+        second,
+    ]
+
+
 @pytest.mark.asyncio
 async def test_a_reply_interrupted_in_its_first_sentence_leaves_no_answer_and_joins_the_questions():
     dialog, inputs = interrupted_dialog(
@@ -1699,6 +1738,20 @@ async def test_a_client_truncate_before_the_delivered_audio_moves_the_heard_cut_
     )
     assert [heard_frames(request) for request in requests] == [800 * 24, 300 * 24]
     assert spoken_progress(outputs) == [(19, 2000), (24, 2800), (24, 2300)]
+
+
+@pytest.mark.asyncio
+async def test_a_client_truncate_of_another_turn_leaves_the_heard_cut():
+    requests = []
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing("five", requests)),
+        interrupted_speech(
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2800),
+            control_chunk(TRUNCATE, turn=0, t_ms=2300),
+        ),
+    )
+    assert [heard_frames(request) for request in requests] == [800 * 24]
+    assert spoken_progress(outputs) == [(19, 2000), (24, 2800)]
 
 
 @pytest.mark.asyncio

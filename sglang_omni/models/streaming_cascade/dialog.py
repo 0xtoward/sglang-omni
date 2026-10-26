@@ -77,11 +77,11 @@ class Dialog(StreamComponent):
     control and publishes `turn.interrupted`; `reply.progress` controls from
     the synthesizer tell it how much of the reply was spoken. The interrupted
     reply stays in the history only up to the last sentence whose audio the
-    graph delivered (`reply.delivered`), and a client `truncate` moves the
-    cut back to what the listener heard; from then on each cut is
-    published as reply.heard. A reply the history keeps nothing of when the
-    next reply begins leaves no entry, and the next utterance joins the user
-    message it followed. The language the recognizer last
+    graph delivered (`reply.delivered`), and a client `truncate` of that
+    reply's turn moves the cut back to what the listener heard; from then on
+    each cut is published as reply.heard. A reply the history keeps nothing
+    of when the next reply begins leaves no entry, and the next utterance
+    joins the user message it followed. The language the recognizer last
     heard in an answered turn is the Session's language, and every messages
     chunk carries it. A replacement adopts the history, the open reply and
     the waiting utterances, so new
@@ -203,9 +203,19 @@ class Dialog(StreamComponent):
         ):
             self.delivered_ms = float(chunk.payload["audio_ms"])
             self.truncate()
-        elif control_type(chunk) == TRUNCATE and self.truncatable is not None:
-            self.heard_ms = float(chunk.payload["t_ms"])
-            self.truncate()
+        elif control_type(chunk) == TRUNCATE:
+            if self.truncatable is not None and chunk.turn in (
+                None,
+                self.truncatable[0],
+            ):
+                self.heard_ms = float(chunk.payload["t_ms"])
+                self.truncate()
+            else:
+                logger.info(
+                    "truncate of turn %s ignored: the reply that can still be cut is %s",
+                    chunk.turn,
+                    None if self.truncatable is None else self.truncatable[0],
+                )
         else:
             pass
 

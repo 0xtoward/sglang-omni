@@ -267,6 +267,20 @@ def test_truncating_past_the_end_of_a_finished_reply_keeps_its_kv(
     assert second.req.origin_input_ids == [NEWLINE, 7]
 
 
+def test_a_truncate_of_an_earlier_reply_keeps_the_history(
+    adapter: QwenThinkerSessionAdapter,
+) -> None:
+    first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    finish(adapter, first, [51, 52, 53, END])
+    second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
+    finish(adapter, second, [71, 72, 73, END])
+    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
+    preparation = adapter.prepare_unit(IDENTITY, unit_chunk(3), payload(3, [8]))
+    assert preparation.reset_history is False
+    third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
+    assert third.req.origin_input_ids == [NEWLINE, 8]
+
+
 def test_truncating_a_finished_reply_rebuilds_the_native_session(
     adapter: QwenThinkerSessionAdapter,
 ) -> None:

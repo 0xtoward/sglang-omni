@@ -55,7 +55,7 @@ from sglang_omni.serve.realtime.output import (
 )
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.session_bridge import SessionBridge, capabilities_of
-from sglang_omni.serve.realtime.types import RuntimeLimits, Unit
+from sglang_omni.serve.realtime.types import ProtocolError, RuntimeLimits, Unit
 from tests.unit_test.fixtures.session_client import PORTS, FakeSessionClient
 
 RATE = 16000
@@ -231,6 +231,27 @@ async def test_reply_heard_maps_to_the_ended_response_of_its_turn():
 
 
 @pytest.mark.asyncio
+async def test_a_truncate_names_the_turn_of_its_item():
+    """A truncate reached the session without its item, so the dialog cut the reply it guessed; an item the bridge never sent is an error and appends nothing."""
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=3)
+    h.client.control(TURN_INTERRUPTED, turn=3)
+    h.client.control(TURN_STARTED, turn=5)
+    await settle()
+    await h.bridge.truncate("item_0", 400.0)
+    await h.bridge.truncate("item_1", 200.0)
+    with pytest.raises(ProtocolError, match="not found") as error:
+        await h.bridge.truncate("item_7", 100.0)
+    assert error.value.code == "item_not_found"
+    assert [(chunk.payload, chunk.turn) for chunk in h.client.appended] == [
+        ({"type": TRUNCATE, "t_ms": 400.0}, 3),
+        ({"type": TRUNCATE, "t_ms": 200.0}, 5),
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
     ports = replace(PORTS, controls=frozenset({COMMIT, CONFIGURE, TRUNCATE}))
     assert capabilities_of(ports).supports_truncate
@@ -279,8 +300,14 @@ async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
         assert event.format == SESSION_CONTROL and event.payload == {"type": INTERRUPT}
         assert event.t_start_ms == 200.0
         assert stages is None and should_preempt
-        await runtime.truncate(1234.5)
-        assert h.client.appended[-1].payload == {"type": TRUNCATE, "t_ms": 1234.5}
+        h.client.control(TURN_STARTED, turn=1)
+        await settle()
+        await runtime.truncate("item_0", 1234.5)
+        truncate = h.client.appended[-1]
+        assert (truncate.payload, truncate.turn) == (
+            {"type": TRUNCATE, "t_ms": 1234.5},
+            1,
+        )
         assert await h.bridge.clear() == 0
     finally:
         await runtime.close("client_closed")
