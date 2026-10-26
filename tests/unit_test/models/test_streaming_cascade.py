@@ -1555,10 +1555,12 @@ def transcribing(transcript: str, requests: list[httpx.Request]):
     return handler
 
 
-def interrupted_speech(*after: object, language: str | None = None) -> list[object]:
-    """SPOKEN with its first sentence ended at 2000 ms and 1000 ms of " Five six." spoken when the reply is interrupted, with `after` fed next."""
+def interrupted_speech(
+    *after: object, language: str | None = None, text: str = SPOKEN
+) -> list[object]:
+    """Reply audio interrupted after its first sentence and one second of its second."""
     return [
-        text_chunk(SPOKEN, 1, language),
+        text_chunk(text, 1, language),
         *(speech() for _ in range(4)),
         control_chunk(REPLY_PROGRESS, turn=1, text_end=19, audio_ms=2000),
         speech(),
@@ -1585,6 +1587,61 @@ async def test_the_asr_method_keeps_the_prefix_of_the_interrupted_sentence_its_d
     assert [heard_frames(request) for request in requests] == [600 * 24]
     assert b'name="model"\r\n\r\nasr' in requests[0].content
     assert (b'name="language"' in requests[0].content) == (language is not None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sentence, transcript, prefix, language",
+    [
+        (
+            "Buy 350 long-term boxes.",
+            "buy three hundred fifty longterm",
+            "Buy 350 long-term",
+            "English",
+        ),
+        (
+            "Buy 350 long-term boxes.",
+            "Buy 350 long-term",
+            "Buy 350 long-term",
+            "English",
+        ),
+        ("Buy 21 apples.", "Buy twenty", "Buy", "English"),
+        ("Buy twenty apples.", "Buy 21", "Buy", "English"),
+        ("Buy 21 apples.", "Buy twenty-one", "Buy 21", "English"),
+        (
+            "Buy 350 apples.",
+            "Buy three hundred fifty apples",
+            "Buy 350 apples.",
+            "English",
+        ),
+        ("Wait 3.14 seconds.", "Wait three fourteen", "Wait", "English"),
+        ("Wait 3.14 seconds.", "Wait three point one four", "Wait 3.14", "English"),
+        ("Buy 1,000 apples.", "Buy 1,00", "Buy", "English"),
+        ("Wait 3-5 days.", "Wait three five", "Wait", "English"),
+        ("Wait 3-5 days.", "Wait three to five days", "Wait 3-5 days.", "English"),
+        ("预算21元。", "预算二十一", "预算21", "English"),
+        ("预算3.14元。", "预算三点一", "预算", "Chinese"),
+        ("预算3.14元。", "预算三点一四元", "预算3.14元。", "Chinese"),
+        ("Count 8 9 10.", "Count 八九十", "Count 8 9 10.", "English"),
+    ],
+)
+async def test_asr_normalization_preserves_complete_original_units(
+    sentence: str, transcript: str, prefix: str, language: str
+) -> None:
+    """Number expansion lost reply offsets or committed a number before its last word."""
+    earlier_text = "One two three four."
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing(transcript, [])),
+        interrupted_speech(
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2600),
+            language=language,
+            text=f"{earlier_text} {sentence}",
+        ),
+    )
+    assert spoken_progress(outputs) == [
+        (len(earlier_text), 2000),
+        (len(earlier_text) + 1 + len(prefix), 2600),
+    ]
 
 
 @pytest.mark.asyncio
