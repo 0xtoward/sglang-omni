@@ -963,6 +963,15 @@ def test_profile_graph_turns_formats_and_ports():
     assert settings.node("dialog").required == dialog_formats
 
 
+def test_a_dialog_without_the_input_interrupt_edge_grants_no_client_stop():
+    """A client response.cancel travels the control edges from the input, and a graph without one fails the control, so its ports must not offer it."""
+    dialog = yaml.safe_load(HTTP_PROFILE.read_text())["session_nodes"]["dialog"]
+    input_interrupt = {"kind": "control", "source": "input", "event": "interrupt"}
+    inputs = [entry for entry in dialog["inputs"] if entry != input_interrupt]
+    deaf = declared(nodes={"dialog": {**dialog, "inputs": inputs}})
+    assert INTERRUPT not in deaf.component_graph().ports(200).controls
+
+
 def test_segmenter_gates_on_speech_controls():
     segmenter = UtteranceSegmenter()
     first = TimedChunk(AUDIO, 0, 100, 0, QUIET, format=PCM16)
