@@ -26,6 +26,7 @@ from sglang_omni.models.streaming_cascade.base import (
     audio_chunk,
     messages_chunk,
     messages_of,
+    sentence_end,
     sentences,
     text_chunk,
     transcript_chunk,
@@ -222,6 +223,47 @@ async def test_sentences_split_after_an_abbreviation():
         " Smith is here.",
         " Welcome!",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply, spans",
+    [
+        (
+            "I apologize for the short answer earlier. ",
+            ["I apologize for the", " short answer earlier.", " "],
+        ),
+        (
+            "Dolphins recognize their friends, just like people recognize names. ",
+            [
+                "Dolphins recognize their friends,",
+                " just like people recognize names.",
+                " ",
+            ],
+        ),
+        (
+            "While a full history is too long to give here, the main points are clear. ",
+            [
+                "While a full history is too",
+                " long to give here,",
+                " the main points are clear.",
+                " ",
+            ],
+        ),
+    ],
+    ids=["two-halves", "clause-end", "long-sentence"],
+)
+async def test_a_long_sentence_is_cut_into_spans_of_at_least_half_the_cap(reply, spans):
+    """A sentence one word past the cap left its last word to be synthesized alone, which sometimes ran the speech model to its length limit."""
+    assert await spans_of(*(word + " " for word in reply.split()), max_words=6) == spans
+
+
+def test_a_long_sentence_is_cut_once_its_rest_cannot_be_shorter_than_half_the_cap():
+    assert sentence_end("one two three four five six ", 6) is None
+    assert sentence_end("one two three four five six seven ", 6) is None
+    assert sentence_end("one two three four five six seven eight ", 6) == len(
+        "one two three four five six"
+    )
 
 
 @pytest.mark.asyncio
