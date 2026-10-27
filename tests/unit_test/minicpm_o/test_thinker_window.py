@@ -151,6 +151,33 @@ def test_window_cuts_early_when_the_next_unit_would_not_fit() -> None:
     assert adapter.states[IDENTITY].unit_starts == [10, 110]
 
 
+def test_context_window_moves_the_oldest_units_words_into_previous() -> None:
+    """The checkpoint's context window, with a 20-token prompt whose last 2 tokens are its suffix."""
+    state = MiniCPMOThinkerSessionState(
+        sampling=MiniCPMODuplexSampling(), speech_detector=Mock(spec=StatelessVAD)
+    )
+    state.unit_starts = [20, 30, 40, 50]
+    state.unit_contents = [[1, 2, 3], [], [4, 5], []]
+
+    def slide() -> HistoryCut | None:
+        return state.slide_with_context(2, 4, [90, 91], 2)
+
+    assert slide() == HistoryCut(
+        ((20, 40),), inserted_at=18, inserted_ids=(90, 91, 1, 2, 3)
+    )
+    assert state.unit_starts == [25, 35]
+    state.unit_starts.append(45)
+    state.unit_contents.append([])
+    assert slide() == HistoryCut(
+        ((18, 23), (25, 35)), inserted_at=18, inserted_ids=(90, 91, 2, 3, 4, 5)
+    )
+    assert state.unit_starts == [26, 36]
+    state.unit_starts.append(46)
+    state.unit_contents.append([7])
+    assert slide() == HistoryCut(((26, 36),)), "a listen unit leaves no words"
+    assert state.previous_token_ids == [90, 91, 2, 3, 4, 5]
+
+
 def test_window_key_shift_rounds_the_exact_rotation_once() -> None:
     adapter = make_adapter(MiniCPMODuplexWindow())
     keys = torch.randn(64, 2, HEAD_DIM, generator=torch.Generator().manual_seed(0))
@@ -192,7 +219,23 @@ def tokenized(rid: str, input_ids: list[int]) -> TokenizedGenerateReqInput:
     )
 
 
-def test_cut_token_ids_follow_the_sglang_streaming_session() -> None:
+@pytest.mark.parametrize(
+    ("cut", "kept"),
+    [
+        (
+            HistoryCut(((2, 5), (10, 12))),
+            [*range(100, 102), *range(105, 110), *range(112, 120)],
+        ),
+        (
+            HistoryCut(((14, 16), (17, 19)), inserted_at=14, inserted_ids=(7, 8, 9)),
+            [*range(100, 114), 7, 8, 9, 116, 119],
+        ),
+    ],
+    ids=["drop", "insert"],
+)
+def test_cut_token_ids_follow_the_sglang_streaming_session(
+    cut: HistoryCut, kept: list[int]
+) -> None:
     """The bridge's history length and cut match what Session.create_req puts ahead of the next request."""
     session = Session(0, "session", streaming=True)
     first = session.create_req(tokenized("a", list(range(100, 120))), None, 1000)
@@ -201,19 +244,11 @@ def test_cut_token_ids_follow_the_sglang_streaming_session() -> None:
     session.finish_req(first)
 
     assert retained_history_length(session) == 23
-    cut_token_ids(session, HistoryCut(((2, 5), (10, 12))))
+    cut_token_ids(session, cut)
     second = session.create_req(tokenized("b", [300, 301]), None, 1000)
 
-    kept = [
-        *range(100, 102),
-        *range(105, 110),
-        *range(112, 120),
-        200,
-        201,
-        202,
-    ]
-    assert list(second.origin_input_ids) == [*kept, 300, 301]
-    assert len(second.origin_input_ids) - 2 == 23 - 5
+    assert list(second.origin_input_ids) == [*kept, 200, 201, 202, 300, 301]
+    assert len(second.origin_input_ids) - 2 == cut.new_position(23)
 
 
 def make_kv_cache(dtype: torch.dtype, device: str, **options) -> MHATokenToKVPool:
@@ -353,6 +388,8 @@ def test_window_settings_reach_the_thinker_stage() -> None:
                 "7000",
                 "--window.basic_window_low_tokens",
                 "5000",
+                "--window.context_max_units",
+                "12",
             ]
         )
     )
@@ -364,6 +401,7 @@ def test_window_settings_reach_the_thinker_stage() -> None:
         7000,
         5000,
     )
+    assert kwargs["context_max_units"] == 12
     with pytest.raises(ValidationError, match="must be below"):
         MiniCPMODuplexWindow(
             basic_window_high_tokens=6000, basic_window_low_tokens=6000

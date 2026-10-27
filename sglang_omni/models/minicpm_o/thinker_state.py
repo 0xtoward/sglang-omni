@@ -51,6 +51,9 @@ class MiniCPMOThinkerSessionState:
     refill_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     # note (0xtoward): Session position of each retained finished unit's <unit>; the first ends the system prompt and reference audio, which always stay.
     unit_starts: list[int] = field(default_factory=list)
+    # note (0xtoward): Context window only: each retained unit's own words, none for a listen unit, and the previous text they left.
+    unit_contents: list[list[int]] = field(default_factory=list)
+    previous_token_ids: list[int] = field(default_factory=list)
 
     def drop_units(
         self, drop_order: Iterable[int], next_unit_start: int, target_start: int
@@ -84,16 +87,72 @@ class MiniCPMOThinkerSessionState:
                 for index, unit_start in enumerate(self.unit_starts)
                 if index not in dropped
             ]
-            self.reply_units = [
-                unit
-                for unit in self.reply_units
-                if not any(
-                    start < unit.kept_token_count <= end for start, end in cut.ranges
-                )
-            ]
-            for unit in self.reply_units:
-                unit.kept_token_count = cut.new_position(unit.kept_token_count)
+            self.move_reply_units(cut)
             return cut
+
+    def slide_with_context(
+        self,
+        max_units: int,
+        max_previous_tokens: int,
+        marker_ids: list[int],
+        suffix_length: int,
+    ) -> HistoryCut | None:
+        """The checkpoint's StreamDecoder.enforce_window_with_context, checked before the next unit joins.
+
+        Past max_units finished units the oldest go, and their words join the previous text ahead of the
+        system prompt's last suffix_length tokens, which keeps its newest max_previous_tokens.
+        """
+        drop_count = len(self.unit_starts) - max_units
+        if drop_count <= 0:
+            return None
+        else:
+            new_ids = [
+                token_id
+                for unit_content in self.unit_contents[:drop_count]
+                for token_id in unit_content
+            ]
+            previous = self.previous_token_ids
+            if new_ids:
+                content = [*previous[len(marker_ids) :], *new_ids]
+                previous = [*marker_ids, *content[-max_previous_tokens:]]
+            else:
+                pass
+            previous_end = self.unit_starts[0] - suffix_length
+            previous_start = previous_end - len(self.previous_token_ids)
+            units = (self.unit_starts[0], self.unit_starts[drop_count])
+            # note (0xtoward): As in the checkpoint, units that leave no words only drop, and new words rebuild the previous text.
+            if previous == self.previous_token_ids:
+                cut = HistoryCut((units,))
+            elif self.previous_token_ids:
+                cut = HistoryCut(
+                    ((previous_start, previous_end), units),
+                    inserted_at=previous_start,
+                    inserted_ids=tuple(previous),
+                )
+            else:
+                cut = HistoryCut(
+                    (units,), inserted_at=previous_start, inserted_ids=tuple(previous)
+                )
+            self.previous_token_ids = previous
+            self.unit_contents = self.unit_contents[drop_count:]
+            self.unit_starts = [
+                cut.new_position(unit_start)
+                for unit_start in self.unit_starts[drop_count:]
+            ]
+            self.move_reply_units(cut)
+            return cut
+
+    def move_reply_units(self, cut: HistoryCut) -> None:
+        """Forget the reply units whose rewind point the cut drops, and move the rest."""
+        self.reply_units = [
+            unit
+            for unit in self.reply_units
+            if not any(
+                start < unit.kept_token_count <= end for start, end in cut.ranges
+            )
+        ]
+        for unit in self.reply_units:
+            unit.kept_token_count = cut.new_position(unit.kept_token_count)
 
 
 @dataclass(kw_only=True)

@@ -63,6 +63,9 @@ class SessionTreeCache(SessionRows, Protocol):
     def evictable_size(self) -> int:
         pass
 
+    def release_session(self, session_id: str) -> None:
+        pass
+
 
 class RequestToTokenPool(Protocol):
     free_slots: list[int]
@@ -472,7 +475,7 @@ class ARSessionBridge:
         )
         if history_cut is not None:
             self.drop_history(session, native_session, history_cut)
-            history_length -= history_cut.length
+            history_length = history_cut.new_position(history_length)
         else:
             pass
         tokenized_input = TokenizedGenerateReqInput(
@@ -562,8 +565,10 @@ class ARSessionBridge:
         record = self.bridge_scheduler.tree_cache.session_records().get(
             native_session.session_id
         )
-        # note (0xtoward): After an abort the session holds no KV, and the next unit re-prefills the shortened ids.
-        if record is not None and record.holds_kv:
+        # note (0xtoward): After an abort the session holds no KV, and the next unit re-prefills the shortened ids; inserted ids have no KV, so the session lets its KV go for the same re-prefill.
+        if record is not None and record.holds_kv and cut.inserted_ids:
+            self.bridge_scheduler.tree_cache.release_session(native_session.session_id)
+        elif record is not None and record.holds_kv:
             cut_retained_kv(
                 self.bridge_scheduler.tree_cache,
                 self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache(),
@@ -583,10 +588,11 @@ class ARSessionBridge:
             if not cut.drops(span.start, span.end)
         ]
         logger.info(
-            "Session %s: dropped %d history tokens in %d ranges, %d kept",
+            "Session %s: dropped %d history tokens in %d ranges, inserted %d, %d kept",
             native_session.session_id,
             cut.length,
             len(cut.ranges),
+            len(cut.inserted_ids),
             native_session.committed_origin_len,
         )
 

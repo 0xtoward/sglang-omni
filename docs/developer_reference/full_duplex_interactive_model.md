@@ -43,8 +43,9 @@ sgl-omni config resolve --model-path openbmb/MiniCPM-o-4_5 --variant session
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
 | `sampling` | `MiniCPMODuplexSampling` in `sglang_omni/models/minicpm_o/native_config.py` | Default sampling when a session does not set its own; `--sampling.<field>` changes one, such as `--sampling.temperature 0.5` |
 | `vision` | `MiniCPMODuplexVision` in the same file | Camera-frame limits per unit (1 s of audio); `--vision.<field>` changes one, such as `--vision.max_frames_per_unit 2` |
-| `window.sliding_window_mode` | `basic` | The checkpoint's `DuplexWindowConfig` mode: `basic` drops the oldest units of a long conversation; `off` keeps every unit and closes the session when its history fills |
+| `window.sliding_window_mode` | `basic` | The checkpoint's `DuplexWindowConfig` mode: `basic` drops the oldest units of a long conversation; `context` keeps the newest units and the model's own earlier words; `off` keeps every unit and closes the session when its history fills |
 | `window.basic_window_high_tokens` / `window.basic_window_low_tokens` | 8000 / 6000 | History length that starts a drop, and the length the drop goes down to |
+| `window.context_max_units` / `window.context_previous_max_tokens` | 24 / 500 | `context` mode: past this many units the oldest goes, and its words join a `previous:` text in the system prompt that keeps its newest tokens up to this limit; each change of that text makes the next unit prefill the whole history |
 
 While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them. `speech.enable_chunk_cuda_graph: false` turns them off.
 

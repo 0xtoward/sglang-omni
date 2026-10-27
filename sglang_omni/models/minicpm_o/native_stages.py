@@ -440,16 +440,20 @@ def create_thinker_scheduler(
     total_gpu_memory_fraction: float | None = None,
     kv_cache_tokens: int | None = None,
     sliding_window_mode: Literal[
-        "off", "basic"
+        "off", "basic", "context"
     ] = DEFAULT_WINDOW_SETTINGS.sliding_window_mode,
     basic_window_high_tokens: int = DEFAULT_WINDOW_SETTINGS.basic_window_high_tokens,
     basic_window_low_tokens: int = DEFAULT_WINDOW_SETTINGS.basic_window_low_tokens,
+    context_max_units: int = DEFAULT_WINDOW_SETTINGS.context_max_units,
+    context_previous_max_tokens: int = DEFAULT_WINDOW_SETTINGS.context_previous_max_tokens,
 ) -> OmniScheduler:
     builder = MiniCPMOThinkerEngineBuilder(
         window=MiniCPMODuplexWindow(
             sliding_window_mode=sliding_window_mode,
             basic_window_high_tokens=basic_window_high_tokens,
             basic_window_low_tokens=basic_window_low_tokens,
+            context_max_units=context_max_units,
+            context_previous_max_tokens=context_previous_max_tokens,
         )
     )
     if kv_cache_tokens is None:

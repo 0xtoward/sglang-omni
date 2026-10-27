@@ -95,6 +95,21 @@ class ThinkerAdapter(ARSessionAdapter):
         self.vocab_size: int = vocab_size
         self.window: MiniCPMODuplexWindow = window
         self.rotary_embedding: RotaryEmbedding = rotary_embedding
+        if window.sliding_window_mode == "context":
+            # note (0xtoward): The checkpoint writes its previous text after this marker, ahead of the prompt's closing <|audio_end|><|im_end|>, and keeps only non-special tokens.
+            self.context_marker_ids: list[int] = tokenizer.encode(
+                "\n\nprevious: ", add_special_tokens=False
+            )
+            self.context_suffix_length: int = 1 + len(
+                tokenizer.encode("<|im_end|>", add_special_tokens=False)
+            )
+            self.special_token_ids: frozenset[int] = frozenset(
+                tokenizer.all_special_ids
+            )
+        else:
+            self.context_marker_ids = []
+            self.context_suffix_length = 0
+            self.special_token_ids = frozenset()
         self.special: MiniCPMOSpecialTokenIds = resolve_special_token_ids(
             tokenizer, bad_token_ids=tuple(tokenizer.bad_token_ids)
         )
@@ -189,6 +204,7 @@ class ThinkerAdapter(ARSessionAdapter):
             state.unit_starts = [
                 start for start in state.unit_starts if start < kept_token_count
             ]
+            state.unit_contents = state.unit_contents[: len(state.unit_starts)]
         else:
             pass
         return ARSessionPreparation(kept_token_count=kept_token_count)
@@ -317,6 +333,15 @@ class ThinkerAdapter(ARSessionAdapter):
         It also cuts early when the next unit would not fit in the context.
         """
         window = self.window
+        if window.sliding_window_mode == "context":
+            return self.states[session_identity].slide_with_context(
+                window.context_max_units,
+                window.context_previous_max_tokens,
+                self.context_marker_ids,
+                self.context_suffix_length,
+            )
+        else:
+            pass
         # note (0xtoward): The checkpoint checks its cache length after </unit>, which here comes with the next unit, so that length is the next <unit>'s position.
         next_unit_start = history_length + request_data.unit_token_index
         fitting_start = history_capacity + request_data.unit_token_index
@@ -363,6 +388,21 @@ class ThinkerAdapter(ARSessionAdapter):
         else:
             pass
         output_token_ids = [int(token_id) for token_id in data.output_ids]
+        is_listen = bool(
+            output_token_ids and output_token_ids[0] == self.special.listen
+        )
+        if self.window.sliding_window_mode == "context":
+            state.unit_contents.append(
+                []
+                if is_listen
+                else [
+                    token_id
+                    for token_id in output_token_ids
+                    if token_id not in self.special_token_ids
+                ]
+            )
+        else:
+            pass
         is_turn_ending = (
             data.is_interrupted
             or self.special.turn_eos in output_token_ids
@@ -406,9 +446,7 @@ class ThinkerAdapter(ARSessionAdapter):
             text=self.tokenizer.decode(
                 data.generated_unit_ids, skip_special_tokens=True
             ),
-            is_listen=bool(
-                output_token_ids and output_token_ids[0] == self.special.listen
-            ),
+            is_listen=is_listen,
             end_of_turn=is_turn_ending,
         )
         return data.stage_payload

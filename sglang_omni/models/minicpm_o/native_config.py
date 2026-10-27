@@ -129,13 +129,15 @@ DEFAULT_SPEECH_SETTINGS = MiniCPMODuplexSpeech()
 
 
 class MiniCPMODuplexWindow(BaseModel):
-    """The checkpoint's DuplexWindowConfig for thinker history; of its modes, off and basic are served."""
+    """The checkpoint's DuplexWindowConfig for thinker history."""
 
     model_config = ConfigDict(extra="forbid")
 
-    sliding_window_mode: Literal["off", "basic"] = "basic"
+    sliding_window_mode: Literal["off", "basic", "context"] = "basic"
     basic_window_high_tokens: int = Field(default=8000, ge=1)
     basic_window_low_tokens: int = Field(default=6000, ge=1)
+    context_max_units: int = Field(default=24, ge=1)
+    context_previous_max_tokens: int = Field(default=500, ge=1)
 
     @model_validator(mode="after")
     def check_watermarks(self) -> "MiniCPMODuplexWindow":

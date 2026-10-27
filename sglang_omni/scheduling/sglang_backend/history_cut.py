@@ -51,9 +51,14 @@ class LayerKVCache(Protocol):
 
 @dataclass(frozen=True)
 class HistoryCut:
-    """Retained session positions to drop before the next unit: [start, end) ranges, ascending and apart."""
+    """Retained session positions to drop before the next unit: [start, end) ranges, ascending and apart.
+
+    inserted_ids, if any, go in at position inserted_at once the ranges are gone; they have no KV.
+    """
 
     ranges: tuple[tuple[int, int], ...]
+    inserted_at: int = 0
+    inserted_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         bounds = [bound for cut_range in self.ranges for bound in cut_range]
@@ -72,8 +77,14 @@ class HistoryCut:
 
     def new_position(self, position: int) -> int:
         """Where a position kept by the cut lands once the cut is applied."""
-        return position - sum(
-            min(end, position) - start for start, end in self.ranges if start < position
+        return (
+            position
+            - sum(
+                min(end, position) - start
+                for start, end in self.ranges
+                if start < position
+            )
+            + (len(self.inserted_ids) if position > self.inserted_at else 0)
         )
 
     def drops(self, start: int, end: int) -> bool:
@@ -118,12 +129,23 @@ def cut_token_ids(native_session: Session, cut: HistoryCut) -> None:
             last_request.full_untruncated_fill_ids,
         )
     }
+    inserted_at = cut.new_position(cut.inserted_at)
     for token_ids in token_id_arrays.values():
         for start, end in reversed(cut.ranges):
             del token_ids[start:end]
-    native_session.committed_origin_len -= cut.length
-    native_session.committed_unpadded_len -= cut.length
-    native_session.committed_fill_len -= cut.length
+        # note (0xtoward): An empty slice of the array itself keeps its type, list or array.
+        inserted_ids = token_ids[:0]
+        inserted_ids.extend(cut.inserted_ids)
+        token_ids[inserted_at:inserted_at] = inserted_ids
+    native_session.committed_origin_len = cut.new_position(
+        native_session.committed_origin_len
+    )
+    native_session.committed_unpadded_len = cut.new_position(
+        native_session.committed_unpadded_len
+    )
+    native_session.committed_fill_len = cut.new_position(
+        native_session.committed_fill_len
+    )
 
 
 def cut_retained_kv(
