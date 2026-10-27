@@ -1526,6 +1526,12 @@ def test_every_profile_takes_reply_progress_from_a_forced_aligner(profile):
     ] == ["aligner"]
 
 
+@pytest.mark.parametrize("profile", PROFILE_NAMES)
+def test_every_profile_publishes_the_aligners_reply_progress(profile):
+    # note (luojiaxuan): the client's sglang.response.progress, which moves the caption with playback, comes only from a published node.
+    assert SESSION_CONTROL in profile_config(profile).session_publish["aligner"]
+
+
 def test_the_reference_profile_routes_reply_progress_through_the_aligner():
     settings = aligned_profile().component_graph()
     aligner_node = settings.node("aligner")
