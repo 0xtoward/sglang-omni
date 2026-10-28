@@ -11,23 +11,35 @@ import torch.nn.functional as F
 from transformers import PretrainedConfig
 from transformers.activations import ACT2FN
 
+try:
+    from sgl_kernel.flash_attn import flash_attn_with_kvcache
+except ImportError:
+    flash_attn_with_kvcache = None
+
 
 @dataclass(frozen=True, kw_only=True)
 class AudioEncoderState:
-    """Read-only attention history of one session, shaped (layers, 2, 1, heads, frames, head_dim)."""
+    """Attention history of one session: its own tensor shaped (layers, 2, 1, heads, frames, head_dim), or row_length frames of a pool row."""
 
     key_value_states: torch.Tensor | None = None
+    row: int | None = None
+    row_length: int = 0
+    row_nbytes: int = 0
 
     @property
     def past_length(self) -> int:
-        if self.key_value_states is None:
+        if self.row is not None:
+            return self.row_length
+        elif self.key_value_states is None:
             return 0
         else:
             return self.key_value_states.shape[4]
 
     @property
     def nbytes(self) -> int:
-        if self.key_value_states is None:
+        if self.row is not None:
+            return self.row_nbytes
+        elif self.key_value_states is None:
             return 0
         else:
             return self.key_value_states.numel() * self.key_value_states.element_size()
@@ -83,6 +95,34 @@ class MiniCPMWhisperEncoderAttention(nn.Module):
         )
         return self.out_proj(attn_output)
 
+    def forward_pooled(
+        self,
+        hidden_states: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        cache_lengths: torch.Tensor,
+        cache_rows: torch.Tensor,
+    ) -> torch.Tensor:
+        """Append this chunk's keys and values to each session's pool row in place and attend over the whole row."""
+        batch_size, current_length, _ = hidden_states.shape
+        query, key, value = (
+            projection.view(batch_size, current_length, self.num_heads, self.head_dim)
+            for projection in self.qkv_proj(hidden_states).chunk(3, dim=-1)
+        )
+        attn_output = flash_attn_with_kvcache(
+            query,
+            key_cache,
+            value_cache,
+            k=key,
+            v=value,
+            cache_seqlens=cache_lengths,
+            cache_batch_idx=cache_rows,
+            causal=False,
+        )
+        return self.out_proj(
+            attn_output.reshape(batch_size, current_length, self.embed_dim)
+        )
+
 
 class MiniCPMWhisperEncoderLayer(nn.Module):
     def __init__(self, config: PretrainedConfig) -> None:
@@ -103,6 +143,29 @@ class MiniCPMWhisperEncoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
         hidden_states = self.self_attn(hidden_states, attn_mask, key_value_states)
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.final_layer_norm(hidden_states)
+        hidden_states = self.fc2(self.activation_fn(self.fc1(hidden_states)))
+        return residual + hidden_states
+
+    def forward_pooled(
+        self,
+        hidden_states: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        cache_lengths: torch.Tensor,
+        cache_rows: torch.Tensor,
+    ) -> torch.Tensor:
+        residual = hidden_states
+        hidden_states = self.self_attn.forward_pooled(
+            self.self_attn_layer_norm(hidden_states),
+            key_cache,
+            value_cache,
+            cache_lengths,
+            cache_rows,
+        )
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -136,16 +199,14 @@ class MiniCPMWhisperEncoder(nn.Module):
         )
         self.layer_norm = nn.LayerNorm(config.d_model)
 
-    def forward(
+    def embed(
         self,
         input_features: torch.Tensor,
-        attn_mask: torch.Tensor,
-        key_value_states: torch.Tensor | None = None,
-        positions: torch.Tensor | None = None,
-        prefix_extra_frames: int = 0,
-        suffix_extra_frames: int = 0,
+        positions: torch.Tensor | None,
+        prefix_extra_frames: int,
+        suffix_extra_frames: int,
     ) -> torch.Tensor:
-        """Encode mel frames; when streaming, key_value_states holds the batch history and positions holds each row's frame positions."""
+        """Convolve mel frames, drop the context rows and add each frame's position embedding."""
         hidden_states = input_features.to(
             device=self.conv1.weight.device, dtype=self.conv1.weight.dtype
         )
@@ -165,12 +226,49 @@ class MiniCPMWhisperEncoder(nn.Module):
             embed_pos = self.embed_positions.weight[: hidden_states.shape[1]]
         else:
             embed_pos = self.embed_positions.weight[positions]
-        hidden_states = hidden_states + embed_pos
+        return hidden_states + embed_pos
 
+    def forward(
+        self,
+        input_features: torch.Tensor,
+        attn_mask: torch.Tensor,
+        key_value_states: torch.Tensor | None = None,
+        positions: torch.Tensor | None = None,
+        prefix_extra_frames: int = 0,
+        suffix_extra_frames: int = 0,
+    ) -> torch.Tensor:
+        """Encode mel frames; when streaming, key_value_states holds the batch history and positions holds each row's frame positions."""
+        hidden_states = self.embed(
+            input_features, positions, prefix_extra_frames, suffix_extra_frames
+        )
         for layer_index, layer in enumerate(self.layers):
             if key_value_states is None:
                 layer_states = None
             else:
                 layer_states = key_value_states[layer_index]
             hidden_states = layer(hidden_states, attn_mask, layer_states)
+        return self.layer_norm(hidden_states)
+
+    def forward_pooled(
+        self,
+        input_features: torch.Tensor,
+        positions: torch.Tensor,
+        key_value_pool: torch.Tensor,
+        cache_lengths: torch.Tensor,
+        cache_rows: torch.Tensor,
+        prefix_extra_frames: int,
+        suffix_extra_frames: int,
+    ) -> torch.Tensor:
+        """Encode one chunk per session, appending its keys and values to the pool rows that hold the sessions' histories."""
+        hidden_states = self.embed(
+            input_features, positions, prefix_extra_frames, suffix_extra_frames
+        )
+        for layer_index, layer in enumerate(self.layers):
+            hidden_states = layer.forward_pooled(
+                hidden_states,
+                key_value_pool[layer_index, 0],
+                key_value_pool[layer_index, 1],
+                cache_lengths,
+                cache_rows,
+            )
         return self.layer_norm(hidden_states)

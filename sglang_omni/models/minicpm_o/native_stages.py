@@ -265,8 +265,16 @@ class PerceptionHooks(BatchedSessionHooks):
                     strict=True,
                 ):
                     state.finish_audio(audio_encoder_state)
+            if self.audio_encoder.key_value_pool is not None:
+                self.audio_encoder.release_all_rows()
+            else:
+                pass
             # note (Junnan Li): The forward took the histories, so the same chunks now run without one.
             self.audio_encoder.forward_streaming_batch(chunks)
+            if self.audio_encoder.key_value_pool is not None:
+                self.audio_encoder.release_all_rows()
+            else:
+                pass
 
     def close(self, session_identity: SessionIdentity) -> None:
         self.states.pop(session_identity).close()
@@ -417,6 +425,10 @@ def create_perception_scheduler(
     device = str(resolve_concrete_device(device, gpu_id))
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     encoder = MiniCPMOAudioEncoder(model_path, device=device, dtype=dtype)
+    if encoder.device.type == "cuda":
+        encoder.reserve_rows(max_open_sessions)
+    else:
+        pass
     image_encoder = MiniCPMOImageEncoder(model_path, device=device, dtype=dtype)
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     hooks = PerceptionHooks(
