@@ -61,7 +61,8 @@ from sglang_omni.scheduling.session import (
     SessionScheduler,
 )
 from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
-from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.cuda_staging import new_device_event
+from sglang_omni.utils.device import resolve_concrete_device, supports_device_streams
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_gpu_device_info
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,19 @@ class PerceptionHooks(BatchedSessionHooks):
                 unit.payload.data = unit.state.build_step_plan(
                     audio_embeds, unit.image_embeds
                 )
+        plans = [
+            append.payload.data for append in appends if append.payload.data is not None
+        ]
+        device = self.audio_encoder.device
+        if plans and supports_device_streams(device):
+            # note (0xtoward): a device tensor would reach the thinker as an IPC handle, and closing it there holds the thinker's GIL for up to a second.
+            for plan in plans:
+                plan["input_embeds"] = plan["input_embeds"].to("cpu", non_blocking=True)
+            copied = new_device_event(device, blocking=True)
+            copied.record(torch.get_device_module(device).current_stream(device))
+            copied.synchronize()
+        else:
+            pass
         return [append.payload for append in appends]
 
     def warm_up(self, max_batch_size: int) -> None:

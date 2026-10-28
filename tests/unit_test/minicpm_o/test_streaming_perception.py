@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU contracts for native duplex image and audio unit plans."""
+"""Contracts for native duplex image and audio unit plans; the batched plan case also runs on an accelerator."""
 
 import copy
 import wave
@@ -43,6 +43,7 @@ from sglang_omni.preprocessing.cache_key import hash_bytes
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.session import SessionAppend
+from tests.unit_test.fixtures.accelerator import require_cuda
 from tests.unit_test.minicpm_o.test_audio_encoder import (
     checkpoint_dir,
     tiny_audio_encoder,
@@ -365,7 +366,9 @@ def checkpoint_mel_chunks(
 
 
 def run_staggered_sessions(
-    mel_filter_bank: LogMelFilterBank, units: dict[str, list[np.ndarray]]
+    mel_filter_bank: LogMelFilterBank,
+    units: dict[str, list[np.ndarray]],
+    device: torch.device,
 ) -> tuple[
     dict[str, list[torch.Tensor]],
     dict[str, list[PerceptionStepPlan]],
@@ -380,7 +383,8 @@ def run_staggered_sessions(
         "<slice>": 4,
         "</slice>": 5,
     }.__getitem__
-    encoder = tiny_audio_encoder(pool_step=5)
+    encoder = tiny_audio_encoder(pool_step=5).to(device)
+    encoder.device = device
     hooks = PerceptionHooks(
         tokenizer,
         Mock(),
@@ -435,9 +439,18 @@ def run_staggered_sessions(
     return features, plans, encoder
 
 
+@pytest.mark.parametrize(
+    "device_type", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
+)
 @pytest.mark.parametrize("reference", ["whole_buffer", "checkpoint"])
-def test_batched_perception_matches_each_session_alone(reference: str) -> None:
-    """Batched mel and encoding give every session the checkpoint's own features and step plans."""
+def test_batched_perception_matches_each_session_alone(
+    reference: str, device_type: str
+) -> None:
+    """Batched mel and encoding give every session the checkpoint's own features and step plans, handed over in host memory."""
+    if device_type == "cuda":
+        require_cuda()
+    else:
+        pass
     units = {
         name: session_units(seed) for seed, name in enumerate(SESSION_STARTS, start=1)
     }
@@ -464,7 +477,9 @@ def test_batched_perception_matches_each_session_alone(reference: str) -> None:
             name: whole_buffer_mel_chunks(session, mel_filter_bank)
             for name, session in units.items()
         }
-    features, plans, encoder = run_staggered_sessions(mel_filter_bank, units)
+    features, plans, encoder = run_staggered_sessions(
+        mel_filter_bank, units, torch.device(device_type)
+    )
     for name in units:
         assert len(features[name]) == UNITS_PER_SESSION
         state = None
@@ -482,9 +497,15 @@ def test_batched_perception_matches_each_session_alone(reference: str) -> None:
                     )
                 ]
             )
+            input_embeds = plan["input_embeds"]
             assert plan["token_ids"] == [1] + [0] * alone_embeds.shape[0]
+            assert input_embeds.device.type == "cpu", "plans leave in host memory"
+            if device_type == "cuda":
+                assert input_embeds.is_pinned(), "device plans are staged pinned"
+            else:
+                pass
             torch.testing.assert_close(
-                plan["input_embeds"], alone_embeds, rtol=1e-5, atol=1e-5
+                input_embeds, alone_embeds.cpu(), rtol=1e-5, atol=1e-5
             )
 
 

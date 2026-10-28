@@ -32,6 +32,8 @@ def stages() -> list[StageConfig]:
             gpu_memory_fraction=0.12,
             factory_path=f"{PKG}.create_perception_scheduler",
             next="thinker",
+            # note (0xtoward): every unit reallocates each session's encoder history one chunk longer, which fragments the allocator; perception hands the thinker host tensors, so it can opt in.
+            env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
         ),
         EngineStageConfig(
             name="thinker",
@@ -59,7 +61,7 @@ def stages() -> list[StageConfig]:
             gpu_memory_fraction=0.15,
             factory_path=f"{PKG}.create_speech_scheduler",
             terminal=True,
-            # note (Junnan Li): Ragged vocoder batches fragment the allocator; the thinker and talker share memory over CUDA IPC, so only this process opts in.
+            # note (Junnan Li): Ragged vocoder batches fragment the allocator; the thinker and talker share memory over CUDA IPC, so they keep the default allocator.
             # note (Junnan Li): Padded HiFT shapes can exceed cuDNN's default 10000-plan cache at large max_sessions; the set is bounded, so the cache is unbounded.
             env={
                 "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
