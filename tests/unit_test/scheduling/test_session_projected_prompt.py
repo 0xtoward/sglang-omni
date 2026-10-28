@@ -35,7 +35,7 @@ def adapter_request(ids: list[int]) -> Req:
 
 def bridge_with_unit(ids: list[int]) -> tuple[ARSessionBridge, SessionUnit]:
     identity = SessionIdentity("talker")
-    scheduler = Mock()
+    scheduler = Mock(max_req_len=4096)
     scheduler.model_config.vocab_size = 64
 
     def create_req(tokenized, tokenizer, vocab_size, eos_token_ids):
@@ -47,9 +47,9 @@ def bridge_with_unit(ids: list[int]) -> tuple[ARSessionBridge, SessionUnit]:
         )
 
     scheduler.session_controller.get.return_value = SimpleNamespace(
-        session_id="native", create_req=create_req
+        session_id="native", create_req=create_req, req_nodes={}
     )
-    bridge = ARSessionBridge(scheduler, Mock())
+    bridge = ARSessionBridge(scheduler, Mock(**{"plan_history_cut.return_value": None}))
     chunk = TimedChunk("text", 0, 0, 0, {"text": "hi"}, format="text_delta")
     unit = SessionUnit(
         request_id="unit-1", session_identity=identity, stages=("talker",), chunk=chunk
@@ -131,7 +131,8 @@ def test_projected_session_prefill_rows_come_from_the_spans_and_fed_back_tokens(
     data = SGLangARRequestData(
         req=SimpleNamespace(
             rid="unit-2",
-            extend_range=SimpleNamespace(start=4, end=7),
+            prefix_len=4,
+            extend_end=7,
             get_fill_ids=lambda: [0, 0, 5, 0, 0, 0, 0],
         ),
         session_embedding_spans=spans,
@@ -141,12 +142,21 @@ def test_projected_session_prefill_rows_come_from_the_spans_and_fed_back_tokens(
         return token_ids.to(torch.float32)[:, None].repeat(1, WIDTH)
 
     rows = session_projected_prefill_rows(
-        data, embed_tokens, torch.device("cpu"), torch.float32
+        data,
+        embed_tokens,
+        torch.device("cpu"),
+        torch.float32,
+        prefix_len=4,
+        extend_len=3,
     )
     assert rows.tolist() == [[1.0] * WIDTH, [2.0] * WIDTH, [2.0] * WIDTH]
-    data.req.extend_range = SimpleNamespace(start=2, end=7)
     rows = session_projected_prefill_rows(
-        data, embed_tokens, torch.device("cpu"), torch.float32
+        data,
+        embed_tokens,
+        torch.device("cpu"),
+        torch.float32,
+        prefix_len=2,
+        extend_len=5,
     )
     assert rows[:2].tolist() == [[5.0] * WIDTH, [1.0] * WIDTH]
 

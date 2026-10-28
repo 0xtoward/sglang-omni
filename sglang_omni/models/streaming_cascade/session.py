@@ -26,7 +26,6 @@ from sglang_omni.proto.streams import (
 )
 from sglang_omni.scheduling.session import (
     DEFAULT_MAX_CONCURRENCY,
-    NODE_STAGE_MAX_OPEN_SESSIONS,
     ChunkEmitter,
     SessionContext,
     SessionHooks,
@@ -43,6 +42,7 @@ class ComponentSession:
         self.name = name
         self.settings = settings
         self.component = COMPONENTS.build(settings.node(name).component)
+        self.component.place(settings, name)
         self.queue: asyncio.Queue[tuple[TimedChunk, asyncio.Future[None]] | None] = (
             asyncio.Queue(maxsize=1)
         )
@@ -162,6 +162,7 @@ class ComponentSession:
             != self.settings.node(self.name).component
         ):
             replacement = COMPONENTS.build(settings.node(self.name).component)
+            replacement.place(settings, self.name)
             replacement.adopt(self.component)
             previous, self.component = self.component, replacement
             self.task.cancel()
@@ -279,10 +280,10 @@ class ComponentHooks(SessionHooks):
 
 
 def create_scheduler(
-    name: str, settings: dict[str, object], timeout_s: float
+    name: str, settings: dict[str, object], timeout_s: float, max_open_sessions: int
 ) -> SessionScheduler:
     return SessionScheduler(
         ComponentHooks(name, ComponentGraphConfig.model_validate(settings), timeout_s),
-        max_open_sessions=NODE_STAGE_MAX_OPEN_SESSIONS,
+        max_open_sessions=max_open_sessions,
         max_concurrency=DEFAULT_MAX_CONCURRENCY,
     )
