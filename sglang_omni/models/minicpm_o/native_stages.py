@@ -3,6 +3,7 @@
 
 import logging
 from collections import OrderedDict, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -71,6 +72,8 @@ logger = logging.getLogger(__name__)
 
 # note (Junnan Li): A session's first unit and every later unit differ in mel window and encoder history, so warm-up runs one of each.
 WARM_UP_UNITS = 2
+# note (0xtoward): frame decoding and slicing release the GIL for most of their time, so a few threads cover a batch of camera frames.
+IMAGE_PREPARE_THREADS = 8
 # note (0xtoward): these KV formats store per-block scales, so their bytes per token are not one element size.
 BLOCK_QUANTIZED_KV_CACHE_DTYPES = ("nvfp4", "fp4_mx_block16", "mxfp8")
 
@@ -111,6 +114,20 @@ class PerceptionHooks(BatchedSessionHooks):
         self.reference_cache_capacity = reference_cache_capacity
         self.reference_embeds_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
         self.states: dict[SessionIdentity, MiniCPMOPerceptionState] = {}
+        self.image_threads = ThreadPoolExecutor(
+            max_workers=IMAGE_PREPARE_THREADS, thread_name_prefix="perception-image"
+        )
+
+    def prepare_unit_image(
+        self, image: tuple[int, MiniCPMOPerceptionState, bytes]
+    ) -> PreparedImageFeatures | None:
+        """Decode and slice one unit frame; a bad frame is dropped, not fatal."""
+        sequence, state, encoded_image = image
+        try:
+            return state.prepare_image(encoded_image)
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+            logger.warning(f"Dropping undecodable frame of unit {sequence}: {exc}")
+            return None
 
     def reference_embeds(self, reference_audio: bytes) -> torch.Tensor:
         """The thinker embeddings of one reference audio, encoded once per distinct reference."""
@@ -154,7 +171,8 @@ class PerceptionHooks(BatchedSessionHooks):
 
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
         """Prepare each session's unit, then compute the mel and encode the audio of equal-shaped chunks together."""
-        pending_mel_units: list[PendingMelUnit] = []
+        units: list[tuple[StagePayload, MiniCPMOPerceptionState, bytes, int]] = []
+        frames: list[tuple[int, MiniCPMOPerceptionState, bytes]] = []
         for append in appends:
             chunk, payload = append.chunk, append.payload
             if chunk.eos and chunk.duration_ms == 0:
@@ -165,27 +183,41 @@ class PerceptionHooks(BatchedSessionHooks):
                     pcm, encoded_images = chunk.payload["pcm"], chunk.payload["images"]
                 else:
                     pcm, encoded_images = chunk.payload, ()
-                # note (Junnan Li): Frames are acked before decoding, so a bad frame is dropped, not fatal.
-                prepared_image_features: list[PreparedImageFeatures] = []
-                for encoded_image in encoded_images:
-                    try:
-                        prepared_image_features.append(
-                            state.prepare_image(encoded_image)
-                        )
-                    except (OSError, ValueError, Image.DecompressionBombError) as exc:
-                        logger.warning(
-                            f"Dropping undecodable frame of unit {chunk.seq}: {exc}"
-                        )
-                image_embeds = state.encode_images(tuple(prepared_image_features))
-                waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-                pending_mel_units.append(
-                    PendingMelUnit(
-                        payload=payload,
-                        state=state,
-                        mel_window=state.prepare_audio(waveform),
-                        image_embeds=image_embeds,
-                    )
+                units.append((payload, state, pcm, len(encoded_images)))
+                frames.extend((chunk.seq, state, image) for image in encoded_images)
+        # note (Junnan Li): Frames are acked before decoding, so a bad frame is dropped, not fatal.
+        prepared_frames = list(self.image_threads.map(self.prepare_unit_image, frames))
+        prepared_image_features = [
+            prepared for prepared in prepared_frames if prepared is not None
+        ]
+        # note (0xtoward): one image encoder forward covers every session's frames in the batch.
+        all_image_embeds = (
+            units[0][1].encode_images(tuple(prepared_image_features))
+            if prepared_image_features
+            else ()
+        )
+        pending_mel_units: list[PendingMelUnit] = []
+        frame_cursor = 0
+        embed_cursor = 0
+        for payload, state, pcm, frame_count in units:
+            kept = sum(
+                prepared is not None
+                for prepared in prepared_frames[
+                    frame_cursor : frame_cursor + frame_count
+                ]
+            )
+            frame_cursor += frame_count
+            image_embeds = tuple(all_image_embeds[embed_cursor : embed_cursor + kept])
+            embed_cursor += kept
+            waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+            pending_mel_units.append(
+                PendingMelUnit(
+                    payload=payload,
+                    state=state,
+                    mel_window=state.prepare_audio(waveform),
+                    image_embeds=image_embeds,
                 )
+            )
         windows: dict[int, list[PendingMelUnit]] = defaultdict(list)
         for unit in pending_mel_units:
             windows[unit.mel_window.size].append(unit)
