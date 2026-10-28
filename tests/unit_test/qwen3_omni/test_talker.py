@@ -2275,6 +2275,8 @@ def talker_seed_self(
     fake = SimpleNamespace(
         repetition_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
         suppress_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
+        suppress_token_cache={},
+        suppress_token_ids_by_request={},
         repetition_penalties=torch.ones(max_bs, 1, device=device),
         sampling_temperatures=torch.ones(max_bs, 1, device=device),
         sampling_top_ps=torch.ones(max_bs, device=device),
@@ -2411,6 +2413,71 @@ def test_talker_prepare_decode_buffers_steady_state_reuse() -> None:
     Qwen3OmniTalker.prepare_decode_buffers(fresh, requests)
     assert torch.equal(fake.repetition_mask, fresh.repetition_mask)
     assert torch.equal(fake.suppress_mask, fresh.suppress_mask)
+
+
+SHARED_SUPPRESS_TOKEN_IDS = [1, 6, 7, 9, -2]
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        pytest.param(
+            [
+                [
+                    ("a", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("b", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("c", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("d", SHARED_SUPPRESS_TOKEN_IDS),
+                ],
+                [
+                    ("e", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("f", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("g", SHARED_SUPPRESS_TOKEN_IDS),
+                ],
+            ],
+            id="shared",
+        ),
+        pytest.param(
+            [
+                [
+                    ("a", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("b", [2, 3]),
+                    ("c", None),
+                    ("d", SHARED_SUPPRESS_TOKEN_IDS),
+                ],
+                [("e", [2, 3]), ("f", SHARED_SUPPRESS_TOKEN_IDS), ("g", [4])],
+            ],
+            id="distinct",
+        ),
+        pytest.param(
+            [
+                [("a", SHARED_SUPPRESS_TOKEN_IDS), ("b", [2, 3]), ("c", None)],
+                [("b", [2, 3]), ("d", [4]), ("a", SHARED_SUPPRESS_TOKEN_IDS)],
+            ],
+            id="kept-at-new-rows",
+        ),
+    ],
+)
+def test_talker_prepare_decode_buffers_masks_each_rows_own_suppress_set(
+    steps: list[list[tuple[str, list[int] | None]]],
+) -> None:
+    vocab = 8
+    fake = talker_seed_self(vocab=vocab)
+    requests_by_id: dict[str, SimpleNamespace] = {}
+    for step, rows in enumerate(steps):
+        requests = [
+            requests_by_id.setdefault(
+                request_id, talker_prep_req(request_id, suppress=suppress)
+            )
+            for request_id, suppress in rows
+        ]
+        Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+        expected = torch.zeros(len(requests), vocab, dtype=torch.bool)
+        for row, (_, suppress) in enumerate(rows):
+            expected[row, [token for token in suppress or [] if 0 <= token < vocab]] = (
+                True
+            )
+        assert torch.equal(fake.suppress_mask[: len(requests)], expected), step
 
 
 @pytest.mark.accelerator
