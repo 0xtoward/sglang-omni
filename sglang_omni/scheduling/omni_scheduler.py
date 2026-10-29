@@ -391,7 +391,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.shutdown_lock = threading.Lock()
         self.request_admission_lock = threading.RLock()
         self.prompt_cache_epoch = 0
-        from sglang.srt.runtime_context import get_memory, get_parallel, get_schedule
+        from sglang.srt.runtime_context import get_parallel, get_schedule
 
         self.request_build_max_workers = max(1, int(request_build_max_workers))
         if self.request_build_max_workers > 1 and int(get_parallel().tp_size) > 1:
@@ -595,11 +595,12 @@ class OmniScheduler(Generic[RequestDataT]):
         # Schedule policy
         from sglang.srt.managers.schedule_policy import SchedulePolicy
 
+        self.enable_hierarchical_cache = tree_cache.cache_controller is not None
         self.schedule_policy = server_args.schedule_policy
         self.policy = SchedulePolicy(
             self.schedule_policy,
             self.tree_cache,
-            get_memory().enable_hierarchical_cache,
+            self.enable_hierarchical_cache,
             server_args.enable_priority_scheduling,
             server_args.schedule_low_priority_values_first,
         )
@@ -619,12 +620,11 @@ class OmniScheduler(Generic[RequestDataT]):
         self.prefill_delayer = None
         self.lora_drainer = None
 
-        # Feature flags (all disabled)
+        # Feature flags (all disabled; the HiCache host tier follows the tree cache above)
         self.enable_lora = False
         self.enable_pdmux = False
         self.enable_metrics = server_args.enable_metrics
         self.enable_trace = False
-        self.enable_hierarchical_cache = False
         self.enable_hicache_storage = False
         self.enable_lmcache = False
         self.enable_unified_cache_external_linker = False
@@ -762,11 +762,17 @@ class OmniScheduler(Generic[RequestDataT]):
         # note (wilsonzheng0327): under speculative decoding the draft worker owns
         # decode and the runner only serves target prefill, so its bridge stays
         # on the non-speculative contract.
+        cache_controller = self.tree_cache.cache_controller
         bridge = SGLangExecutionBridge(
             device=torch.device(self.device),
             worker=self.tp_worker,
             spec_algorithm=SpeculativeAlgorithm.NONE,
             future_map=self.future_map,
+            hicache_layer_done_counter=(
+                cache_controller.layer_done_counter
+                if cache_controller is not None
+                else None
+            ),
         )
         model_runner.async_enabled = self.enable_async_decode
         model_runner.bind_execution_bridge(bridge)

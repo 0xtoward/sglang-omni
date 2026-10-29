@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 
+from sglang.srt.layers.dp_attention import get_dp_tp_group
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.swa import (
     PureSWATokenToKVPoolAllocator,
@@ -11,12 +12,19 @@ from sglang.srt.mem_cache.allocator.swa import (
 )
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+from sglang.srt.mem_cache.hicache_auto_size import auto_size_hicache
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
 from sglang.srt.mem_cache.pure_swa_radix_cache import PureSWARadixCache
 from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.mem_cache.unified_cache.components import ComponentType
 from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
-from sglang.srt.runtime_context import get_memory, get_schedule, get_serving
+from sglang.srt.runtime_context import (
+    get_memory,
+    get_schedule,
+    get_server_args,
+    get_serving,
+    get_spec,
+)
 
 from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
     EvictHeapRadixCache,
@@ -29,13 +37,23 @@ def create_tree_cache(
     page_size: int,
     sliding_window_size: int | None,
 ) -> BasePrefixCache:
-    """Select the pools' cache: upstream's for radix-disabled and session stages."""
+    """Select the pools' cache: upstream's for radix-disabled, session and HiCache stages."""
     if not get_memory().disable_radix_cache and isinstance(
         req_to_token_pool, HybridReqToTokenPool
     ):
         raise ValueError(
             "Radix cache restores attention KV but not hybrid linear-attention "
             "state; set disable_radix_cache=True for hybrid models"
+        )
+    elif get_memory().enable_hierarchical_cache and (
+        get_memory().disable_radix_cache
+        or get_memory().hicache_storage_backend is not None
+        or get_spec().speculative_algorithm is not None
+    ):
+        raise ValueError(
+            "enable_hierarchical_cache backs the radix tree with a host memory "
+            "tier only: it needs the radix cache and takes no "
+            "hicache_storage_backend or speculative decoding"
         )
     else:
         pass
@@ -64,7 +82,11 @@ def create_tree_cache(
         and isinstance(token_to_kv_pool_allocator, PureSWATokenToKVPoolAllocator)
     ):
         return PureSWARadixCache(params)
-    elif get_memory().disable_radix_cache or get_serving().enable_streaming_session:
+    elif (
+        get_memory().disable_radix_cache
+        or get_serving().enable_streaming_session
+        or get_memory().enable_hierarchical_cache
+    ):
         # note (ratish): streaming sessions live inside the unified cache, so a
         # session stage takes it whether or not its radix tree is enabled.
         tree_components = [ComponentType.FULL]
@@ -77,7 +99,15 @@ def create_tree_cache(
         else:
             pass
         params.tree_components = tuple(tree_components)
-        return UnifiedRadixCache(params)
+        if get_memory().enable_hierarchical_cache:
+            # note (0xtoward): only the unified cache carries a host tier, and TP ranks agree on every host transfer.
+            params.tp_cache_group = get_dp_tp_group().cpu_group
+            cache = UnifiedRadixCache(params)
+            with auto_size_hicache(params, None, enabled=True):
+                cache.init_hicache(get_server_args(), params)
+            return cache
+        else:
+            return UnifiedRadixCache(params)
     elif params.eviction_policy.lower() == "lru":
         return EvictHeapRadixCache(params)
     else:

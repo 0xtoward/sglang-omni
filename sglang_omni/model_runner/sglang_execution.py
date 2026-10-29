@@ -30,6 +30,7 @@ import torch
 
 if TYPE_CHECKING:
     from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
+    from sglang.srt.managers.cache_controller import LayerDoneCounter
     from sglang.srt.managers.overlap_utils import FutureMap
     from sglang.srt.managers.schedule_batch import ScheduleBatch
 
@@ -75,6 +76,7 @@ class SGLangExecutionBridge:
         worker: "ModelWorker",
         spec_algorithm: SpeculativeAlgorithm,
         future_map: "FutureMap",
+        hicache_layer_done_counter: "LayerDoneCounter | None" = None,
     ) -> None:
         from sglang.srt.managers.overlap_utils import RelayPayload
 
@@ -89,6 +91,7 @@ class SGLangExecutionBridge:
         self.runner = worker.model_runner
         self.device_module = torch.get_device_module(device)
         self.future_map = future_map
+        self.hicache_layer_done_counter = hicache_layer_done_counter
         self.relay_payload_type = RelayPayload
         # note (ratish): launch first scheduling holds two steps in flight, the one just
         # launched and the one before it, so two events serve every launch.
@@ -108,6 +111,11 @@ class SGLangExecutionBridge:
         from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 
         resolve_forward_inputs(batch, self.future_map)
+        if self.hicache_layer_done_counter is not None:
+            # note (0xtoward): each layer of this forward waits for its host-to-device load, as upstream's worker does.
+            self.hicache_layer_done_counter.set_consumer(batch.hicache_consumer_index)
+        else:
+            pass
 
         scheduler_sampling_info = batch.sampling_info
         if isolate_sampling and scheduler_sampling_info is not None:

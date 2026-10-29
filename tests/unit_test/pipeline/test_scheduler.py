@@ -3417,7 +3417,7 @@ def construct_omni_scheduler(
 
     scheduler = OmniScheduler(
         tp_worker=tp_worker,
-        tree_cache=None,
+        tree_cache=SimpleNamespace(cache_controller=None),
         req_to_token_pool=req_to_token_pool(),
         token_to_kv_pool_allocator=None,
         server_args=server_args,
@@ -3688,7 +3688,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
 
     scheduler = OmniScheduler(
         tp_worker=tp_worker,
-        tree_cache=None,
+        tree_cache=SimpleNamespace(cache_controller=None),
         req_to_token_pool=req_to_token_pool(),
         token_to_kv_pool_allocator=None,
         server_args=server_args,
