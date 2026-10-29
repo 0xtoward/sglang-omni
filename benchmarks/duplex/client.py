@@ -84,10 +84,27 @@ def profile_protocol(
 
 @dataclass(frozen=True, kw_only=True)
 class SessionInputs:
-    """A native session's instructions and the camera frames it sends, one per native unit, cycled."""
+    """A native session's instructions and camera frames, one per native unit.
+
+    Shared frames repeat over the session; a session's own frames run once, and a
+    unit whose entry is None sends none.
+    """
 
     instructions: str | None = None
-    frames: tuple[bytes, ...] = ()
+    frames: tuple[bytes | None, ...] = ()
+    cycle_frames: bool = True
+
+
+def load_unit_frames(manifest_path: Path) -> tuple[bytes | None, ...]:
+    """A session's own frames from a {unit: JPEG path} manifest whose paths are relative to it."""
+    entries = {
+        int(unit): path
+        for unit, path in json.loads(manifest_path.read_text(encoding="utf-8")).items()
+    }
+    return tuple(
+        (manifest_path.parent / entries[unit]).read_bytes() if unit in entries else None
+        for unit in range(max(entries, default=-1) + 1)
+    )
 
 
 class InputAudioMetadata(TypedDict):
@@ -134,7 +151,8 @@ async def run_session(
         pass
     unit_ms = PROFILES[profile].native_unit_ms
     frame_payloads = tuple(
-        base64.b64encode(frame).decode("ascii") for frame in session_inputs.frames
+        None if frame is None else base64.b64encode(frame).decode("ascii")
+        for frame in session_inputs.frames
     )
     legacy = protocol == "legacy"
     requested_type = turn_detection.type if turn_detection is not None else None
@@ -374,14 +392,24 @@ async def run_session(
                             while (
                                 frame_payloads
                                 and next_frame_unit * unit_ms < packet_end_ms
-                            ):
-                                await send(
-                                    "sglang.input_image.append",
-                                    image=frame_payloads[
-                                        next_frame_unit % len(frame_payloads)
-                                    ],
-                                    sglang={"t_ms": float(next_frame_unit * unit_ms)},
+                                and (
+                                    session_inputs.cycle_frames
+                                    or next_frame_unit < len(frame_payloads)
                                 )
+                            ):
+                                frame_payload = frame_payloads[
+                                    next_frame_unit % len(frame_payloads)
+                                ]
+                                if frame_payload is not None:
+                                    await send(
+                                        "sglang.input_image.append",
+                                        image=frame_payload,
+                                        sglang={
+                                            "t_ms": float(next_frame_unit * unit_ms)
+                                        },
+                                    )
+                                else:
+                                    pass
                                 next_frame_unit += 1
                             await send(
                                 "input_audio_buffer.append",

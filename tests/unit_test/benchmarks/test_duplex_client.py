@@ -148,6 +148,30 @@ def test_client_sends_the_instructions_and_each_units_frame_before_its_audio(
     )
 
 
+def test_client_sends_a_sessions_own_frames_once_and_skips_units_without_one(
+    tmp_path: Path,
+) -> None:
+    """A video session's own frames go out once, at their units, and a unit without a frame sends none."""
+    frames = (b"\xff\xd8video-0", None, b"\xff\xd8video-2")
+    peer = DuplexPeer()
+
+    records = asyncio.run(
+        capture_session(
+            peer,
+            tmp_path / "trace.jsonl",
+            inputs=SessionInputs(frames=frames, cycle_frames=False),
+        )
+    )
+
+    assert evaluate_trace(records)["status"] == "pass"
+    sent = [
+        (round(event["sglang"]["t_ms"] / PACKET_MS), base64.b64decode(event["image"]))
+        for event in peer.received
+        if event["type"] == "sglang.input_image.append"
+    ]
+    assert sent == [(0, frames[0]), (2, frames[2])], "only units with a frame send one"
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_error"),
     [

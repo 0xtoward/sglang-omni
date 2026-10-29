@@ -1308,6 +1308,8 @@ python -m benchmarks.eval.benchmark_duplex_serving sweep --dataset sessions --co
 
 Any 16 kHz mono PCM16 question WAVs work for `build`; `--questions-per-session` and `--pause-s` make sessions minutes long, which is how a session reaches the thinker's history window. `--instructions` sets the session instructions, and `--frames-dir` sends the JPEGs of a directory as camera frames, one per unit in name order and cycled; a camera session fills the thinker context about five times faster than an audio-only one. The recorder's `--timeout` defaults to 600 s per session.
 
+`benchmark_duplex_sessions video --rows test.jsonl --videos-root vmme --output-dir duplex-input/video` builds camera sessions from Video-MME rows: the video's soundtrack with a 1 fps frame per unit, then the spoken question and a pause for the answer. A session's own frames go in `<stem>.frames.json` (`{unit: JPEG path}`), which the recorder sends once at their units in place of `--frames-dir`; a unit without an entry sends no frame.
+
 With `--server-url http://127.0.0.1:8097`, the sweep adds two server-side views. Run it on the server's host, since the server writes them to this filesystem:
 
 - `--stage-events` records the request event recorder during each level, groups requests by the stages they went through (a listening unit stops at the thinker, a speaking one reaches the speech stage) and adds a table of the longest group: median (p90) milliseconds from admission to response, in each stage's queue, prefill, decode, compute or first chunk, and in the hops between stages.

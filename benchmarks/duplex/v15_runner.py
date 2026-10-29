@@ -27,6 +27,7 @@ from benchmarks.duplex.client import (
     TURN_BASED_TRANSPORT,
     SessionInputs,
     TurnDetection,
+    load_unit_frames,
     profile_protocol,
     run_session,
 )
@@ -460,6 +461,17 @@ async def run_samples(
                 "open_sessions_at_start": open_sessions,
             }
             open_sessions += 1
+            frames_file = sample_record["paths"].get("frames")
+            if frames_file is None:
+                variant_inputs = session_inputs
+            else:
+                variant_inputs = SessionInputs(
+                    instructions=(
+                        None if session_inputs is None else session_inputs.instructions
+                    ),
+                    frames=load_unit_frames(dataset_root / frames_file),
+                    cycle_frames=False,
+                )
             try:
                 await run_session(
                     url,
@@ -469,7 +481,7 @@ async def run_samples(
                     profile=profile,
                     turn_detection=turn_detection,
                     tail_s=legacy_tail_s,
-                    inputs=session_inputs,
+                    inputs=variant_inputs,
                 )
                 # note (wenyao): trace parsing and WAV writes run off the loop so
                 # they do not stall the 80 ms pacing of the other open sessions.

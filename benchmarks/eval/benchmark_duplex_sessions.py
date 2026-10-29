@@ -20,6 +20,7 @@ from benchmarks.duplex.client import SessionInputs
 from benchmarks.duplex.run_artifacts import accounting, load_run
 from benchmarks.duplex.v15_runner import run_samples
 
+DEFAULT_VOICE = "Samantha"
 # note (0xtoward): scripted sessions run for minutes (a camera session fills the thinker context in under two), past the FDB recorders' limit.
 SESSION_LIMIT_S = 3600.0
 
@@ -44,6 +45,22 @@ def build(args: argparse.Namespace) -> int:
     )
     print(
         f"{len(seconds)} sessions in {args.output_dir}, {min(seconds)} to {max(seconds)} s"
+    )
+    return 0
+
+
+def video(args: argparse.Namespace) -> int:
+    seconds = sessions.build_video_sessions(
+        args.rows,
+        args.videos_root,
+        args.output_dir,
+        voice=args.voice,
+        frame_every_units=args.frame_every_units,
+        max_video_s=args.max_video_s,
+        answer_pause_s=args.answer_pause_s,
+    )
+    print(
+        f"{len(seconds)} video sessions in {args.output_dir}, {min(seconds)} to {max(seconds)} s"
     )
     return 0
 
@@ -126,6 +143,29 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--seed", type=int, default=20261013)
     build_parser.set_defaults(handler=build)
 
+    video_parser = commands.add_parser(
+        "video",
+        help="Build camera sessions from Video-MME rows: the video, then its spoken question",
+    )
+    video_parser.add_argument(
+        "--rows",
+        type=Path,
+        required=True,
+        help="Video-MME JSONL with video_path, question_id, question, options and answer",
+    )
+    video_parser.add_argument(
+        "--videos-root",
+        type=Path,
+        required=True,
+        help="Directory the rows' video_path is relative to",
+    )
+    video_parser.add_argument("--output-dir", type=Path, required=True)
+    video_parser.add_argument("--voice", default=DEFAULT_VOICE)
+    video_parser.add_argument("--frame-every-units", type=int, default=1)
+    video_parser.add_argument("--max-video-s", type=float, default=300.0)
+    video_parser.add_argument("--answer-pause-s", type=float, default=15.0)
+    video_parser.set_defaults(handler=video)
+
     record_parser = commands.add_parser(
         "record", help="Record every session WAV of a directory"
     )
@@ -157,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     record_parser.add_argument(
         "--frames-dir",
         type=Path,
-        help="JPEG camera frames sent one per unit in name order, cycled",
+        help="JPEG camera frames sent one per unit in name order, cycled, to sessions without their own frames",
     )
     record_parser.set_defaults(handler=record)
 
