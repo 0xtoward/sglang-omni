@@ -51,6 +51,17 @@ class StreamingAudioChunk:
         )
 
 
+@dataclass(frozen=True)
+class HistoryRowGraph:
+    """One captured rows forward: the graph, its static inputs and its output."""
+
+    graph: torch.cuda.CUDAGraph
+    features: torch.Tensor
+    cache_lengths: torch.Tensor
+    cache_rows: torch.Tensor
+    embeds: torch.Tensor
+
+
 QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
 
 
@@ -166,6 +177,8 @@ class MiniCPMOAudioEncoder(nn.Module):
         self.chunk_mask_cache: tuple[int, torch.Tensor] | None = None
         self.history_rows: torch.Tensor | None = None
         self.free_history_rows: list[int] = []
+        self.history_row_graphs: dict[tuple[int, AudioBatchKey], HistoryRowGraph] = {}
+        self.history_row_graph_pool: tuple[int, int] | None = None
 
     def reserve_history_rows(self, row_count: int) -> None:
         """Preallocate one attention-history row per session, so streaming appends in place instead of reallocating every history each unit."""
@@ -406,28 +419,13 @@ class MiniCPMOAudioEncoder(nn.Module):
             raise ValueError("streaming audio chunk is too short after context removal")
         else:
             pass
-        cache_lengths = torch.tensor(
-            [state.row_length for state in states], dtype=torch.int32
-        ).to(self.device, non_blocking=True)
-        cache_rows = torch.tensor(
-            [state.row for state in states], dtype=torch.int32
-        ).to(self.device, non_blocking=True)
-        positions = cache_lengths[:, None].long() + torch.arange(
-            current_length, device=self.device
+        embeds = self.replay_rows(
+            first.batch_key(),
+            torch.cat([chunk.audio_features for chunk in chunks]),
+            torch.tensor([state.row_length for state in states], dtype=torch.int32),
+            torch.tensor([state.row for state in states], dtype=torch.int32),
+            current_length,
         )
-        hidden_states = self.apm.forward_rows(
-            torch.cat([chunk.audio_features for chunk in chunks]).to(
-                self.device, non_blocking=True
-            ),
-            positions,
-            self.history_rows,
-            cache_lengths,
-            cache_rows,
-            prefix_extra_frames=first.prefix_extra_frames,
-            suffix_extra_frames=first.suffix_extra_frames,
-        )
-        embeds = self.audio_projection_layer(hidden_states)
-        embeds = self.audio_avg_pooler(embeds.transpose(1, 2)).transpose(1, 2)
         pooled_length = feature_lens_after_pooling(
             torch.tensor([first.audio_features.shape[-1]]), self.audio_pool_step
         ).item()
@@ -442,3 +440,80 @@ class MiniCPMOAudioEncoder(nn.Module):
             )
             for row, state in enumerate(states)
         ]
+
+    def encode_rows(
+        self,
+        features: torch.Tensor,
+        cache_lengths: torch.Tensor,
+        cache_rows: torch.Tensor,
+        batch_key: AudioBatchKey,
+        current_length: int,
+    ) -> torch.Tensor:
+        _, prefix_extra_frames, suffix_extra_frames = batch_key
+        positions = cache_lengths[:, None].long() + torch.arange(
+            current_length, device=self.device
+        )
+        hidden_states = self.apm.forward_rows(
+            features,
+            positions,
+            self.history_rows,
+            cache_lengths,
+            cache_rows,
+            prefix_extra_frames=prefix_extra_frames,
+            suffix_extra_frames=suffix_extra_frames,
+        )
+        embeds = self.audio_projection_layer(hidden_states)
+        return self.audio_avg_pooler(embeds.transpose(1, 2)).transpose(1, 2)
+
+    def replay_rows(
+        self,
+        batch_key: AudioBatchKey,
+        features: torch.Tensor,
+        cache_lengths: torch.Tensor,
+        cache_rows: torch.Tensor,
+        current_length: int,
+    ) -> torch.Tensor:
+        """Encode through a CUDA graph per batch size and chunk shape, captured on first use; only the inputs are copied in."""
+        key = (features.shape[0], batch_key)
+        captured = self.history_row_graphs.get(key)
+        if captured is None:
+            static_features = features.to(self.device)
+            static_lengths = cache_lengths.to(self.device)
+            static_rows = cache_rows.to(self.device)
+            capture_stream = torch.cuda.Stream(self.device)
+            capture_stream.wait_stream(torch.cuda.current_stream(self.device))
+            # note (0xtoward): the warm-up forward appends the same keys and values at the same positions as the replay below.
+            with torch.cuda.stream(capture_stream):
+                self.encode_rows(
+                    static_features,
+                    static_lengths,
+                    static_rows,
+                    batch_key,
+                    current_length,
+                )
+            torch.cuda.current_stream(self.device).wait_stream(capture_stream)
+            if self.history_row_graph_pool is None:
+                self.history_row_graph_pool = torch.cuda.graph_pool_handle()
+            else:
+                pass
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(
+                graph, pool=self.history_row_graph_pool, stream=capture_stream
+            ):
+                static_embeds = self.encode_rows(
+                    static_features,
+                    static_lengths,
+                    static_rows,
+                    batch_key,
+                    current_length,
+                )
+            captured = HistoryRowGraph(
+                graph, static_features, static_lengths, static_rows, static_embeds
+            )
+            self.history_row_graphs[key] = captured
+        else:
+            captured.features.copy_(features, non_blocking=True)
+            captured.cache_lengths.copy_(cache_lengths, non_blocking=True)
+            captured.cache_rows.copy_(cache_rows, non_blocking=True)
+        captured.graph.replay()
+        return captured.embeds.clone()
