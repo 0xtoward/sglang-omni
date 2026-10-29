@@ -179,6 +179,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         self.free_history_rows: list[int] = []
         self.history_row_graphs: dict[tuple[int, AudioBatchKey], HistoryRowGraph] = {}
         self.history_row_graph_pool: tuple[int, int] | None = None
+        self.history_row_capture_stream: torch.cuda.Stream | None = None
 
     def reserve_history_rows(self, row_count: int) -> None:
         """Preallocate one attention-history row per session, so streaming appends in place instead of reallocating every history each unit."""
@@ -480,7 +481,13 @@ class MiniCPMOAudioEncoder(nn.Module):
             static_features = features.to(self.device)
             static_lengths = cache_lengths.to(self.device)
             static_rows = cache_rows.to(self.device)
-            capture_stream = torch.cuda.Stream(self.device)
+            # note (0xtoward): one capture stream for every graph, so the warm-up forwards reuse one stream's cached blocks.
+            if self.history_row_capture_stream is None:
+                self.history_row_capture_stream = torch.cuda.Stream(self.device)
+                self.history_row_graph_pool = torch.cuda.graph_pool_handle()
+            else:
+                pass
+            capture_stream = self.history_row_capture_stream
             capture_stream.wait_stream(torch.cuda.current_stream(self.device))
             # note (0xtoward): the warm-up forward appends the same keys and values at the same positions as the replay below.
             with torch.cuda.stream(capture_stream):
@@ -492,10 +499,6 @@ class MiniCPMOAudioEncoder(nn.Module):
                     current_length,
                 )
             torch.cuda.current_stream(self.device).wait_stream(capture_stream)
-            if self.history_row_graph_pool is None:
-                self.history_row_graph_pool = torch.cuda.graph_pool_handle()
-            else:
-                pass
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(
                 graph, pool=self.history_row_graph_pool, stream=capture_stream

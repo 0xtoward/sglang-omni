@@ -158,6 +158,7 @@ def tiny_audio_encoder(pool_step: int = 2, head_dim: int = 16) -> MiniCPMOAudioE
     encoder.free_history_rows = []
     encoder.history_row_graphs = {}
     encoder.history_row_graph_pool = None
+    encoder.history_row_capture_stream = None
     return encoder
 
 
