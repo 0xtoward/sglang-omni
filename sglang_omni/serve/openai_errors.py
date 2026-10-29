@@ -14,6 +14,8 @@ _BAD_REQUEST_MARKERS = (
     "Request has no prompt tokens",
     "out-of-vocabulary token id",
     "accepts audio up to",
+    "requires at least two valid mel frames",
+    "must contain exactly one <|audio|> token",
     "could not decode the uploaded audio",
     "use_audio_in_video requires every video in a multi-video request",
     "Embedded audio stream decoded no samples:",
