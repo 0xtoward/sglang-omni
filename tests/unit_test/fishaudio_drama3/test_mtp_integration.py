@@ -1458,11 +1458,13 @@ def decode_output(
 def prefill_output(
     runner: Drama3ModelRunner, requests: list[SchedulerRequest]
 ) -> ModelRunnerOutput:
-    return runner.execute(
-        SchedulerOutput(
-            requests=requests, batch_data=schedule_batch_of(ForwardMode.EXTEND)
-        )
-    )
+    schedule_batch = schedule_batch_of(ForwardMode.EXTEND)
+    # A whole-prompt prefill extends every request from no prefix.
+    schedule_batch.prefix_lens = [0] * len(requests)
+    schedule_batch.extend_lens = [
+        len(request_data_of(request).frame_rows) for request in requests
+    ]
+    return runner.execute(SchedulerOutput(requests=requests, batch_data=schedule_batch))
 
 
 def launched_step(
