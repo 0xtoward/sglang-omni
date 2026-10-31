@@ -40,17 +40,7 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
             cadence.observe_prefill(now_s - self.round_started_s)
         else:
             pass
-        if self._prefill_decode_interval_remaining > 0 and self.waiting_queue:  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            oldest_wait_s = max(
-                now_s - request._coalesce_enqueue_t  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-                for request in self.waiting_queue
-            )
-            if cadence.should_release(len(self.waiting_queue), oldest_wait_s):
-                self._prefill_decode_interval_remaining = 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            else:
-                pass
-        else:
-            pass
+        self.release_if_due(now_s)
         if now_s - self.reported_s >= REPORT_INTERVAL_S:
             logger.info(cadence.report(now_s))
             self.reported_s = now_s
@@ -62,6 +52,24 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
         self.last_batch_was_extend = batch is not None and batch.forward_mode.is_extend()
         self.last_decode_batch_size = len(batch.reqs) if self.last_batch_was_decode else 0
         return batch
+
+    def is_prefill_expected(self) -> bool:
+        # note (0xtoward): async decode predicts this round's prefill, so the wait cap applies first.
+        self.release_if_due(time.perf_counter())
+        return super().is_prefill_expected()
+
+    def release_if_due(self, now_s: float) -> None:
+        if self._prefill_decode_interval_remaining > 0 and self.waiting_queue:  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            oldest_wait_s = max(
+                now_s - request._coalesce_enqueue_t  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                for request in self.waiting_queue
+            )
+            if self.cadence.should_release(len(self.waiting_queue), oldest_wait_s):
+                self._prefill_decode_interval_remaining = 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            else:
+                pass
+        else:
+            pass
 
     def _arm_prefill_decode_interval(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self, batch: ScheduleBatch | None

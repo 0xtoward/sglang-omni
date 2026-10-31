@@ -128,13 +128,6 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
     ) -> None:
-        if prefill_cadence is not None and enable_async_decode:
-            raise ValueError(
-                "Drama 3's adaptive prefill interval runs without async decode; set "
-                "tts_engine.factory.enable_async_decode false"
-            )
-        else:
-            pass
         self.prefill_cadence = prefill_cadence
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
