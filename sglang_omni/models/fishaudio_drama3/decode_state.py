@@ -87,6 +87,23 @@ def extend_frame_rows(request_data: Drama3RequestData) -> list[list[int]]:
         return request_data.frame_rows
 
 
+def step_frame_rows(
+    request_data: Drama3RequestData, prefix_length: int, extend_length: int
+) -> list[list[int]]:
+    """The rows a request feeds an extend step: its whole history when it is new, its newest
+    frame when a mixed step carries it as a decode."""
+    if prefix_length == 0:
+        return extend_frame_rows(request_data)
+    elif extend_length == 1 and prefix_length == len(request_data.frame_rows) - 1:
+        return request_data.frame_rows[prefix_length:]
+    else:
+        raise RuntimeError(
+            f"a Drama 3 extend must cover a whole prompt or one newest frame; got "
+            f"{extend_length} rows after {prefix_length} of "
+            f"{len(request_data.frame_rows)}"
+        )
+
+
 def request_data_of(request: SchedulerRequest) -> Drama3RequestData:
     request_data = request.data
     assert isinstance(request_data, Drama3RequestData)
