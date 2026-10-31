@@ -124,7 +124,9 @@ def next_frame_labels(
     The placeholder only fills that row's slot until the same forward's decode
     step rewrites it, before any row attends to it.
     """
-    next_frames = frames.roll(-1, dims=0)
-    next_frames[last_rows] = 0
-    next_frames[last_rows, 0] = eos_token_id
-    return next_frames
+    # note (0xtoward): a scatter into a row mask and a where, so the labels never wait for the device.
+    is_last_row = torch.zeros(frames.shape[0], dtype=torch.bool, device=frames.device)
+    is_last_row.scatter_(0, last_rows, True)
+    placeholder = torch.zeros_like(frames[:1])
+    placeholder[:, 0] = eos_token_id
+    return torch.where(is_last_row[:, None], placeholder, frames.roll(-1, dims=0))
