@@ -268,40 +268,30 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             self.prefill_inputs = None
             raise
 
+    def upload(self, values: list, dtype: torch.dtype) -> torch.Tensor:
+        # note (0xtoward): a blocking upload from pageable memory waits for the launched decode, which stalls a prefill lookahead.
+        return torch.tensor(values, dtype=dtype, pin_memory=True).to(
+            self.device, non_blocking=True
+        )
+
     def stage_step(
         self, requests: list[SchedulerRequest], frame_rows: list[list[int]]
     ) -> Drama3StepInputs:
         request_data = [request_data_of(request) for request in requests]
         step_inputs = Drama3StepInputs(
             request_ids=request_ids_of(request_data),
-            frames=torch.tensor(frame_rows, dtype=torch.int64, device=self.device),
-            ras_windows=torch.tensor(
-                [ras_window(data.frame_rows) for data in request_data],
-                dtype=torch.int64,
-                device=self.device,
+            frames=self.upload(frame_rows, torch.int64),
+            ras_windows=self.upload(
+                [ras_window(data.frame_rows) for data in request_data], torch.int64
             ),
-            temperature=torch.tensor(
-                [data.temperature for data in request_data],
-                dtype=torch.float32,
-                device=self.device,
+            temperature=self.upload(
+                [data.temperature for data in request_data], torch.float32
             ),
-            top_k=torch.tensor(
-                [data.top_k for data in request_data],
-                dtype=torch.int64,
-                device=self.device,
-            ),
-            top_p=torch.tensor(
-                [data.top_p for data in request_data],
-                dtype=torch.float32,
-                device=self.device,
-            ),
+            top_k=self.upload([data.top_k for data in request_data], torch.int64),
+            top_p=self.upload([data.top_p for data in request_data], torch.float32),
         )
         self.decode_buffers.epsilon_cutoff[: len(request_data)].copy_(
-            torch.tensor(
-                [data.epsilon_cutoff for data in request_data],
-                dtype=torch.float32,
-                device=self.device,
-            )
+            self.upload([data.epsilon_cutoff for data in request_data], torch.float32)
         )
         self.model.step_exchange.stage(step_inputs)
         return step_inputs
