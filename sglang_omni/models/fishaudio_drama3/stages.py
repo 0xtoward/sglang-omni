@@ -171,6 +171,7 @@ def create_tts_engine_executor(
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+    enable_async_prefill: bool = False,
     prefill_interval_policy: Literal["fixed", "adaptive"] = "fixed",
     large_first_window: int = DEFAULT_LARGE_FIRST_WINDOW,
     prefill_coalesce_requests: int = 0,
@@ -207,6 +208,7 @@ def create_tts_engine_executor(
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        enable_async_prefill=enable_async_prefill,
         prefill_cadence=(
             PrefillCadenceConfig(
                 small_first_window=stream_stride,

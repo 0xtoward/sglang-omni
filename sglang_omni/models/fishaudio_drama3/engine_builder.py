@@ -124,6 +124,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        enable_async_prefill: bool = False,
         prefill_cadence: PrefillCadenceConfig | None = None,
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
@@ -146,6 +147,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.tower_fused_layers = tower_fused_layers
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.enable_async_prefill = enable_async_prefill
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
 
@@ -429,10 +431,12 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Drama3RequestData]:
         """The frame streamer make_adapters created, which build calls first."""
         assert self.frame_streamer is not None
+        is_async_prefill = self.enable_async_decode and self.enable_async_prefill
         if self.enable_async_decode:
             logger.info(
                 f"Drama 3 async decode: on, lookahead from batch size "
-                f"{self.async_decode_min_batch_size}"
+                f"{self.async_decode_min_batch_size}, async prefill "
+                f"{'on' if is_async_prefill else 'off'}"
             )
         else:
             logger.info(
@@ -443,7 +447,8 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             "stream_output_builder": self.frame_streamer,
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
-            "async_decode_resolve_before_prefill": True,
+            "async_decode_resolve_before_prefill": not is_async_prefill,
+            "async_prefill": is_async_prefill,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }

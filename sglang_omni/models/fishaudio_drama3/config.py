@@ -81,6 +81,9 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     async_decode_min_batch_size: int = Field(
         default=DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE, ge=1
     )
+    # With async decode on, a whole-prompt prefill also launches without waiting: the
+    # previous decode resolves behind it and its first frames reach the host one step later.
+    enable_async_prefill: bool = False
     # adaptive: each prefill picks its interval from the arrivals per decode step and each
     # request its first window from the decode step time; fixed keeps prefill_decode_interval.
     prefill_interval_policy: Literal["fixed", "adaptive"] = "fixed"

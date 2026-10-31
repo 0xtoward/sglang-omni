@@ -136,6 +136,9 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         self.row_upload_buffers: list[torch.Tensor] = []
         self.row_upload_slot = 0
         self.prefill_inputs: Drama3StepInputs | None = None
+        self.is_lookahead_step = False
+        # note (0xtoward): a launched prefill's first frames, published by post_decode_launch.
+        self.launched_first_frames: torch.Tensor | None = None
 
     def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         return True
@@ -252,6 +255,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         *,
         is_lookahead: bool = False,
     ) -> GenerationBatchResult:
+        self.is_lookahead_step = is_lookahead
         try:
             return super().prepare_and_forward(
                 forward_batch,
@@ -366,7 +370,11 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         try:
             first_frames = self.model.step_exchange.take_frames()
             self.initialize_state_rows(forward_batch, requests, first_frames)
-            self.collect_frames(result, requests, first_frames)
+            if self.is_lookahead_step:
+                self.launched_first_frames = first_frames
+                result.next_token_ids = first_frames[:, 0]
+            else:
+                self.collect_frames(result, requests, first_frames)
         finally:
             self.prefill_inputs = None
 
@@ -390,7 +398,12 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             return None
         else:
             row_count = len(requests)
-            frames = self.publish_decode_frames(row_count)
+            if forward_batch is not None and forward_batch.forward_mode.is_extend():
+                frames = self.launched_first_frames
+                self.launched_first_frames = None
+                assert frames is not None and frames.shape[0] == row_count
+            else:
+                frames = self.publish_decode_frames(row_count)
             host_frames = self.next_host_staging(tuple(frames.shape), frames.dtype)
             host_frames[:row_count].copy_(frames, non_blocking=True)
             result.next_token_ids = frames[:, 0]
