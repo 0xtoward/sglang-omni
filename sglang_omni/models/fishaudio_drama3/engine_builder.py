@@ -30,6 +30,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
+    DEFAULT_MIXED_GDN_DECODE_TAIL,
     DEFAULT_REFERENCE_SAMPLING,
     DEFAULT_REFERENCE_SAMPLING_FALLBACK,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
@@ -42,6 +43,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
 from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
 )
+from sglang_omni.models.fishaudio_drama3.gdn_decode_tail import install_gdn_decode_tail
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
@@ -118,6 +120,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        mixed_gdn_decode_tail: bool = DEFAULT_MIXED_GDN_DECODE_TAIL,
     ) -> None:
         self.context_length = context_length
         self.max_running_requests = max_running_requests
@@ -134,6 +137,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.tower_fused_layers = tower_fused_layers
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.mixed_gdn_decode_tail = mixed_gdn_decode_tail
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
 
@@ -377,6 +381,18 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 f"{first_frame_graphs.capture_seconds:.2f} s, static inputs "
                 f"{first_frame_graphs.static_input_bytes / 2**20:.1f} MiB, reserved "
                 f"memory +{first_frame_graphs.reserved_bytes / 2**20:.1f} MiB"
+            )
+        if not server_args.enable_mixed_chunk:
+            pass
+        elif not self.mixed_gdn_decode_tail:
+            logger.info(
+                "Drama 3 mixed steps: running requests on the GDN prefill kernels, "
+                "tts_engine.factory.mixed_gdn_decode_tail is false"
+            )
+        else:
+            install_gdn_decode_tail(attention_backend)
+            logger.info(
+                "Drama 3 mixed steps: running requests on the GDN decode kernels"
             )
 
     def make_model_runner(

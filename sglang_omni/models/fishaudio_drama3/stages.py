@@ -26,6 +26,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
     DEFAULT_MAX_RUNNING_REQUESTS,
+    DEFAULT_MIXED_GDN_DECODE_TAIL,
     DEFAULT_REFERENCE_SAMPLING,
     DEFAULT_REFERENCE_SAMPLING_FALLBACK,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
@@ -169,6 +170,7 @@ def create_tts_engine_executor(
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+    mixed_gdn_decode_tail: bool = DEFAULT_MIXED_GDN_DECODE_TAIL,
 ) -> OmniScheduler[Drama3RequestData]:
     overrides = dict(server_args_overrides or {})
     mem_fraction_static = overrides.get("mem_fraction_static")
@@ -201,6 +203,7 @@ def create_tts_engine_executor(
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        mixed_gdn_decode_tail=mixed_gdn_decode_tail,
     ).build(
         model_path,
         device=device,
