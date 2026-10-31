@@ -17,6 +17,8 @@ from benchmarks.metrics.server_probes import (
     gpu_memory_samples,
     level_event_dir,
     level_memory_path,
+    level_trace_path,
+    nsys_collection,
     request_events,
 )
 
@@ -182,6 +184,63 @@ def format_server_tables(report: dict[str, JsonValue]) -> str:
         )
     else:
         pass
+    batched = [level for level in report["levels"] if level["scheduler_batches"]]
+    if batched:
+        tables += (
+            "\nRunning requests per scheduler, time-weighted mean (p90), and prefills per s "
+            "x requests per prefill:\n\n| scheduler | "
+            + " | ".join(f"N={level['concurrency']}" for level in batched)
+            + " |\n|---|"
+            + "---:|" * len(batched)
+            + "\n"
+        )
+        for name in sorted(
+            {name for level in batched for name in level["scheduler_batches"]}
+        ):
+            cells = []
+            for level in batched:
+                batches = level["scheduler_batches"].get(name)
+                cells.append(
+                    "-"
+                    if batches is None or batches["running_mean"] is None
+                    else f"{batches['running_mean']:.1f} ({batches['running_p90']}), "
+                    f"{batches['prefills_per_s']:.1f} x {batches['requests_per_prefill_mean']:.1f}"
+                )
+            tables += f"| {name} | " + " | ".join(cells) + " |\n"
+    else:
+        pass
+    traced = [level for level in report["levels"] if level["gil"] is not None]
+    if traced:
+        tables += (
+            "\nGIL from Nsight Systems: share of the window some thread held it / busiest "
+            "thread's wait share / holds of 20 ms or more:\n\n| process | "
+            + " | ".join(f"N={level['concurrency']}" for level in traced)
+            + " |\n|---|"
+            + "---:|" * len(traced)
+            + "\n"
+        )
+        # note (0xtoward): helper processes that barely run Python would only add rows of zeros.
+        for name in sorted(
+            {
+                name
+                for level in traced
+                for name, process in level["gil"]["processes"].items()
+                if process["held_percent"] >= 1
+            }
+        ):
+            cells = []
+            for level in traced:
+                process = level["gil"]["processes"].get(name)
+                cells.append(
+                    "-"
+                    if process is None
+                    else f"{process['held_percent']:.0f}% / "
+                    f"{max(thread['wait_percent'] for thread in process['busiest_threads']):.0f}% / "
+                    f"{process['long_holds']}"
+                )
+            tables += f"| {name} | " + " | ".join(cells) + " |\n"
+    else:
+        pass
     return tables
 
 
@@ -234,6 +293,12 @@ def sweep(args: argparse.Namespace) -> int:
                 pass
             if args.gpu_memory:
                 probes.enter_context(gpu_memory_samples(level_memory_path(run_dir)))
+            else:
+                pass
+            if args.nsys_session:
+                probes.enter_context(
+                    nsys_collection(args.nsys_session, level_trace_path(run_dir))
+                )
             else:
                 pass
             # note (jeffro): the recorder exits nonzero when a session fails, which under
@@ -328,6 +393,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Sample GPU memory and utilization at every level; with --stage-events, "
         "processes are named by stage",
+    )
+    sweep_parser.add_argument(
+        "--nsys-session",
+        help="Nsight Systems session the server runs under (nsys launch --session-new=NAME "
+        "--trace=python-gil,nvtx --trace-fork-before-exec=true ...); collects it at every "
+        "level and reports GIL holding and waiting per process, named by stage with "
+        "--stage-events. Costs about 2%% throughput; does not work under MPS",
     )
     sweep_parser.add_argument("recorder_args", nargs=argparse.REMAINDER)
     sweep_parser.set_defaults(handler=sweep)

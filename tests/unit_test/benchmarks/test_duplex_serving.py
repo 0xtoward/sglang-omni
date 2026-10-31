@@ -311,7 +311,7 @@ def test_prebuffer_curve_matches_the_simulated_player_and_speaking_units(
 def test_level_splits_requests_by_stage_path_and_names_memory_by_stage(
     tmp_path: Path,
 ) -> None:
-    """Request events beside a level group requests by the stages they reached and split each stage's time; their file names name the GPU processes."""
+    """Request events beside a level group requests by the stages they reached, split each stage's time and count each scheduler's batches; their file names name the GPU processes."""
     run_dir = record_run(tmp_path / "concurrency-1", 1, [("pass", ON_TIME)])
     event_dir = tmp_path / "concurrency-1.events"
     event_dir.mkdir()
@@ -416,6 +416,22 @@ def test_level_splits_requests_by_stage_path_and_names_memory_by_stage(
         "card_peak_mib": 9500,
         "card_busy_percent_mean": 50.0,
         "process_peak_mib": {"pid 33": 50, "talker": 900},
+    }
+    # Both thinker requests enter one prefill at 26 ms and run together until 56 ms.
+    assert level["scheduler_batches"] == {
+        "thinker": pytest.approx(
+            {
+                "busy_s": 0.03,
+                "running_mean": 2.0,
+                "running_p50": 2,
+                "running_p90": 2,
+                "running_max": 2,
+                "prefills": 1,
+                "prefills_per_s": 1 / 0.03,
+                "requests_per_prefill_mean": 2.0,
+                "requests_per_prefill_p90": 2.0,
+            }
+        )
     }
 
 
