@@ -94,6 +94,7 @@ def vocoder_with(
     factory_args: Drama3VocoderFactoryArgs | None = None,
     max_padded_frames_per_decode: int | None = None,
     first_window_priority: bool = False,
+    stream_window_batch_size: int = 1,
 ) -> Drama3VocoderScheduler:
     """The vocoder with the configured windows."""
     window_kwargs = (factory_args or Drama3VocoderFactoryArgs()).model_dump(
@@ -113,6 +114,7 @@ def vocoder_with(
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
         first_window_priority=first_window_priority,
+        stream_window_batch_size=stream_window_batch_size,
         **window_kwargs,
     )
 
@@ -399,6 +401,38 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
     for decoded_audio, expected_audio in replay_results:
         assert torch.equal(decoded_audio, expected_audio)
     assert torch.equal(decoder(codes[:, :, :20]), causal_decode(codes[:, :, :20]))
+
+
+@pytest.mark.accelerator
+def test_window_graphs_decode_batched_windows_like_eager() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    device = torch.device("cuda")
+    codebook_weights = torch.arange(
+        1, NUM_CODEBOOKS + 1, dtype=torch.float32, device=device
+    )
+
+    def causal_decode(indices: torch.Tensor) -> torch.Tensor:
+        frame_values = (indices.float() * codebook_weights[:, None]).sum(
+            dim=1, keepdim=True
+        )
+        return frame_values.cumsum(dim=-1).repeat_interleave(SAMPLES_PER_FRAME, dim=-1)
+
+    decoder = WindowGraphDecoder(
+        causal_decode,
+        num_codebooks=NUM_CODEBOOKS,
+        frame_length=SAMPLES_PER_FRAME,
+        device=device,
+        window_lengths=(10, 20, 32),
+        batch_sizes=(1, 2, 4),
+    )
+    codes = torch.randint(0, 100, (5, NUM_CODEBOOKS, 40), device=device)
+
+    for row_count, frame_count in ((2, 20), (3, 7), (4, 32), (1, 11), (5, 10), (3, 40)):
+        window = codes[:row_count, :, :frame_count]
+        assert torch.equal(decoder(window), causal_decode(window))
 
 
 def test_the_final_result_counts_prompt_rows_and_audio_frames() -> None:
@@ -1034,3 +1068,27 @@ def test_window_priority_decodes_a_new_streams_first_window_before_queued_window
         "request-a",
     ]
     assert chunk_frame_ranges(messages) == [(0, 4), (0, 4), (4, 14), (14, 26)]
+
+
+def test_windows_decoded_together_give_each_stream_its_own_audio() -> None:
+    codec = FrameNumberCodec()
+    vocoder = vocoder_with(
+        codec, first_window_priority=True, stream_window_batch_size=4
+    )
+    frames = numbered_frames(14)
+    request_ids = ["request-a", "request-b", "request-c"]
+    for request_id in request_ids:
+        vocoder.handle_stream_chunk(
+            request_id,
+            StreamItem(chunk_id=0, data=frames.T, from_stage="tts_engine"),
+        )
+    run_ready_steps(vocoder)
+
+    messages = drained(vocoder)
+    assert [tuple(codes.shape) for codes in codec.decoded_codes] == [
+        (3, NUM_CODEBOOKS, 4),
+        (3, NUM_CODEBOOKS, 14),
+    ]
+    for request_id in request_ids:
+        own = [message for message in messages if message.request_id == request_id]
+        assert chunk_frame_ranges(own) == [(0, 4), (4, 14)]

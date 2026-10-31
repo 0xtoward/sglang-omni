@@ -92,6 +92,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "window_cuda_graphs": True,
         "decode_dtype": "float16",
         "first_window_priority": False,
+        "stream_window_batch_size": 1,
         "max_new_tokens": 2048,
     }
 
