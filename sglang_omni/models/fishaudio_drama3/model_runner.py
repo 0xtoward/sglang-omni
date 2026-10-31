@@ -270,7 +270,8 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
 
     def upload(self, values: list, dtype: torch.dtype) -> torch.Tensor:
         # note (0xtoward): a blocking upload from pageable memory waits for the launched decode, which stalls a prefill lookahead.
-        return torch.tensor(values, dtype=dtype, pin_memory=True).to(
+        pinned = torch.device(self.device).type == "cuda"
+        return torch.tensor(values, dtype=dtype, pin_memory=pinned).to(
             self.device, non_blocking=True
         )
 
