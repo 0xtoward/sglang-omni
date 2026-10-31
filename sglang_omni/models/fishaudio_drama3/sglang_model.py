@@ -31,6 +31,7 @@ from sglang.srt.runtime_context import get_parallel
 from sglang.srt.utils import add_prefix
 from torch import nn
 
+from sglang_omni.models.fishaudio_drama3.spec_capture import capture_from_environment
 from sglang_omni.models.fishaudio_drama3.audio_decoder import AudioDecoder
 from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
@@ -146,6 +147,13 @@ class Drama3ForCausalLM(nn.Module):
             text_config, quant_config=quant_config, prefix=add_prefix("model", prefix)
         )
         self.audio_decoder = AudioDecoder(config)
+        self.spec_capture = capture_from_environment()
+        if self.spec_capture is not None:
+            self.audio_decoder.codebook_heads[0].register_forward_hook(
+                self.spec_capture.keep_code_one_logits
+            )
+        else:
+            pass
         self.lm_head = ParallelLMHead(
             int(self.audio_decoder.main_token_candidate_ids.shape[0]),
             text_config.hidden_size,
@@ -214,6 +222,19 @@ class Drama3ForCausalLM(nn.Module):
                 decode_buffers.epsilon_cutoff[:row_count],
             )
             decode_buffers.sampled_frames[:row_count].copy_(sampled_frames)
+            if self.spec_capture is not None:
+                self.spec_capture.record(
+                    "decode",
+                    list(forward_batch.rids),
+                    positions[:row_count],
+                    frames,
+                    hidden_states[:row_count],
+                    torch.arange(row_count),
+                    logits_output.next_token_logits[:row_count],
+                    sampled_frames,
+                )
+            else:
+                pass
             return logits_output
 
     def forward_extend(
@@ -287,6 +308,25 @@ class Drama3ForCausalLM(nn.Module):
             step_inputs.top_p,
             step_batch,
         )
+        if self.spec_capture is not None:
+            self.spec_capture.record(
+                "extend",
+                [
+                    request_id
+                    for request_id, length in zip(
+                        forward_batch.rids, forward_batch.extend_seq_lens.tolist()
+                    )
+                    for _ in range(length)
+                ],
+                positions,
+                frames[:row_count],
+                hidden_states,
+                last_rows,
+                logits_output.next_token_logits,
+                sampled_frames,
+            )
+        else:
+            pass
         self.step_exchange.publish(sampled_frames)
         return logits_output
 
