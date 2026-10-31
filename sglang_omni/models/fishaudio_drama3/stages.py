@@ -174,6 +174,9 @@ def create_tts_engine_executor(
     enable_async_prefill: bool = False,
     prefill_interval_policy: Literal["fixed", "adaptive"] = "fixed",
     large_first_window: int = DEFAULT_LARGE_FIRST_WINDOW,
+    prefill_overhead_target: float = 0.2,
+    prefill_longest_interval: int = 8,
+    prefill_wait_cap_ms: float = 250.0,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
 ) -> OmniScheduler[Drama3RequestData]:
@@ -211,6 +214,9 @@ def create_tts_engine_executor(
         enable_async_prefill=enable_async_prefill,
         prefill_cadence=(
             PrefillCadenceConfig(
+                overhead_target=prefill_overhead_target,
+                longest_interval=prefill_longest_interval,
+                wait_cap_s=prefill_wait_cap_ms / 1000,
                 small_first_window=stream_stride,
                 large_first_window=large_first_window,
                 next_window=(

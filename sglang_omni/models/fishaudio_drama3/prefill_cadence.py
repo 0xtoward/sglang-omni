@@ -17,13 +17,14 @@ import collections
 from dataclasses import dataclass, field
 
 AUDIO_FRAME_SECONDS = 2048 / 44100
-INTERVAL_LEVELS = (2, 4, 8)
 BATCH_BUCKET = 8
 
 
 @dataclass(frozen=True, kw_only=True)
 class PrefillCadenceConfig:
     overhead_target: float = 0.2
+    # The intervals the cadence picks from: powers of two from 2 up to longest_interval.
+    longest_interval: int = 8
     min_arrivals: float = 1.0
     release_waiting: int = 0
     wait_cap_s: float = 0.25
@@ -86,9 +87,16 @@ class PrefillCadence:
             )
             return recent / self.config.rate_window_s * self.step_s
 
+    def interval_levels(self) -> tuple[int, ...]:
+        levels = [2]
+        while levels[-1] * 2 <= self.config.longest_interval:
+            levels.append(levels[-1] * 2)
+        return tuple(levels)
+
     def choose_interval(self, now_s: float) -> int:
         step_s, prefill_s = self.step_s, self.prefill_s
-        longest = INTERVAL_LEVELS[-1]
+        levels = self.interval_levels()
+        longest = levels[-1]
         if (
             step_s is None
             or prefill_s is None
@@ -99,7 +107,7 @@ class PrefillCadence:
             interval = next(
                 (
                     level
-                    for level in INTERVAL_LEVELS
+                    for level in levels
                     if prefill_s / (level * step_s + prefill_s)
                     <= self.config.overhead_target
                 ),
