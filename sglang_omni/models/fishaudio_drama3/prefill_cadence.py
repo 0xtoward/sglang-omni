@@ -25,6 +25,9 @@ class PrefillCadenceConfig:
     overhead_target: float = 0.2
     # The intervals the cadence picks from: powers of two from 2 up to longest_interval.
     longest_interval: int = 8
+    # gated: longest_interval while at least min_batch requests decode, else none (no overhead rule).
+    is_gated: bool = False
+    min_batch: int = 0
     min_arrivals: float = 1.0
     release_waiting: int = 0
     wait_cap_s: float = 0.25
@@ -55,7 +58,9 @@ class PrefillCadence:
     step_by_batch: dict[int, list[float]] = field(default_factory=dict)
 
     def observe_decode_step(self, step_s: float, batch_size: int) -> None:
-        bucket = self.step_by_batch.setdefault(batch_size // BATCH_BUCKET * BATCH_BUCKET, [0, 0.0])
+        bucket = self.step_by_batch.setdefault(
+            batch_size // BATCH_BUCKET * BATCH_BUCKET, [0, 0.0]
+        )
         bucket[0] += 1
         bucket[1] += step_s
         if self.step_s is None:
@@ -73,7 +78,10 @@ class PrefillCadence:
 
     def observe_admission(self, now_s: float, request_count: int) -> None:
         self.admissions.append((now_s, request_count))
-        while self.admissions and self.admissions[0][0] < now_s - self.config.rate_window_s:
+        while (
+            self.admissions
+            and self.admissions[0][0] < now_s - self.config.rate_window_s
+        ):
             self.admissions.popleft()
 
     def arrivals_per_step(self, now_s: float) -> float:
@@ -93,11 +101,17 @@ class PrefillCadence:
             levels.append(levels[-1] * 2)
         return tuple(levels)
 
-    def choose_interval(self, now_s: float) -> int:
+    def choose_interval(self, now_s: float, running_count: int) -> int:
         step_s, prefill_s = self.step_s, self.prefill_s
         levels = self.interval_levels()
         longest = levels[-1]
-        if (
+        if self.config.is_gated:
+            interval = (
+                self.config.longest_interval
+                if running_count >= self.config.min_batch
+                else 0
+            )
+        elif (
             step_s is None
             or prefill_s is None
             or self.arrivals_per_step(now_s) * longest < self.config.min_arrivals
@@ -155,4 +169,3 @@ class PrefillCadence:
         self.chosen_first_windows.clear()
         self.releases.clear()
         return text
-

@@ -34,9 +34,22 @@ def test_interval_is_the_shortest_wait_that_keeps_prefills_within_the_overhead_t
     cadence = make_cadence(arrivals_per_second)
     cadence.observe_prefill(prefill_s)
 
-    chosen = cadence.choose_interval(NOW_S)
+    chosen = cadence.choose_interval(NOW_S, running_count=48)
 
-    assert chosen == interval, f"{prefill_s * 1000} ms prefills, {arrivals_per_second}/s"
+    assert (
+        chosen == interval
+    ), f"{prefill_s * 1000} ms prefills, {arrivals_per_second}/s"
+
+
+@pytest.mark.parametrize(("running_count", "interval"), [(15, 0), (16, 16), (48, 16)])
+def test_gated_interval_holds_prefills_only_for_a_large_running_batch(
+    running_count: int, interval: int
+) -> None:
+    cadence = PrefillCadence(
+        PrefillCadenceConfig(is_gated=True, min_batch=16, longest_interval=16)
+    )
+
+    assert cadence.choose_interval(NOW_S, running_count) == interval
 
 
 def test_a_wait_ends_once_the_oldest_request_waited_too_long() -> None:

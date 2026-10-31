@@ -48,9 +48,15 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
             pass
         self.round_started_s = now_s
         batch = super().get_next_batch_to_run()
-        self.last_batch_was_decode = batch is not None and batch.forward_mode.is_decode()
-        self.last_batch_was_extend = batch is not None and batch.forward_mode.is_extend()
-        self.last_decode_batch_size = len(batch.reqs) if self.last_batch_was_decode else 0
+        self.last_batch_was_decode = (
+            batch is not None and batch.forward_mode.is_decode()
+        )
+        self.last_batch_was_extend = (
+            batch is not None and batch.forward_mode.is_extend()
+        )
+        self.last_decode_batch_size = (
+            len(batch.reqs) if self.last_batch_was_decode else 0
+        )
         return batch
 
     def is_prefill_expected(self) -> bool:
@@ -59,9 +65,12 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
         return super().is_prefill_expected()
 
     def release_if_due(self, now_s: float) -> None:
-        if self._prefill_decode_interval_remaining > 0 and self.waiting_queue:  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        if (
+            self._prefill_decode_interval_remaining > 0 and self.waiting_queue
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             oldest_wait_s = max(
-                now_s - request._coalesce_enqueue_t  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                now_s
+                - request._coalesce_enqueue_t  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 for request in self.waiting_queue
             )
             if self.cadence.should_release(len(self.waiting_queue), oldest_wait_s):
@@ -83,6 +92,8 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
                     request_data.first_window = self.cadence.choose_first_window()
                 else:
                     pass
-            self._prefill_decode_interval_remaining = self.cadence.choose_interval(now_s)  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self._prefill_decode_interval_remaining = self.cadence.choose_interval(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                now_s, len(self.running_batch.reqs) + len(batch.reqs)
+            )
         else:
             pass

@@ -172,11 +172,12 @@ def create_tts_engine_executor(
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
     enable_async_prefill: bool = False,
-    prefill_interval_policy: Literal["fixed", "adaptive"] = "fixed",
+    prefill_interval_policy: Literal["fixed", "adaptive", "gated"] = "fixed",
     large_first_window: int = DEFAULT_LARGE_FIRST_WINDOW,
     prefill_overhead_target: float = 0.2,
     prefill_longest_interval: int = 8,
     prefill_wait_cap_ms: float = 250.0,
+    prefill_min_batch: int = 16,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
 ) -> OmniScheduler[Drama3RequestData]:
@@ -217,6 +218,8 @@ def create_tts_engine_executor(
                 overhead_target=prefill_overhead_target,
                 longest_interval=prefill_longest_interval,
                 wait_cap_s=prefill_wait_cap_ms / 1000,
+                is_gated=prefill_interval_policy == "gated",
+                min_batch=prefill_min_batch,
                 small_first_window=stream_stride,
                 large_first_window=large_first_window,
                 next_window=(
@@ -225,7 +228,7 @@ def create_tts_engine_executor(
                     else stream_followup_stride
                 ),
             )
-            if prefill_interval_policy == "adaptive"
+            if prefill_interval_policy in ("adaptive", "gated")
             else None
         ),
         prefill_coalesce_requests=prefill_coalesce_requests,
