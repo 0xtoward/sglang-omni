@@ -163,7 +163,6 @@ def decode_stream_window(
     else:
         pass
 
-    code_start_token = stream_state.code_start_token
     total_tokens = stream_state.total_tokens
     emitted_tokens = stream_state.last_vocode_tokens
     if total_tokens <= emitted_tokens:
@@ -184,19 +183,56 @@ def decode_stream_window(
     else:
         pass
 
-    retained_frame_codes = torch.cat(stream_state.codes, dim=1)
-    window_start_token = max(code_start_token, emitted_tokens - stream_overlap_tokens)
-    window_offset = window_start_token - code_start_token
-    window_codes = retained_frame_codes[:, window_offset:]
-    codebook_codes = window_codes[1:].to(device=device, dtype=torch.long)
+    codebook_codes, overlap_token_count = stream_window_codes(
+        stream_state, device=device, stream_overlap_tokens=stream_overlap_tokens
+    )
 
     with torch.no_grad():
         audio = (codec.from_indices if decode_window is None else decode_window)(
             codebook_codes[None]
         )
 
-    audio_tensor = audio[0, 0].float()
-    overlap_token_count = emitted_tokens - window_start_token
+    return finish_stream_window(
+        stream_state,
+        audio[0, 0].float(),
+        overlap_token_count=overlap_token_count,
+        codec=codec,
+        stream_overlap_tokens=stream_overlap_tokens,
+        stream_crossfade_samples=stream_crossfade_samples,
+        is_final=is_final,
+    )
+
+
+def stream_window_codes(
+    stream_state: StreamVocoderState,
+    *,
+    device: torch.device,
+    stream_overlap_tokens: int,
+) -> tuple[torch.Tensor, int]:
+    """The codebook codes of the next window, which repeats up to stream_overlap_tokens decoded frames before the new ones, and
+    how many of its frames were decoded before."""
+    code_start_token = stream_state.code_start_token
+    emitted_tokens = stream_state.last_vocode_tokens
+    retained_frame_codes = torch.cat(stream_state.codes, dim=1)
+    window_start_token = max(code_start_token, emitted_tokens - stream_overlap_tokens)
+    window_offset = window_start_token - code_start_token
+    window_codes = retained_frame_codes[:, window_offset:]
+    codebook_codes = window_codes[1:].to(device=device, dtype=torch.long)
+    return codebook_codes, emitted_tokens - window_start_token
+
+
+def finish_stream_window(
+    stream_state: StreamVocoderState,
+    audio_tensor: torch.Tensor,
+    *,
+    overlap_token_count: int,
+    codec: AudioCodec,
+    stream_overlap_tokens: int,
+    stream_crossfade_samples: int,
+    is_final: bool,
+) -> dict[str, bytes | list[int] | str | int] | None:
+    """The audio chunk of a decoded window: its samples after the overlap, with the crossfade and the retained codes updated."""
+    total_tokens = stream_state.total_tokens
     overlap_samples = int(overlap_token_count * codec.frame_length)
     if audio_tensor.shape[-1] <= overlap_samples:
         return None
