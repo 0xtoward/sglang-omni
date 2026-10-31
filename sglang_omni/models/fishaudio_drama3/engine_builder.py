@@ -348,9 +348,15 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             )
         else:
             assert isinstance(attention_backend, HybridLinearAttnBackend)
-            max_request_count = min(
-                self.first_frame_cuda_graph_max_requests, decode_graph_runner.max_bs
-            )
+            if server_args.enable_mixed_chunk:
+                # note (0xtoward): a mixed step samples a frame for every running request too,
+                # so the first-frame graphs cover every batch the decode graph covers.
+                max_request_count = decode_graph_runner.max_bs
+            else:
+                max_request_count = min(
+                    self.first_frame_cuda_graph_max_requests,
+                    decode_graph_runner.max_bs,
+                )
             text_config = model.config.text_config
             first_frame_graphs = Drama3FirstFrameGraphs.capture(
                 sample_first_frames=model.sample_first_frames,
