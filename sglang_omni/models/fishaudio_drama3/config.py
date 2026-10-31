@@ -35,8 +35,9 @@ DEFAULT_REFERENCE_SAMPLING_FALLBACK: ReferenceSamplingFallback = "argmax"
 DEFAULT_TOWER_FUSED_LAYERS = True
 DEFAULT_ENABLE_ASYNC_DECODE = False
 DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
-# With mixed chunk on, run a mixed step's running requests on the GDN decode kernels.
-DEFAULT_MIXED_GDN_DECODE_TAIL = True
+# With mixed chunk on, run a mixed step's running requests on the GDN decode kernels. Off: it saves GPU time
+# in a mixed step but adds host time, and mixed steps are host-bound today.
+DEFAULT_MIXED_GDN_DECODE_TAIL = False
 # The codec of the public S2-Pro release, pinned to an immutable commit.
 DEFAULT_CODEC_PATH = "fishaudio/s2-pro@1de9996b6be38b745688de084d87a5633f714e4e"
 PREPROCESSING_TOTAL_RESERVE_BYTES = "6GiB"
