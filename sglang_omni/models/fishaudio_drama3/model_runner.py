@@ -8,6 +8,11 @@ Decode steps go through the model's fixed buffers, which a decode CUDA graph rea
 
 from __future__ import annotations
 
+import logging
+import os
+import traceback
+import warnings
+
 import torch
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
@@ -44,6 +49,8 @@ from sglang_omni.vendor.sglang.core import (
     GenerationBatchResult,
     ScheduleBatch,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Drama3ModelRunner",
@@ -136,6 +143,20 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         self.row_upload_buffers: list[torch.Tensor] = []
         self.row_upload_slot = 0
         self.prefill_inputs: Drama3StepInputs | None = None
+        if os.environ.get("DRAMA3_SYNC_DEBUG") == "1":
+            # note (0xtoward): debug only: log the Python stack of every implicit host-device sync.
+            def log_sync(message, category, filename, lineno, file=None, line=None):
+                if "synchronizing" in str(message):
+                    stack = "".join(traceback.format_stack(limit=14)[:-1])
+                    logger.warning(f"DRAMA3_SYNC {message}\n{stack}")
+                else:
+                    pass
+
+            warnings.showwarning = log_sync
+            warnings.simplefilter("always")
+            torch.cuda.set_sync_debug_mode("warn")
+        else:
+            pass
         self.is_lookahead_step = False
         # note (0xtoward): a launched prefill's first frames, published by post_decode_launch.
         self.launched_first_frames: torch.Tensor | None = None
