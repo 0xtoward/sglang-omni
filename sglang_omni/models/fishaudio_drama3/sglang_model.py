@@ -90,7 +90,7 @@ class Drama3Backbone(Qwen3_5MoeForCausalLM):
         )
         assert isinstance(hidden_states, torch.Tensor)
         tower_prefill = self.tower_prefill
-        if forward_batch.forward_mode != ForwardMode.EXTEND:
+        if forward_batch.forward_mode not in (ForwardMode.EXTEND, ForwardMode.MIXED):
             return hidden_states
         elif tower_prefill is None:
             raise RuntimeError("the engine allocated no Drama 3 tower prefill buffers")
@@ -188,7 +188,8 @@ class Drama3ForCausalLM(nn.Module):
     ) -> LogitsProcessorOutput:
         forward_mode = forward_batch.forward_mode
         decode_buffers = self.decode_buffers
-        if forward_mode == ForwardMode.EXTEND:
+        if forward_mode in (ForwardMode.EXTEND, ForwardMode.MIXED):
+            # note (0xtoward): a mixed step carries each decode request as a one-row extend.
             return self.forward_extend(input_ids, positions, forward_batch)
         elif forward_mode != ForwardMode.DECODE:
             raise NotImplementedError(f"forward mode {forward_mode} is not supported")

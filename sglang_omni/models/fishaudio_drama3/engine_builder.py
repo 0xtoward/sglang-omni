@@ -181,10 +181,13 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         ).text_config.max_position_embeddings
         if not server_args.disable_radix_cache:
             raise ValueError("Drama 3 needs disable_radix_cache=True")
-        elif chunked_prefill_size > 0 or server_args.enable_mixed_chunk:
+        elif server_args.enable_mixed_chunk != (chunked_prefill_size > 0) or (
+            chunked_prefill_size > 0 and chunked_prefill_size < self.max_prompt_rows
+        ):
             raise ValueError(
-                "Drama 3 needs chunked_prefill_size <= 0 and no mixed chunk: a "
-                "prompt must reach the tower in one extend"
+                f"Drama 3 runs either without chunked prefill or with mixed chunk and "
+                f"chunked_prefill_size >= max_prompt_rows ({self.max_prompt_rows}): a "
+                f"prompt must reach the tower in one extend"
             )
         elif not server_args.disable_overlap_schedule:
             raise ValueError("Drama 3 runs without overlap scheduling")

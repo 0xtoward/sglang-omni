@@ -54,6 +54,7 @@ from sglang_omni.models.fishaudio_drama3.model_runner import (
     extend_frame_rows,
     ras_window,
     request_data_of,
+    step_frame_rows,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import (
     MINIMUM_PROMPT_ROWS,
@@ -694,6 +695,29 @@ def test_prefill_rows_reject_a_history_that_is_not_the_sequence() -> None:
 
     with pytest.raises(RuntimeError, match="history"):
         extend_frame_rows(data)
+
+
+def test_mixed_step_rows_feed_a_running_request_its_newest_frame() -> None:
+    sampled = [[82, 2, 0, 1, 3], [85, 5, 1, 1, 1]]
+    data = built_request(frame_rows_of([4], seed=5)[0])
+    data.frame_rows.extend(sampled)
+
+    rows = step_frame_rows(data, prefix_length=5, extend_length=1)
+
+    assert rows == sampled[-1:], "a mixed decode row is the newest frame"
+
+
+@pytest.mark.parametrize(
+    ("prefix_length", "extend_length"), [(4, 2), (3, 1)], ids=["chunk", "older-frame"]
+)
+def test_mixed_step_rows_reject_a_chunk_or_an_older_frame(
+    prefix_length: int, extend_length: int
+) -> None:
+    data = built_request(frame_rows_of([4], seed=5)[0])
+    data.frame_rows.extend([[82, 2, 0, 1, 3], [85, 5, 1, 1, 1]])
+
+    with pytest.raises(RuntimeError, match="one newest frame"):
+        step_frame_rows(data, prefix_length, extend_length)
 
 
 def step_inputs(

@@ -30,6 +30,7 @@ from sglang_omni.models.fishaudio_drama3.decode_state import (
     ras_window,
     request_data_of,
     request_ids_of,
+    step_frame_rows,
 )
 from sglang_omni.models.fishaudio_drama3.model_inputs import (
     Drama3DecodeBuffers,
@@ -52,6 +53,7 @@ __all__ = [
     "ras_window",
     "request_data_of",
     "request_ids_of",
+    "step_frame_rows",
 ]
 
 
@@ -312,8 +314,15 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         interface contract."""
         self.prefill_inputs = None
         frame_rows: list[list[int]] = []
-        for request in requests:
-            frame_rows.extend(extend_frame_rows(request_data_of(request)))
+        for request, prefix_length, extend_length in zip(
+            requests,
+            schedule_batch.prefix_lens,
+            schedule_batch.extend_lens,
+            strict=True,
+        ):
+            frame_rows.extend(
+                step_frame_rows(request_data_of(request), prefix_length, extend_length)
+            )
         self.prefill_inputs = self.stage_step(requests, frame_rows)
 
     def cleanup_prefill(
