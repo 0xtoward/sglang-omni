@@ -95,6 +95,10 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     prefill_longest_interval: int = Field(default=8, ge=2)
     prefill_wait_cap_ms: float = Field(default=250.0, ge=0)
     prefill_min_batch: int = Field(default=16, ge=0)
+    # adaptive: count prefills by the arrival rate (a light load needs no interval) and, when positive, derive the
+    # wait cap from this first-audio target instead of prefill_wait_cap_ms.
+    prefill_arrival_aware: bool = False
+    prefill_ttfa_target_ms: float = Field(default=0.0, ge=0)
     # A prefill waits for this many requests, or until the oldest waited prefill_coalesce_wait_ms; 0 is off.
     prefill_coalesce_requests: int = Field(default=0, ge=0)
     prefill_coalesce_wait_ms: float = Field(default=60.0, ge=0)

@@ -178,6 +178,8 @@ def create_tts_engine_executor(
     prefill_longest_interval: int = 8,
     prefill_wait_cap_ms: float = 250.0,
     prefill_min_batch: int = 16,
+    prefill_arrival_aware: bool = False,
+    prefill_ttfa_target_ms: float = 0.0,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
 ) -> OmniScheduler[Drama3RequestData]:
@@ -220,6 +222,8 @@ def create_tts_engine_executor(
                 wait_cap_s=prefill_wait_cap_ms / 1000,
                 is_gated=prefill_interval_policy == "gated",
                 min_batch=prefill_min_batch,
+                is_arrival_aware=prefill_arrival_aware,
+                ttfa_target_s=prefill_ttfa_target_ms / 1000,
                 small_first_window=stream_stride,
                 large_first_window=large_first_window,
                 next_window=(

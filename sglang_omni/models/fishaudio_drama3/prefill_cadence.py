@@ -28,6 +28,11 @@ class PrefillCadenceConfig:
     # gated: longest_interval while at least min_batch requests decode, else none (no overhead rule).
     is_gated: bool = False
     min_batch: int = 0
+    # arrival-aware: a prefill's share is min(arrival rate, 1 / cycle) x prefill time, so a light load needs no interval;
+    # ttfa_target_s > 0 derives the wait cap from it and the measured prefill and first-window time.
+    is_arrival_aware: bool = False
+    ttfa_target_s: float = 0.0
+    vocoder_margin_s: float = 0.03
     min_arrivals: float = 1.0
     release_waiting: int = 0
     wait_cap_s: float = 0.25
@@ -111,11 +116,20 @@ class PrefillCadence:
                 if running_count >= self.config.min_batch
                 else 0
             )
-        elif (
-            step_s is None
-            or prefill_s is None
-            or self.arrivals_per_step(now_s) * longest < self.config.min_arrivals
-        ):
+        elif step_s is None or prefill_s is None:
+            interval = 0
+        elif self.config.is_arrival_aware:
+            arrival_rate = self.arrivals_per_step(now_s) / step_s
+            interval = next(
+                (
+                    level
+                    for level in (0, *levels)
+                    if min(arrival_rate, 1 / (level * step_s + prefill_s)) * prefill_s
+                    <= self.config.overhead_target
+                ),
+                longest,
+            )
+        elif self.arrivals_per_step(now_s) * longest < self.config.min_arrivals:
             interval = 0
         else:
             interval = next(
@@ -134,11 +148,23 @@ class PrefillCadence:
         if self.config.release_waiting and waiting_count >= self.config.release_waiting:
             self.releases["waiting"] += 1
             return True
-        elif oldest_wait_s >= self.config.wait_cap_s:
+        elif oldest_wait_s >= self.wait_cap_s():
             self.releases["wait_cap"] += 1
             return True
         else:
             return False
+
+    def wait_cap_s(self) -> float:
+        config = self.config
+        if config.ttfa_target_s <= 0 or self.step_s is None or self.prefill_s is None:
+            return config.wait_cap_s
+        else:
+            first_audio_s = (
+                self.prefill_s
+                + config.small_first_window * self.step_s
+                + config.vocoder_margin_s
+            )
+            return max(0.0, config.ttfa_target_s - first_audio_s)
 
     def choose_first_window(self) -> int:
         """Small while the small window's audio lasts longer than making the next window."""

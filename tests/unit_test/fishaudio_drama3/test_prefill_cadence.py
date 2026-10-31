@@ -75,3 +75,29 @@ def test_first_window_is_small_while_its_audio_outlasts_making_the_next_window(
     chosen = cadence.choose_first_window()
 
     assert chosen == first_window, f"{step_s * 1000} ms per decode step"
+
+
+@pytest.mark.parametrize(
+    ("arrivals_per_second", "interval"), [(2.5, 0), (5.0, 0), (10.0, 16), (24.0, 16)]
+)
+def test_arrival_aware_interval_waits_only_while_prefills_would_take_too_much_time(
+    arrivals_per_second: float, interval: int
+) -> None:
+    cadence = PrefillCadence(
+        PrefillCadenceConfig(is_arrival_aware=True, longest_interval=32)
+    )
+    cadence.observe_decode_step(STEP_S, BATCH_SIZE)
+    cadence.observe_admission(
+        NOW_S, round(arrivals_per_second * cadence.config.rate_window_s)
+    )
+    cadence.observe_prefill(0.035)
+
+    assert cadence.choose_interval(NOW_S, running_count=BATCH_SIZE) == interval
+
+
+def test_ttfa_target_leaves_the_wait_after_prefill_and_first_window() -> None:
+    cadence = PrefillCadence(PrefillCadenceConfig(ttfa_target_s=0.4))
+    cadence.observe_decode_step(STEP_S, BATCH_SIZE)
+    cadence.observe_prefill(0.072)
+
+    assert cadence.wait_cap_s() == pytest.approx(0.4 - 0.072 - 4 * STEP_S - 0.03)
