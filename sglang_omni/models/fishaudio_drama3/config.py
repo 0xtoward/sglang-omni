@@ -101,6 +101,7 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     max_batch_wait_ms: int = Field(default=2, ge=0)
     window_cuda_graphs: bool = True
     decode_dtype: Literal["float32", "float16"] = "float16"
+    first_window_priority: bool = False
 
 
 class Drama3VocoderStageConfig(StageConfig):

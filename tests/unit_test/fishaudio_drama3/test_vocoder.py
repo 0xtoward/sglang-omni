@@ -93,6 +93,7 @@ def vocoder_with(
     *,
     factory_args: Drama3VocoderFactoryArgs | None = None,
     max_padded_frames_per_decode: int | None = None,
+    first_window_priority: bool = False,
 ) -> Drama3VocoderScheduler:
     """The vocoder with the configured windows."""
     window_kwargs = (factory_args or Drama3VocoderFactoryArgs()).model_dump(
@@ -111,8 +112,14 @@ def vocoder_with(
         device="cpu",
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
+        first_window_priority=first_window_priority,
         **window_kwargs,
     )
+
+
+def run_ready_steps(vocoder: Drama3VocoderScheduler) -> None:
+    while vocoder.has_ready_work():
+        vocoder.run_ready_step()
 
 
 def final_payload(
@@ -167,11 +174,14 @@ def streamed(
     is_done_first: bool,
     codec: FrameNumberCodec | None = None,
     decode_window: WindowDecoder | None = None,
+    first_window_priority: bool = False,
 ) -> tuple[FrameNumberCodec, list[OutgoingMessage]]:
     """Stream chunks of the given sizes, then hand over the final payload with all
     total_frame_count frames and signal the end of the stream."""
     codec = FrameNumberCodec() if codec is None else codec
-    vocoder = vocoder_with(codec, decode_window)
+    vocoder = vocoder_with(
+        codec, decode_window, first_window_priority=first_window_priority
+    )
     frames = numbered_frames(total_frame_count)
     start = 0
     for chunk_id, frame_count in enumerate(chunk_frame_counts):
@@ -183,6 +193,7 @@ def streamed(
                 from_stage="tts_engine",
             ),
         )
+        run_ready_steps(vocoder)
         start += frame_count
     payload = final_payload(frames, is_streaming=True)
     if is_done_first:
@@ -276,15 +287,20 @@ STREAMING_CASES = [
         )
     ],
 )
+@pytest.mark.parametrize("first_window_priority", [False, True])
 def test_streaming_emits_the_fixed_windows_however_frames_arrive(
     total_frame_count: int,
     chunk_frame_counts: list[int],
     chunk_ranges: FrameRanges,
     decoded_ranges: FrameRanges,
     is_done_first: bool,
+    first_window_priority: bool,
 ) -> None:
     codec, messages = streamed(
-        total_frame_count, chunk_frame_counts, is_done_first=is_done_first
+        total_frame_count,
+        chunk_frame_counts,
+        is_done_first=is_done_first,
+        first_window_priority=first_window_priority,
     )
 
     assert chunk_frame_ranges(messages) == chunk_ranges
@@ -986,3 +1002,35 @@ def test_non_streaming_batch_preserves_request_audio_with_bounded_padding(
         or codes.shape[0] * codes.shape[-1] <= max_padded_frames_per_decode
         for codes in codec.decoded_codes
     )
+
+
+def test_window_priority_decodes_a_new_streams_first_window_before_queued_windows() -> (
+    None
+):
+    """A first window that becomes complete after other streams' later windows still decodes before them."""
+    vocoder = vocoder_with(FrameNumberCodec(), first_window_priority=True)
+    frames = numbered_frames(26)
+
+    def send(request_id: str, chunk_id: int, start: int, end: int) -> None:
+        vocoder.handle_stream_chunk(
+            request_id,
+            StreamItem(
+                chunk_id=chunk_id, data=frames[start:end].T, from_stage="tts_engine"
+            ),
+        )
+
+    send("request-a", 0, 0, 4)
+    run_ready_steps(vocoder)
+    send("request-a", 1, 4, 14)
+    send("request-a", 2, 14, 26)
+    send("request-b", 0, 0, 4)
+    run_ready_steps(vocoder)
+
+    messages = drained(vocoder)
+    assert [message.request_id for message in messages] == [
+        "request-a",
+        "request-b",
+        "request-a",
+        "request-a",
+    ]
+    assert chunk_frame_ranges(messages) == [(0, 4), (0, 4), (4, 14), (14, 26)]

@@ -87,6 +87,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         **VOCODER_WINDOWS,
         "window_cuda_graphs": True,
         "decode_dtype": "float16",
+        "first_window_priority": False,
         "max_new_tokens": 2048,
     }
 
