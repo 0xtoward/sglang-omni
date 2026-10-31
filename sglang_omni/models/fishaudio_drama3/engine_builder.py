@@ -81,6 +81,9 @@ FISH_OMNI_ARCHITECTURE = "FishOmniModel"
 ATTENTION_BACKEND = "triton"
 PREFILL_CUDA_GRAPH_MAX_TOKENS = 2048
 DECODE_STEPS_BETWEEN_PREFILLS = 4
+# note (0xtoward): each decode step reads and writes every request's GDN state, 2 MiB per layer in float32 (the
+# checkpoint's dtype); bfloat16 halves that traffic, which grows with the batch.
+GDN_STATE_DTYPE = "bfloat16"
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +162,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             "enable_mixed_chunk": False,
             "chunked_prefill_size": -1,
             "attention_backend": ATTENTION_BACKEND,
+            "mamba_ssm_dtype": GDN_STATE_DTYPE,
             "enable_torch_compile": False,
             "trust_remote_code": False,
             "dtype": dtype,
