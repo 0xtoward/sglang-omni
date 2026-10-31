@@ -25,6 +25,7 @@ from benchmarks.duplex.client import (
     ADMISSION_RETRIES,
     PACKET_MS,
     POST_CLOSE_SECONDS,
+    SessionInputs,
     run_session,
 )
 from benchmarks.duplex.oracle import evaluate_trace
@@ -40,7 +41,10 @@ from tests.unit_test.fixtures.duplex_fakes import (
 
 
 async def capture_session(
-    peer: DuplexPeer, trace_path: Path, timeout_s: float = 2.0
+    peer: DuplexPeer,
+    trace_path: Path,
+    timeout_s: float = 2.0,
+    inputs: SessionInputs | None = None,
 ) -> list[dict[str, JsonValue]]:
     existing_tasks = asyncio.all_tasks()
     async with websockets.serve(peer.handler, "127.0.0.1", 0) as server:
@@ -50,6 +54,7 @@ async def capture_session(
             FIXTURE_PCM,
             trace_path=trace_path,
             timeout_s=timeout_s,
+            inputs=inputs,
         )
         peer.release.set()
     assert asyncio.all_tasks() <= existing_tasks
@@ -107,6 +112,64 @@ def test_client_records_complete_native_session(tmp_path: Path) -> None:
     )
 
     assert "response.cancel" not in [event["type"] for event in peer.received]
+
+
+def test_client_sends_the_instructions_and_each_units_frame_before_its_audio(
+    tmp_path: Path,
+) -> None:
+    """A camera session: every unit's frame, cycled, reaches the server before that unit's first audio, and the trace keeps only its size."""
+    frames = (b"\xff\xd8frame-a", b"\xff\xd8frame-b")
+    peer = DuplexPeer()
+    records = asyncio.run(
+        capture_session(
+            peer,
+            tmp_path / "trace.jsonl",
+            inputs=SessionInputs(instructions="Describe the camera.", frames=frames),
+        )
+    )
+
+    assert evaluate_trace(records)["status"] == "pass"
+    assert peer.received[0]["session"]["instructions"] == "Describe the camera."
+    frame_units = []
+    for event in peer.received:
+        if event["type"] == "sglang.input_image.append":
+            frame_units.append(round(event["sglang"]["t_ms"] / PACKET_MS))
+            assert base64.b64decode(event["image"]) == frames[frame_units[-1] % 2]
+        elif event["type"] == "input_audio_buffer.append":
+            # The fixture's units are one 80 ms packet long.
+            assert frame_units[-1] == event["sglang"]["seq"]
+        else:
+            pass
+    assert frame_units == list(range(FIXTURE_PACKETS))
+    assert all(
+        "image" not in record["event"]
+        for record in records
+        if record["event"].get("type") == "sglang.input_image.append"
+    )
+
+
+def test_client_sends_a_sessions_own_frames_once_and_skips_units_without_one(
+    tmp_path: Path,
+) -> None:
+    """A video session's own frames go out once, at their units, and a unit without a frame sends none."""
+    frames = (b"\xff\xd8video-0", None, b"\xff\xd8video-2")
+    peer = DuplexPeer()
+
+    records = asyncio.run(
+        capture_session(
+            peer,
+            tmp_path / "trace.jsonl",
+            inputs=SessionInputs(frames=frames, cycle_frames=False),
+        )
+    )
+
+    assert evaluate_trace(records)["status"] == "pass"
+    sent = [
+        (round(event["sglang"]["t_ms"] / PACKET_MS), base64.b64decode(event["image"]))
+        for event in peer.received
+        if event["type"] == "sglang.input_image.append"
+    ]
+    assert sent == [(0, frames[0]), (2, frames[2])], "only units with a frame send one"
 
 
 @pytest.mark.parametrize(
