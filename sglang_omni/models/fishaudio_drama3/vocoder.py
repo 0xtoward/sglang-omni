@@ -160,6 +160,8 @@ class PendingStreamFrames:
     frames: list[torch.Tensor] = field(default_factory=list)
     frame_count: int = 0
     ready_times: collections.deque[float] = field(default_factory=collections.deque)
+    # When the stream ended; its tail and final result go out after its complete windows.
+    done_time: float | None = None
 
 
 class Drama3VocoderScheduler(StreamingVocoderScheduler):
@@ -275,20 +277,35 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
             ranked = sorted(
                 (
                     self.stream_window_counts.get(request_id, 0) > 0,
-                    self.pending_frames[request_id].ready_times[0],
+                    (
+                        self.pending_frames[request_id].ready_times[0]
+                        if self.pending_frames[request_id].ready_times
+                        else self.pending_frames[request_id].done_time
+                    ),
                     request_id,
                 )
                 for request_id in self.ready_request_ids
             )
+            if ranked and not self.pending_frames[ranked[0][2]].ready_times:
+                self.finish_queued_stream(ranked[0][2])
+                return
+            else:
+                pass
             windows: list[tuple[str, torch.Tensor]] = []
-            for _, _, request_id in ranked[: self.stream_window_batch_size]:
+            for _, _, request_id in ranked:
+                if len(windows) == self.stream_window_batch_size:
+                    break
+                elif not self.pending_frames[request_id].ready_times:
+                    continue
+                else:
+                    pass
                 pending = self.pending_frames[request_id]
                 state = self.stream_states.get(request_id)
                 window_frame_count = self.window_end_frame(
                     self.stream_window_counts.get(request_id, 0)
                 ) - (0 if state is None else state.total_tokens)
                 pending.ready_times.popleft()
-                if not pending.ready_times:
+                if not pending.ready_times and pending.done_time is None:
                     self.ready_request_ids.discard(request_id)
                 else:
                     pass
@@ -447,33 +464,54 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         else:
             return self.stream_frames(request_id, frame_codes)
 
-    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
+    def on_stream_done(self, request_id: str) -> list[OutgoingMessage] | None:
         """Stream the frames no chunk carried, skipping those already streamed, then
-        flush the tail and send the final result."""
-        pending = self.pending_frames.pop(request_id, None)
-        self.ready_request_ids.discard(request_id)
-        if pending is not None and pending.frame_count > 0:
-            messages = self.stream_frames(
-                request_id, self.take_pending_frames(pending, pending.frame_count)
-            )
-        else:
-            messages = []
+        flush the tail and send the final result. With first_window_priority, the frames are queued and the stream
+        completes in a later step, after its complete windows."""
         frames = generation_result_of(self.payloads[request_id]).frames
+        pending = self.pending_frames.get(request_id)
         streamed_frame_count = self.stream_states.setdefault(
             request_id, StreamVocoderState()
-        ).total_tokens
+        ).total_tokens + (0 if pending is None else pending.frame_count)
         if streamed_frame_count > frames.shape[0]:
             raise RuntimeError(
                 f"Request {request_id}: {streamed_frame_count} frames streamed but "
                 f"the result holds {frames.shape[0]}"
             )
+        elif self.first_window_priority:
+            # note (0xtoward): decoding the rest here, in message order, would let streams that finish generating early
+            # jump ahead of every queued first window.
+            if streamed_frame_count < frames.shape[0]:
+                self.queue_frames(request_id, frames[streamed_frame_count:].T)
+            else:
+                pass
+            self.pending_frames.setdefault(
+                request_id, PendingStreamFrames()
+            ).done_time = time.monotonic()
+            self.ready_request_ids.add(request_id)
+            return None
         else:
-            pass
-        return (
-            messages
-            + self.stream_frames(request_id, frames[streamed_frame_count:].T)
-            + super().on_stream_done(request_id)
-        )
+            return self.stream_frames(
+                request_id, frames[streamed_frame_count:].T
+            ) + super().on_stream_done(request_id)
+
+    def finish_queued_stream(self, request_id: str) -> None:
+        """Decode a finished stream's tail and send its final result, once its complete windows are decoded."""
+        pending = self.pending_frames.pop(request_id)
+        self.ready_request_ids.discard(request_id)
+        try:
+            messages = (
+                self.stream_frames(
+                    request_id, self.take_pending_frames(pending, pending.frame_count)
+                )
+                if pending.frame_count > 0
+                else []
+            ) + super().on_stream_done(request_id)
+        except Exception as exc:
+            self.emit_error(request_id, exc)
+            self.abort(request_id)
+            return
+        self.complete_stream_request(request_id, messages)
 
     def validate_non_streaming_payload(self, payload: StagePayload) -> None:
         generation_result_of(payload)

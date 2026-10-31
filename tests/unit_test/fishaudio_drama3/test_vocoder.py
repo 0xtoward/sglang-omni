@@ -204,6 +204,7 @@ def streamed(
     else:
         vocoder.handle_streaming_new_request("request-a", payload)
         vocoder.handle_stream_done("request-a")
+    run_ready_steps(vocoder)
     return codec, drained(vocoder)
 
 
@@ -1092,3 +1093,44 @@ def test_windows_decoded_together_give_each_stream_its_own_audio() -> None:
     for request_id in request_ids:
         own = [message for message in messages if message.request_id == request_id]
         assert chunk_frame_ranges(own) == [(0, 4), (4, 14)]
+
+
+def test_a_finished_stream_does_not_decode_its_queue_before_a_new_first_window() -> (
+    None
+):
+    vocoder = vocoder_with(FrameNumberCodec(), first_window_priority=True)
+    frames = numbered_frames(30)
+
+    def send(request_id: str, chunk_id: int, start: int, end: int) -> None:
+        vocoder.handle_stream_chunk(
+            request_id,
+            StreamItem(
+                chunk_id=chunk_id, data=frames[start:end].T, from_stage="tts_engine"
+            ),
+        )
+
+    send("request-a", 0, 0, 4)
+    run_ready_steps(vocoder)
+    send("request-a", 1, 4, 14)
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("request-a")
+    send("request-b", 0, 0, 4)
+    run_ready_steps(vocoder)
+
+    messages = drained(vocoder)
+    assert [(message.request_id, message.type) for message in messages] == [
+        ("request-a", "stream"),
+        ("request-b", "stream"),
+        ("request-a", "stream"),
+        ("request-a", "stream"),
+        ("request-a", "stream"),
+        ("request-a", "result"),
+    ]
+    assert chunk_frame_ranges([m for m in messages if m.request_id == "request-a"]) == [
+        (0, 4),
+        (4, 14),
+        (14, 26),
+        (26, 30),
+    ]
