@@ -85,6 +85,9 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     # request its first window from the decode step time; fixed keeps prefill_decode_interval.
     prefill_interval_policy: Literal["fixed", "adaptive"] = "fixed"
     large_first_window: int = Field(default=DEFAULT_LARGE_FIRST_WINDOW, ge=1)
+    # A prefill waits for this many requests, or until the oldest waited prefill_coalesce_wait_ms; 0 is off.
+    prefill_coalesce_requests: int = Field(default=0, ge=0)
+    prefill_coalesce_wait_ms: float = Field(default=60.0, ge=0)
 
 
 class Drama3EngineStageConfig(EngineStageConfig):

@@ -173,6 +173,8 @@ def create_tts_engine_executor(
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
     prefill_interval_policy: Literal["fixed", "adaptive"] = "fixed",
     large_first_window: int = DEFAULT_LARGE_FIRST_WINDOW,
+    prefill_coalesce_requests: int = 0,
+    prefill_coalesce_wait_ms: float = 60.0,
 ) -> OmniScheduler[Drama3RequestData]:
     overrides = dict(server_args_overrides or {})
     mem_fraction_static = overrides.get("mem_fraction_static")
@@ -218,6 +220,8 @@ def create_tts_engine_executor(
             if prefill_interval_policy == "adaptive"
             else None
         ),
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
     ).build(
         model_path,
         device=device,
