@@ -25,36 +25,39 @@ def make_cadence(arrivals_per_second: float, step_s: float = STEP_S) -> PrefillC
 
 
 @pytest.mark.parametrize(
-    ("arrivals_per_second", "interval"), [(14.0, 8), (20.0, 4), (45.0, 2), (3.0, 0)]
+    ("prefill_s", "arrivals_per_second", "interval"),
+    [(0.040, 14.0, 8), (0.012, 14.0, 4), (0.006, 14.0, 2), (0.040, 3.0, 0)],
 )
-def test_interval_is_the_shortest_wait_expected_to_gather_the_batch_target(
-    arrivals_per_second: float, interval: int
+def test_interval_is_the_shortest_wait_that_keeps_prefills_within_the_overhead_target(
+    prefill_s: float, arrivals_per_second: float, interval: int
 ) -> None:
     cadence = make_cadence(arrivals_per_second)
+    cadence.observe_prefill(prefill_s)
 
     chosen = cadence.choose_interval(NOW_S)
 
-    assert chosen == interval, f"{arrivals_per_second} arrivals/s at 16 ms per step"
+    assert chosen == interval, f"{prefill_s * 1000} ms prefills, {arrivals_per_second}/s"
 
 
-def test_a_wait_ends_once_enough_requests_wait_or_the_oldest_waited_too_long() -> None:
+def test_a_wait_ends_once_the_oldest_request_waited_too_long() -> None:
     cadence = PrefillCadence(PrefillCadenceConfig())
     config = cadence.config
 
     released = [
-        cadence.should_release(config.release_waiting, 0.0),
+        cadence.should_release(64, 0.0),
         cadence.should_release(1, config.wait_cap_s),
         cadence.should_release(1, config.wait_cap_s / 2),
     ]
 
-    assert released == [True, True, False], "only the waiting count or the cap releases"
+    assert released == [False, True, False], "only the wait cap releases by default"
 
 
 @pytest.mark.parametrize(("step_s", "first_window"), [(0.016, 4), (0.022, 10)])
 def test_first_window_is_small_while_its_audio_outlasts_making_the_next_window(
     step_s: float, first_window: int
 ) -> None:
-    cadence = make_cadence(0.0, step_s)
+    cadence = PrefillCadence(PrefillCadenceConfig(large_first_window=10))
+    cadence.observe_decode_step(step_s, BATCH_SIZE)
 
     chosen = cadence.choose_first_window()
 

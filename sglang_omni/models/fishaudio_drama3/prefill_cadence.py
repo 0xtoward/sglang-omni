@@ -4,8 +4,9 @@
 A prefill stops every running stream for one forward, and most of its cost does not grow
 with the requests it admits (every active expert is read, the tower runs over the prompt
 rows). Waiting a few decode steps lets more arrivals share one prefill, but the wait adds to
-their time to first audio. The interval is therefore the shortest wait that is expected to
-gather batch_target arrivals, or no wait when even the longest one would not.
+their time to first audio. The interval is therefore the shortest wait that keeps prefills
+within overhead_target of the time, or no wait when even the longest wait would gather
+fewer than min_arrivals requests.
 
 The first window is the small one while decode makes frames fast enough for the small
 window's audio to cover the next window, and the large one otherwise.
@@ -22,9 +23,10 @@ BATCH_BUCKET = 8
 
 @dataclass(frozen=True, kw_only=True)
 class PrefillCadenceConfig:
-    batch_target: float = 1.25
-    release_waiting: int = 3
-    wait_cap_s: float = 0.15
+    overhead_target: float = 0.2
+    min_arrivals: float = 1.0
+    release_waiting: int = 0
+    wait_cap_s: float = 0.25
     rate_window_s: float = 2.0
     step_smoothing: float = 0.1
     small_first_window: int = 4
@@ -38,6 +40,7 @@ class PrefillCadence:
 
     config: PrefillCadenceConfig
     step_s: float | None = None
+    prefill_s: float | None = None
     admissions: collections.deque[tuple[float, int]] = field(
         default_factory=collections.deque
     )
@@ -60,6 +63,13 @@ class PrefillCadence:
             weight = self.config.step_smoothing
             self.step_s = (1 - weight) * self.step_s + weight * step_s
 
+    def observe_prefill(self, prefill_s: float) -> None:
+        if self.prefill_s is None:
+            self.prefill_s = prefill_s
+        else:
+            weight = self.config.step_smoothing
+            self.prefill_s = (1 - weight) * self.prefill_s + weight * prefill_s
+
     def observe_admission(self, now_s: float, request_count: int) -> None:
         self.admissions.append((now_s, request_count))
         while self.admissions and self.admissions[0][0] < now_s - self.config.rate_window_s:
@@ -77,20 +87,29 @@ class PrefillCadence:
             return recent / self.config.rate_window_s * self.step_s
 
     def choose_interval(self, now_s: float) -> int:
-        arrivals = self.arrivals_per_step(now_s)
-        interval = next(
-            (
-                level
-                for level in INTERVAL_LEVELS
-                if arrivals * level >= self.config.batch_target
-            ),
-            0,
-        )
+        step_s, prefill_s = self.step_s, self.prefill_s
+        longest = INTERVAL_LEVELS[-1]
+        if (
+            step_s is None
+            or prefill_s is None
+            or self.arrivals_per_step(now_s) * longest < self.config.min_arrivals
+        ):
+            interval = 0
+        else:
+            interval = next(
+                (
+                    level
+                    for level in INTERVAL_LEVELS
+                    if prefill_s / (level * step_s + prefill_s)
+                    <= self.config.overhead_target
+                ),
+                longest,
+            )
         self.chosen_intervals[interval] += 1
         return interval
 
     def should_release(self, waiting_count: int, oldest_wait_s: float) -> bool:
-        if waiting_count >= self.config.release_waiting:
+        if self.config.release_waiting and waiting_count >= self.config.release_waiting:
             self.releases["waiting"] += 1
             return True
         elif oldest_wait_s >= self.config.wait_cap_s:
@@ -114,8 +133,9 @@ class PrefillCadence:
 
     def report(self, now_s: float) -> str:
         step_ms = 1000 * self.step_s if self.step_s is not None else 0.0
+        prefill_ms = 1000 * self.prefill_s if self.prefill_s is not None else 0.0
         text = (
-            f"Drama cadence: step {step_ms:.1f} ms, arrivals/step "
+            f"Drama cadence: step {step_ms:.1f} ms, prefill {prefill_ms:.1f} ms, arrivals/step "
             f"{self.arrivals_per_step(now_s):.2f}, intervals "
             f"{dict(sorted(self.chosen_intervals.items()))}, releases "
             f"{dict(sorted(self.releases.items()))}, first windows "

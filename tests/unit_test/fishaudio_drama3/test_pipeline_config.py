@@ -77,7 +77,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "enable_async_decode": False,
         "async_decode_min_batch_size": 1,
         "prefill_interval_policy": "fixed",
-        "large_first_window": 10,
+        "large_first_window": 4,
         "prefill_coalesce_requests": 0,
         "prefill_coalesce_wait_ms": 60.0,
         "stream_stride": 4,

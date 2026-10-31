@@ -23,16 +23,21 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
         self.cadence = cadence
         self.round_started_s: float | None = None
         self.last_batch_was_decode = False
+        self.last_batch_was_extend = False
         self.last_decode_batch_size = 0
         self.reported_s = time.perf_counter()
 
     def get_next_batch_to_run(self):
         cadence = self.cadence
         now_s = time.perf_counter()
-        if self.last_batch_was_decode and self.round_started_s is not None:
+        if self.round_started_s is None:
+            pass
+        elif self.last_batch_was_decode:
             cadence.observe_decode_step(
                 now_s - self.round_started_s, self.last_decode_batch_size
             )
+        elif self.last_batch_was_extend:
+            cadence.observe_prefill(now_s - self.round_started_s)
         else:
             pass
         if self._prefill_decode_interval_remaining > 0 and self.waiting_queue:  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -54,6 +59,7 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
         self.round_started_s = now_s
         batch = super().get_next_batch_to_run()
         self.last_batch_was_decode = batch is not None and batch.forward_mode.is_decode()
+        self.last_batch_was_extend = batch is not None and batch.forward_mode.is_extend()
         self.last_decode_batch_size = len(batch.reqs) if self.last_batch_was_decode else 0
         return batch
 
