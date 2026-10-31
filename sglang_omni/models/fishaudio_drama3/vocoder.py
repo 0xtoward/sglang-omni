@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import bisect
+import collections
+import time
+from dataclasses import dataclass, field
 
 import torch
 
@@ -133,8 +136,22 @@ class WindowGraphDecoder:
         ].clone()
 
 
+@dataclass(kw_only=True)
+class PendingStreamFrames:
+    """Frames a stream sent that are not decoded yet, and when each complete window among them became ready."""
+
+    frames: list[torch.Tensor] = field(default_factory=list)
+    frame_count: int = 0
+    ready_times: collections.deque[float] = field(default_factory=collections.deque)
+
+
 class Drama3VocoderScheduler(StreamingVocoderScheduler):
-    """Decode complete windows regardless of incoming frame chunk sizes."""
+    """Decode complete windows regardless of incoming frame chunk sizes.
+
+    With first_window_priority, chunks are only queued on arrival and complete windows decode one per step: every stream's
+    first window before any later window, each group in the order its windows became complete. A stream's windows keep
+    their boundaries and order, so its audio is the same; only the order across streams changes.
+    """
 
     def __init__(
         self,
@@ -150,6 +167,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         max_batch_wait_ms: int,
         decode_window: WindowDecoder | None = None,
         max_padded_frames_per_decode: int | None = None,
+        first_window_priority: bool = False,
     ) -> None:
         if not all(stride > 0 for stride in stream_followup_stride_ramp):
             raise ValueError(
@@ -173,13 +191,99 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         self.stream_window_counts: dict[str, int] = {}
         self.first_windows: dict[str, int] = {}
         self.max_padded_frames_per_decode = max_padded_frames_per_decode
+        self.first_window_priority = first_window_priority
+        self.pending_frames: dict[str, PendingStreamFrames] = {}
+        # note (0xtoward): streams with a complete window to decode, so the per-message readiness check stays O(1).
+        self.ready_request_ids: set[str] = set()
 
-    def followup_stride(self, request_id: str) -> int:
-        window_count = self.stream_window_counts.get(request_id, 0)
+    def stride_after_window(self, window_count: int) -> int:
         if window_count < len(self.stream_followup_stride_ramp):
             return self.stream_followup_stride_ramp[window_count]
         else:
             return self.stream_followup_stride
+
+    def followup_stride(self, request_id: str) -> int:
+        return self.stride_after_window(self.stream_window_counts.get(request_id, 0))
+
+    def window_end_frame(self, window_count: int) -> int:
+        """Frames a stream has sent when its window number window_count (from 0) is complete."""
+        end_frame = self.stream_stride
+        for index in range(window_count):
+            end_frame += self.stride_after_window(index)
+        return end_frame
+
+    def queue_frames(self, request_id: str, frame_codes: torch.Tensor) -> None:
+        pending = self.pending_frames.setdefault(request_id, PendingStreamFrames())
+        pending.frames.append(frame_codes)
+        pending.frame_count += int(frame_codes.shape[1])
+        state = self.stream_states.get(request_id)
+        received_frame_count = (
+            0 if state is None else state.total_tokens
+        ) + pending.frame_count
+        window_count = self.stream_window_counts.get(request_id, 0) + len(
+            pending.ready_times
+        )
+        now = time.monotonic()
+        while received_frame_count >= self.window_end_frame(window_count):
+            pending.ready_times.append(now)
+            self.ready_request_ids.add(request_id)
+            window_count += 1
+
+    def take_pending_frames(
+        self, pending: PendingStreamFrames, frame_count: int
+    ) -> torch.Tensor:
+        frames = (
+            torch.cat(pending.frames, dim=1)
+            if len(pending.frames) > 1
+            else pending.frames[0]
+        )
+        pending.frames = (
+            [frames[:, frame_count:]] if frames.shape[1] > frame_count else []
+        )
+        pending.frame_count -= frame_count
+        return frames[:, :frame_count]
+
+    def has_ready_work(self) -> bool:
+        return bool(self.ready_request_ids)
+
+    def run_ready_step(self) -> None:
+        """Decode one complete window: first windows first, then the window that became complete earliest."""
+        with self.state_lock:
+            ranked = sorted(
+                (
+                    self.stream_window_counts.get(request_id, 0) > 0,
+                    self.pending_frames[request_id].ready_times[0],
+                    request_id,
+                )
+                for request_id in self.ready_request_ids
+            )
+            if not ranked:
+                return
+            else:
+                request_id = ranked[0][2]
+            pending = self.pending_frames[request_id]
+            state = self.stream_states.get(request_id)
+            window_frame_count = self.window_end_frame(
+                self.stream_window_counts.get(request_id, 0)
+            ) - (0 if state is None else state.total_tokens)
+            pending.ready_times.popleft()
+            if not pending.ready_times:
+                self.ready_request_ids.discard(request_id)
+            else:
+                pass
+            try:
+                messages = self.stream_frames(
+                    request_id, self.take_pending_frames(pending, window_frame_count)
+                )
+            except Exception as exc:
+                self.emit_error(request_id, exc)
+                self.abort(request_id)
+                return
+            for message in messages:
+                if not self.is_aborted(request_id):
+                    self.outbox.put(message)
+                else:
+                    pass
 
     def stream_frames(
         self, request_id: str, frame_codes: torch.Tensor
@@ -245,11 +349,23 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
                 self.first_windows[request_id] = first_window
             else:
                 pass
-            return self.stream_frames(request_id, frame_codes)
+            if self.first_window_priority:
+                self.queue_frames(request_id, frame_codes)
+                return []
+            else:
+                return self.stream_frames(request_id, frame_codes)
 
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
         """Stream the frames no chunk carried, skipping those already streamed, then
         flush the tail and send the final result."""
+        pending = self.pending_frames.pop(request_id, None)
+        self.ready_request_ids.discard(request_id)
+        if pending is not None and pending.frame_count > 0:
+            messages = self.stream_frames(
+                request_id, self.take_pending_frames(pending, pending.frame_count)
+            )
+        else:
+            messages = []
         frames = generation_result_of(self.payloads[request_id]).frames
         streamed_frame_count = self.stream_states.setdefault(
             request_id, StreamVocoderState()
@@ -261,9 +377,11 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
             )
         else:
             pass
-        return self.stream_frames(
-            request_id, frames[streamed_frame_count:].T
-        ) + super().on_stream_done(request_id)
+        return (
+            messages
+            + self.stream_frames(request_id, frames[streamed_frame_count:].T)
+            + super().on_stream_done(request_id)
+        )
 
     def validate_non_streaming_payload(self, payload: StagePayload) -> None:
         generation_result_of(payload)
@@ -272,6 +390,8 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         super().clear_stream_state(request_id)
         self.stream_window_counts.pop(request_id, None)
         self.first_windows.pop(request_id, None)
+        self.pending_frames.pop(request_id, None)
+        self.ready_request_ids.discard(request_id)
 
     def final_result_data(self, payload: StagePayload) -> FinalAudioData:
         result = generation_result_of(payload)
