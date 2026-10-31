@@ -35,6 +35,7 @@ DEFAULT_REFERENCE_SAMPLING_FALLBACK: ReferenceSamplingFallback = "argmax"
 DEFAULT_TOWER_FUSED_LAYERS = True
 DEFAULT_ENABLE_ASYNC_DECODE = False
 DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
+DEFAULT_LARGE_FIRST_WINDOW = 10
 # The codec of the public S2-Pro release, pinned to an immutable commit.
 DEFAULT_CODEC_PATH = "fishaudio/s2-pro@1de9996b6be38b745688de084d87a5633f714e4e"
 PREPROCESSING_TOTAL_RESERVE_BYTES = "6GiB"
@@ -80,6 +81,10 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     async_decode_min_batch_size: int = Field(
         default=DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE, ge=1
     )
+    # adaptive: each prefill picks its interval from the arrivals per decode step and each
+    # request its first window from the decode step time; fixed keeps prefill_decode_interval.
+    prefill_interval_policy: Literal["fixed", "adaptive"] = "fixed"
+    large_first_window: int = Field(default=DEFAULT_LARGE_FIRST_WINDOW, ge=1)
 
 
 class Drama3EngineStageConfig(EngineStageConfig):

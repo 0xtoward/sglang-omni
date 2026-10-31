@@ -66,6 +66,8 @@ class Drama3RequestData(SGLangARRequestData):
     prompt_row_count: int = 0
     streamed_frame_count: int = 0
     epsilon_cutoff: float = 0.0
+    # 0 streams the configured first window; the adaptive prefill cadence sets one per request.
+    first_window: int = 0
 
 
 class Drama3RequestBuilder:
@@ -306,12 +308,13 @@ class Drama3FrameStreamer:
         sampled_frame_count = (
             len(request_data.frame_rows) - request_data.prompt_row_count
         )
-        if sampled_frame_count <= self.stream_stride:
+        first_window = request_data.first_window or self.stream_stride
+        if sampled_frame_count <= first_window:
             window_end = sampled_frame_count
         else:
             window_end = frames_in_complete_windows(
                 sampled_frame_count,
-                stream_stride=self.stream_stride,
+                stream_stride=first_window,
                 stream_followup_stride_ramp=self.stream_followup_stride_ramp,
                 stream_followup_stride=self.stream_followup_stride,
             )
@@ -323,6 +326,11 @@ class Drama3FrameStreamer:
             )
             window_end_row = request_data.prompt_row_count + window_end
             window_rows = request_data.frame_rows[window_start_row:window_end_row]
+            metadata: dict[str, object] = {"modality": "audio_codes"}
+            if request_data.streamed_frame_count == 0 and request_data.first_window:
+                metadata["first_window"] = request_data.first_window
+            else:
+                pass
             request_data.streamed_frame_count = window_end
             return [
                 OutgoingMessage(
@@ -330,6 +338,6 @@ class Drama3FrameStreamer:
                     type="stream",
                     data=torch.tensor(window_rows, dtype=torch.int64, device="cpu").T,
                     target=VOCODER_STAGE,
-                    metadata={"modality": "audio_codes"},
+                    metadata=metadata,
                 )
             ]

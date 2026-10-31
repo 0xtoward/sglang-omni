@@ -45,6 +45,10 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
+from sglang_omni.models.fishaudio_drama3.prefill_cadence import (
+    PrefillCadence,
+    PrefillCadenceConfig,
+)
 from sglang_omni.models.fishaudio_drama3.quantization import (
     INT4_QUANTIZATION_METHOD,
     QUANTIZATION_METHOD,
@@ -62,6 +66,7 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     CodebookSampler,
     triton_sampling_unsupported_reason,
 )
+from sglang_omni.models.fishaudio_drama3.scheduler import Drama3Scheduler
 from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     FUSED_KERNELS,
@@ -73,6 +78,7 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
     SGLangGenerationEngineBuilder,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
@@ -118,7 +124,16 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        prefill_cadence: PrefillCadenceConfig | None = None,
     ) -> None:
+        if prefill_cadence is not None and enable_async_decode:
+            raise ValueError(
+                "Drama 3's adaptive prefill interval runs without async decode; set "
+                "tts_engine.factory.enable_async_decode false"
+            )
+        else:
+            pass
+        self.prefill_cadence = prefill_cadence
         self.context_length = context_length
         self.max_running_requests = max_running_requests
         self.stream_stride = stream_stride
@@ -369,6 +384,25 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
                 f"{first_frame_graphs.static_input_bytes / 2**20:.1f} MiB, reserved "
                 f"memory +{first_frame_graphs.reserved_bytes / 2**20:.1f} MiB"
             )
+
+    def scheduler_type(self) -> type[OmniScheduler[Drama3RequestData]]:
+        if self.prefill_cadence is None:
+            return super().scheduler_type()
+        else:
+            return Drama3Scheduler
+
+    def post_scheduler_setup(
+        self,
+        scheduler: OmniScheduler[Drama3RequestData],
+        model_runner: Drama3ModelRunner,
+    ) -> None:
+        super().post_scheduler_setup(scheduler, model_runner)
+        if isinstance(scheduler, Drama3Scheduler):
+            assert self.prefill_cadence is not None
+            scheduler.install_cadence(PrefillCadence(self.prefill_cadence))
+            logger.info(f"Drama 3 prefill interval: adaptive, {self.prefill_cadence}")
+        else:
+            pass
 
     def make_model_runner(
         self, model_worker: ModelWorker, output_proc: SGLangOutputProcessor

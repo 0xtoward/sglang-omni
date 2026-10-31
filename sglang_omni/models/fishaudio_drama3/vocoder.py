@@ -171,6 +171,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         )
         self.stream_followup_stride_ramp = tuple(stream_followup_stride_ramp)
         self.stream_window_counts: dict[str, int] = {}
+        self.first_windows: dict[str, int] = {}
         self.max_padded_frames_per_decode = max_padded_frames_per_decode
 
     def followup_stride(self, request_id: str) -> int:
@@ -185,11 +186,12 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
     ) -> list[OutgoingMessage]:
         """Audio chunks for frames [1 + num_codebooks, frames] given in order."""
         state = self.stream_states.setdefault(request_id, StreamVocoderState())
+        first_window = self.first_windows.get(request_id, self.stream_stride)
         messages: list[OutgoingMessage] = []
         incoming_frame_count = frame_codes.shape[1]
         first_frame_index = 0
         while first_frame_index < incoming_frame_count:
-            window_end_frame = state.next_vocode_tokens or self.stream_stride
+            window_end_frame = state.next_vocode_tokens or first_window
             remaining_window_frame_count = window_end_frame - state.total_tokens
             if incoming_frame_count - first_frame_index < remaining_window_frame_count:
                 end_frame_index = incoming_frame_count
@@ -202,7 +204,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
                 frame_codes[:, first_frame_index:end_frame_index],
                 codec=self.codec,
                 device=self.device,
-                stream_stride=self.stream_stride,
+                stream_stride=first_window,
                 stream_followup_stride=self.followup_stride(request_id),
                 stream_overlap_tokens=self.stream_overlap_tokens,
                 stream_crossfade_samples=self.stream_crossfade_samples,
@@ -238,6 +240,11 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
                 f"got {type(frame_codes).__name__}"
             )
         else:
+            first_window = (chunk.metadata or {}).get("first_window")
+            if isinstance(first_window, int):
+                self.first_windows[request_id] = first_window
+            else:
+                pass
             return self.stream_frames(request_id, frame_codes)
 
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
@@ -264,6 +271,7 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
     def clear_stream_state(self, request_id: str) -> None:
         super().clear_stream_state(request_id)
         self.stream_window_counts.pop(request_id, None)
+        self.first_windows.pop(request_id, None)
 
     def final_result_data(self, payload: StagePayload) -> FinalAudioData:
         result = generation_result_of(payload)
