@@ -73,6 +73,7 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
     SGLangGenerationEngineBuilder,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
@@ -80,7 +81,8 @@ FISH_OMNI_ARCHITECTURE = "FishOmniModel"
 # The tower re-plans this backend's metadata for its first frame.
 ATTENTION_BACKEND = "triton"
 PREFILL_CUDA_GRAPH_MAX_TOKENS = 2048
-DECODE_STEPS_BETWEEN_PREFILLS = 4
+DECODE_STEPS_BETWEEN_PREFILLS = 8
+MIXED_PREFILL_TOKEN_BUDGET = 32768
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +158,10 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             "prefill_decode_interval": DECODE_STEPS_BETWEEN_PREFILLS,
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
-            "enable_mixed_chunk": False,
-            "chunked_prefill_size": -1,
+            "enable_mixed_chunk": True,
+            "chunked_prefill_size": max(
+                MIXED_PREFILL_TOKEN_BUDGET, self.max_prompt_rows
+            ),
             "attention_backend": ATTENTION_BACKEND,
             "enable_torch_compile": False,
             "trust_remote_code": False,
@@ -181,10 +185,13 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         ).text_config.max_position_embeddings
         if not server_args.disable_radix_cache:
             raise ValueError("Drama 3 needs disable_radix_cache=True")
-        elif chunked_prefill_size > 0 or server_args.enable_mixed_chunk:
+        elif server_args.enable_mixed_chunk != (chunked_prefill_size > 0) or (
+            chunked_prefill_size > 0 and chunked_prefill_size < self.max_prompt_rows
+        ):
             raise ValueError(
-                "Drama 3 needs chunked_prefill_size <= 0 and no mixed chunk: a "
-                "prompt must reach the tower in one extend"
+                f"Drama 3 runs either without chunked prefill or with mixed chunk and "
+                f"chunked_prefill_size >= max_prompt_rows ({self.max_prompt_rows}): a "
+                f"prompt must reach the tower in one extend"
             )
         elif not server_args.disable_overlap_schedule:
             raise ValueError("Drama 3 runs without overlap scheduling")
@@ -345,9 +352,15 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             )
         else:
             assert isinstance(attention_backend, HybridLinearAttnBackend)
-            max_request_count = min(
-                self.first_frame_cuda_graph_max_requests, decode_graph_runner.max_bs
-            )
+            if server_args.enable_mixed_chunk:
+                # note (0xtoward): a mixed step samples a frame for every running request too,
+                # so the first-frame graphs cover every batch the decode graph covers.
+                max_request_count = decode_graph_runner.max_bs
+            else:
+                max_request_count = min(
+                    self.first_frame_cuda_graph_max_requests,
+                    decode_graph_runner.max_bs,
+                )
             text_config = model.config.text_config
             first_frame_graphs = Drama3FirstFrameGraphs.capture(
                 sample_first_frames=model.sample_first_frames,
@@ -394,6 +407,20 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             ),
             Drama3ResultAdapter(eos_token_id=model.config.eos_token_id),
         )
+
+    def post_scheduler_setup(
+        self,
+        scheduler: OmniScheduler[Drama3RequestData],
+        model_runner: Drama3ModelRunner,
+    ) -> None:
+        # note (0xtoward): Whole-prompt admission keeps the budget without truncating the tower history.
+        if scheduler.is_mixed_chunk:
+            scheduler.max_prefill_tokens = min(
+                scheduler.max_prefill_tokens, scheduler.chunked_prefill_size
+            )
+            scheduler.chunked_prefill_size = None
+        else:
+            pass
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Drama3RequestData]:
         """The frame streamer make_adapters created, which build calls first."""

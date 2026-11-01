@@ -315,3 +315,11 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 - [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
 - [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
 - [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
+
+## Mixed prompt and decode steps
+
+Mixed steps are enabled by default, with eight scheduling rounds between prefills and a 32768-token prompt budget. A mixed step advances running requests while it processes new prompts. Each prompt enters the tower in full. The budget limits whole-request admission and never divides a prompt. First-frame CUDA graphs cover the largest decode batch.
+
+On one H200 at concurrency 48, short smoke runs with synchronous decode measured 74.95 audio seconds per second for exclusive steps and 78.01 for mixed steps. First audio p50 changed from 0.218 to 0.242 seconds. With async decode, the mixed version did not beat exclusive steps. In the combined batched-vocoder configuration, throughput was 84.81 for exclusive and 82.48 for mixed, with first audio p50 of 0.248 and 0.317 seconds. These measurements use a fixed interval of eight and are not a universal improvement claim.
+
+To use exclusive steps, set both `--tts_engine.engine.enable_mixed_chunk false` and `--tts_engine.engine.chunked_prefill_size -1`. Set `--tts_engine.engine.prefill_decode_interval 4` to restore the previous interval. Keep mixed steps disabled when async exclusive execution better meets the deployment's latency target.

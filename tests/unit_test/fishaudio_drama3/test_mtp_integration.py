@@ -54,6 +54,7 @@ from sglang_omni.models.fishaudio_drama3.model_runner import (
     extend_frame_rows,
     ras_window,
     request_data_of,
+    step_frame_rows,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import (
     MINIMUM_PROMPT_ROWS,
@@ -694,6 +695,29 @@ def test_prefill_rows_reject_a_history_that_is_not_the_sequence() -> None:
 
     with pytest.raises(RuntimeError, match="history"):
         extend_frame_rows(data)
+
+
+def test_mixed_step_rows_feed_a_running_request_its_newest_frame() -> None:
+    sampled = [[82, 2, 0, 1, 3], [85, 5, 1, 1, 1]]
+    data = built_request(frame_rows_of([4], seed=5)[0])
+    data.frame_rows.extend(sampled)
+
+    rows = step_frame_rows(data, prefix_length=5, extend_length=1)
+
+    assert rows == sampled[-1:], "a mixed decode row is the newest frame"
+
+
+@pytest.mark.parametrize(
+    ("prefix_length", "extend_length"), [(4, 2), (3, 1)], ids=["chunk", "older-frame"]
+)
+def test_mixed_step_rows_reject_a_chunk_or_an_older_frame(
+    prefix_length: int, extend_length: int
+) -> None:
+    data = built_request(frame_rows_of([4], seed=5)[0])
+    data.frame_rows.extend([[82, 2, 0, 1, 3], [85, 5, 1, 1, 1]])
+
+    with pytest.raises(RuntimeError, match="one newest frame"):
+        step_frame_rows(data, prefix_length, extend_length)
 
 
 def step_inputs(
@@ -1434,11 +1458,13 @@ def decode_output(
 def prefill_output(
     runner: Drama3ModelRunner, requests: list[SchedulerRequest]
 ) -> ModelRunnerOutput:
-    return runner.execute(
-        SchedulerOutput(
-            requests=requests, batch_data=schedule_batch_of(ForwardMode.EXTEND)
-        )
-    )
+    schedule_batch = schedule_batch_of(ForwardMode.EXTEND)
+    # A whole-prompt prefill extends every request from no prefix.
+    schedule_batch.prefix_lens = [0] * len(requests)
+    schedule_batch.extend_lens = [
+        len(request_data_of(request).frame_rows) for request in requests
+    ]
+    return runner.execute(SchedulerOutput(requests=requests, batch_data=schedule_batch))
 
 
 def launched_step(
@@ -2296,7 +2322,8 @@ def test_engine_defaults_pass_its_own_validation(tmp_path: Path) -> None:
     builder.validate_before_infrastructure(server_args)
     graph_config = resolved_view(server_args).cuda_graph_config
     assert server_args.page_size == 1
-    assert server_args.chunked_prefill_size == -1
+    assert server_args.enable_mixed_chunk
+    assert server_args.chunked_prefill_size >= builder.max_prompt_rows
     assert not server_args.disable_cuda_graph
     assert graph_config.decode.backend == CudaGraphBackend.FULL
     assert graph_config.prefill.backend == CudaGraphBackend.BREAKABLE
@@ -2484,3 +2511,22 @@ def test_the_first_frame_step_reads_cutoffs_at_the_decode_buffers_address() -> N
     epsilon_cutoff = model.audio_decoder.decode_step.call_args.args[9]
     assert epsilon_cutoff.shape == (request_count,)
     assert epsilon_cutoff.data_ptr() == model.decode_buffers.epsilon_cutoff.data_ptr()
+
+
+@pytest.mark.parametrize("chunk_budget, expected_budget", [(8192, 4096), (512, 512)])
+def test_mixed_admission_keeps_whole_prompts(
+    chunk_budget: int, expected_budget: int
+) -> None:
+    scheduler = SimpleNamespace(
+        is_mixed_chunk=True, chunked_prefill_size=chunk_budget, max_prefill_tokens=4096
+    )
+    Drama3EngineBuilder.post_scheduler_setup(None, scheduler, None)
+    assert scheduler.is_mixed_chunk
+    assert scheduler.chunked_prefill_size is None
+    assert scheduler.max_prefill_tokens == expected_budget
+
+
+def test_mixed_step_rejects_a_truncated_first_prompt() -> None:
+    data = built_request(frame_rows_of([4], seed=5)[0])
+    with pytest.raises(RuntimeError, match="whole prompt"):
+        step_frame_rows(data, prefix_length=0, extend_length=3)
