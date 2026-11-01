@@ -74,7 +74,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "first_frame_cuda_graph_max_requests": 16,
         "triton_sampling": True,
         "tower_fused_layers": True,
-        "enable_async_decode": False,
+        "enable_async_decode": True,
         "async_decode_min_batch_size": 1,
         "stream_stride": 4,
         "stream_followup_stride_ramp": (10, 12, 32),
@@ -87,6 +87,8 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         **VOCODER_WINDOWS,
         "window_cuda_graphs": True,
         "decode_dtype": "float16",
+        "first_window_priority": True,
+        "stream_window_batch_size": 8,
         "max_new_tokens": 2048,
     }
 

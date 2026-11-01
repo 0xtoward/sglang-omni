@@ -393,6 +393,9 @@ def cpu_vocoder(factory_args: Drama3VocoderFactoryArgs) -> Drama3VocoderSchedule
         max_batch_wait_ms=factory_args.max_batch_wait_ms,
         window_cuda_graphs=factory_args.window_cuda_graphs,
         decode_dtype=factory_args.decode_dtype,
+        first_window_priority=factory_args.first_window_priority,
+        first_window_priority_ms=factory_args.first_window_priority_ms,
+        stream_window_batch_size=factory_args.stream_window_batch_size,
         max_new_tokens=DEFAULT_MAX_NEW_TOKENS_CAP,
     )
 

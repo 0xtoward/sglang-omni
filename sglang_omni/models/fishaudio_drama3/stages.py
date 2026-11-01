@@ -281,6 +281,9 @@ def create_vocoder_executor(
     decode_dtype: Literal["float32", "float16"],
     max_new_tokens: int,
     total_gpu_memory_fraction: float | None = None,
+    first_window_priority: bool,
+    first_window_priority_ms: float | None,
+    stream_window_batch_size: int,
 ) -> Drama3VocoderScheduler:
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     torch_device = torch.device(resolved_device)
@@ -305,6 +308,10 @@ def create_vocoder_executor(
                 stream_followup_stride_ramp=stream_followup_stride_ramp,
                 stream_followup_stride=stream_followup_stride,
                 stream_overlap_tokens=stream_overlap_tokens,
+            ),
+            batch_sizes=tuple(
+                1 << power
+                for power in range((stream_window_batch_size - 1).bit_length() + 1)
             ),
         )
     else:
@@ -331,4 +338,7 @@ def create_vocoder_executor(
         max_batch_wait_ms=max_batch_wait_ms,
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
+        first_window_priority=first_window_priority,
+        first_window_priority_ms=first_window_priority_ms,
+        stream_window_batch_size=stream_window_batch_size,
     )

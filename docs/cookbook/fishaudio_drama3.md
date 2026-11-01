@@ -315,3 +315,13 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 - [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
 - [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
 - [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
+
+## Streaming window scheduling
+
+Async decode and first-window priority are enabled by default. The vocoder decodes up to eight ready windows together, including final partial windows. It does not wait to fill a batch. Each stream retains its own overlap, crossfade and output length.
+
+First-window priority reduces time to first audio by delaying some follow-up windows. At concurrency 256 on one H200, the mean throughput across two starts rose from 142.71 to 147.70 audio seconds per second when final windows also used batches. This load still exceeded real-time capacity. Against FIFO in separate smoke runs, first audio improved from 2.823 to 0.518 seconds, while the median longest stall increased from 1.477 to 1.932 seconds.
+
+Set `--vocoder.factory.first_window_priority_ms 250` to limit the priority advantage using window ready times. In the same overload study, first audio was 2.131 seconds and the median longest stall was 1.125 seconds. This uses server queue times, not client playback feedback.
+
+Use `--vocoder.factory.stream_window_batch_size 1` for single-window decoding. To restore FIFO, also set `--vocoder.factory.first_window_priority false`. Use `--tts_engine.factory.enable_async_decode false` for synchronous decode. Batched FP16 decoding changes rounding: a real codec probe measured maximum absolute sample differences of 0.0014 to 0.0054. WER and speaker similarity for batched windows remain unmeasured.

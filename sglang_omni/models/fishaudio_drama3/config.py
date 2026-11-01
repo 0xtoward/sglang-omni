@@ -33,7 +33,7 @@ ReferenceSamplingFallback = Literal["argmax", "ras"]
 DEFAULT_REFERENCE_SAMPLING = False
 DEFAULT_REFERENCE_SAMPLING_FALLBACK: ReferenceSamplingFallback = "argmax"
 DEFAULT_TOWER_FUSED_LAYERS = True
-DEFAULT_ENABLE_ASYNC_DECODE = False
+DEFAULT_ENABLE_ASYNC_DECODE = True
 DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
 # The codec of the public S2-Pro release, pinned to an immutable commit.
 DEFAULT_CODEC_PATH = "fishaudio/s2-pro@1de9996b6be38b745688de084d87a5633f714e4e"
@@ -101,6 +101,17 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     max_batch_wait_ms: int = Field(default=2, ge=0)
     window_cuda_graphs: bool = True
     decode_dtype: Literal["float32", "float16"] = "float16"
+    first_window_priority: bool = Field(
+        default=True, description="Decode ready first windows before follow-up windows."
+    )
+    first_window_priority_ms: float | None = Field(
+        default=None,
+        ge=0,
+        description="Optional priority head start in milliseconds; None gives first windows strict priority.",
+    )
+    stream_window_batch_size: int = Field(
+        default=8, ge=1, description="Maximum ready streaming windows per codec decode."
+    )
 
 
 class Drama3VocoderStageConfig(StageConfig):
