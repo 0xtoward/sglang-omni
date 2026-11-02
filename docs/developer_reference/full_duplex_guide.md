@@ -1310,10 +1310,14 @@ Any 16 kHz mono PCM16 question WAVs work for `build`; `--questions-per-session` 
 
 `benchmark_duplex_sessions video --rows test.jsonl --videos-root vmme --output-dir duplex-input/video` builds camera sessions from Video-MME rows: the video's soundtrack with a 1 fps frame per unit, then the spoken question and a pause for the answer. A session's own frames go in `<stem>.frames.json` (`{unit: JPEG path}`), which the recorder sends once at their units in place of `--frames-dir`; a unit without an entry sends no frame.
 
-With `--server-url http://127.0.0.1:8097`, the sweep adds two server-side views. Run it on the server's host, since the server writes them to this filesystem:
+With `--server-url http://127.0.0.1:8097`, the sweep adds server-side views. Run it on the server's host, since the server writes them to this filesystem:
 
 - `--stage-events` records the request event recorder during each level, groups requests by the stages they went through (a listening unit stops at the thinker, a speaking one reaches the speech stage) and adds a table of the longest group: median (p90) milliseconds from admission to response, in each stage's queue, prefill, decode, compute or first chunk, and in the hops between stages.
+- The same events give two batch tables. For each SGLang scheduler, the time-weighted mean (p90) of running requests, and prefills per second times requests per prefill. For each stage on a simple or session scheduler, such as the encoders, Code2Wav and the full-duplex perception and speech stages, the requests per batch, the share of requests that ran alone, the stage's busy share and the p90 wait from dispatch to the start of a request's batch.
 - `--gpu-memory` samples every GPU's used memory and busy share and every compute process's memory once a second, and adds a table of peaks per process. With `--stage-events`, each process is named by the stage that wrote its events. Under MPS the memory stays per process, but `nvidia-smi` charges all SM time to the MPS server, so the busy share is the whole card's.
+- `--nsys-session NAME` collects, at every level, the Nsight Systems session of a server started under `nsys launch --session-new=NAME --trace=python-gil,nvtx --trace-fork-before-exec=true` and adds per process the share of the level some thread held the GIL, the busiest thread's wait share and the holds of 20 ms or more. It costs about 2% throughput and does not work under MPS.
+
+The views live in `benchmarks/metrics/server_probes.py` and work for any pipeline, not only full duplex: wrap a load run of any benchmark in `request_events` (and `gpu_memory_samples`), then call `stage_split`, `scheduler_batches`, `simple_stage_batches` or `stage_memory` on its event directory.
 
 (minicpm-o-45-on-one-h100)=
 

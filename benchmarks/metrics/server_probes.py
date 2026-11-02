@@ -363,6 +363,59 @@ def scheduler_batches(event_dir: Path) -> dict[str, JsonValue]:
     }
 
 
+def simple_stage_batches(event_dir: Path) -> dict[str, JsonValue]:
+    """Per stage on a SimpleScheduler or SessionScheduler, its batch sizes, how long it held each batch open for more requests, each request's wait from dispatch to its batch and each batch's compute time.
+
+    The requests of one batch share its scheduler_batch_start timestamp; busy is the share of the stage's window spent computing.
+    """
+    dispatch_ns: dict[str, dict[str, int]] = defaultdict(dict)
+    batch_request_ids: dict[str, dict[int, list[str]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    gather_ms: dict[str, dict[int, float]] = defaultdict(dict)
+    end_ns: dict[str, dict[str, int]] = defaultdict(dict)
+    for event in level_events(event_dir):
+        stage, request_id = event["stage"], event["request_id"]
+        if event["event_name"] == "stage_dispatch":
+            dispatch_ns[stage].setdefault(request_id, event["timestamp_ns"])
+        elif event["event_name"] == "scheduler_batch_start":
+            batch_request_ids[stage][event["timestamp_ns"]].append(request_id)
+            gather_ms[stage][event["timestamp_ns"]] = event["metadata"]["gather_ms"]
+        elif event["event_name"] == "scheduler_batch_end":
+            end_ns[stage].setdefault(request_id, event["timestamp_ns"])
+        else:
+            pass
+    summaries: dict[str, JsonValue] = {}
+    for stage, batches in sorted(batch_request_ids.items()):
+        sizes = [len(request_ids) for request_ids in batches.values()]
+        compute_ms = [
+            (end_ns[stage][request_ids[0]] - start_ns) / 1e6
+            for start_ns, request_ids in batches.items()
+            if request_ids[0] in end_ns[stage]
+        ]
+        window_ms = (max([*batches, *end_ns[stage].values()]) - min(batches)) / 1e6
+        summaries[stage] = {
+            "batches": len(sizes),
+            "requests_per_batch_mean": float(np.mean(sizes)),
+            "requests_per_batch_max": max(sizes),
+            "requests_alone_percent": 100 * sizes.count(1) / sum(sizes),
+            "gather_ms": quantiles_ms(list(gather_ms[stage].values())),
+            "wait_ms": quantiles_ms(
+                [
+                    (start_ns - dispatch_ns[stage][request_id]) / 1e6
+                    for start_ns, request_ids in batches.items()
+                    for request_id in request_ids
+                    if request_id in dispatch_ns[stage]
+                ]
+            ),
+            "compute_ms": quantiles_ms(compute_ms),
+            "busy_percent": (
+                100 * sum(compute_ms) / window_ms if window_ms > 0 else None
+            ),
+        }
+    return summaries
+
+
 def gil_shares(sqlite_path: Path, event_dir: Path) -> dict[str, JsonValue]:
     """Per server process, named by its stage when it wrote request events, from an Nsight Systems python-gil export:
     the share of the collection window some thread held the GIL, the holds of at least 20 ms, and the busiest threads'

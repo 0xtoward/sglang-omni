@@ -435,6 +435,55 @@ def test_level_splits_requests_by_stage_path_and_names_memory_by_stage(
     }
 
 
+def test_level_counts_batch_sizes_waits_and_busy_share_of_simple_stages(
+    tmp_path: Path,
+) -> None:
+    run_dir = record_run(tmp_path / "concurrency-1", 1, [("pass", ON_TIME)])
+    event_dir = tmp_path / "concurrency-1.events"
+    event_dir.mkdir()
+    events = [
+        ("a", "stage_dispatch", 5.0, {}),
+        ("b", "stage_dispatch", 8.0, {}),
+        ("a", "scheduler_batch_start", 10.0, {"batch_size": 2, "gather_ms": 2.0}),
+        ("b", "scheduler_batch_start", 10.0, {"batch_size": 2, "gather_ms": 2.0}),
+        ("a", "scheduler_batch_end", 30.0, {"batch_size": 2}),
+        ("b", "scheduler_batch_end", 30.0, {"batch_size": 2}),
+        ("c", "stage_dispatch", 40.0, {}),
+        ("c", "scheduler_batch_start", 40.0, {"batch_size": 1, "gather_ms": 0.0}),
+        ("c", "scheduler_batch_end", 50.0, {"batch_size": 1}),
+    ]
+    (event_dir / "events_code2wav_23.jsonl").write_text(
+        "".join(
+            json.dumps(
+                {
+                    "request_id": request_id,
+                    "stage": "code2wav",
+                    "event_name": event_name,
+                    "timestamp_ns": int(time_ms * 1e6),
+                    "metadata": metadata,
+                }
+            )
+            + "\n"
+            for request_id, event_name, time_ms, metadata in events
+        )
+    )
+
+    level = summarize_level(run_dir, PLAYBACK_RESERVE_S, PREBUFFERS_S)
+
+    batches = level["simple_stage_batches"]["code2wav"]
+    assert (batches["batches"], batches["requests_per_batch_max"]) == (2, 2)
+    assert batches["requests_per_batch_mean"] == pytest.approx(1.5)
+    assert batches["requests_alone_percent"] == pytest.approx(100 / 3), "c ran alone"
+    assert batches["gather_ms"]["p50"] == pytest.approx(1.0)
+    assert batches["wait_ms"] == pytest.approx(
+        {"count": 3, "p50": 2.0, "p90": 4.4}
+    ), "a, b and c waited 5, 2 and 0 ms"
+    assert batches["compute_ms"] == pytest.approx(
+        {"count": 2, "p50": 15.0, "p90": 19.0}
+    ), "the batches computed for 20 and 10 ms"
+    assert batches["busy_percent"] == pytest.approx(75.0), "30 of the 40 ms computed"
+
+
 def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> None:
     passing = [("pass", ON_TIME)]
     report = serving_report(

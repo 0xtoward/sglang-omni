@@ -209,6 +209,36 @@ def format_server_tables(report: dict[str, JsonValue]) -> str:
             tables += f"| {name} | " + " | ".join(cells) + " |\n"
     else:
         pass
+    simple = [level for level in report["levels"] if level["simple_stage_batches"]]
+    if simple:
+        tables += (
+            "\nBatches of the simple and session stages: requests per batch mean (max) / "
+            "requests that ran alone / busy share / p90 wait from dispatch to the batch:\n\n"
+            "| stage | "
+            + " | ".join(f"N={level['concurrency']}" for level in simple)
+            + " |\n|---|"
+            + "---:|" * len(simple)
+            + "\n"
+        )
+        for name in sorted(
+            {name for level in simple for name in level["simple_stage_batches"]}
+        ):
+            cells = []
+            for level in simple:
+                batches = level["simple_stage_batches"].get(name)
+                cells.append(
+                    "-"
+                    if batches is None
+                    or batches["busy_percent"] is None
+                    or batches["wait_ms"]["p90"] is None
+                    else f"{batches['requests_per_batch_mean']:.1f} "
+                    f"({batches['requests_per_batch_max']}) / "
+                    f"{batches['requests_alone_percent']:.0f}% / "
+                    f"{batches['busy_percent']:.0f}% / {batches['wait_ms']['p90']:.0f} ms"
+                )
+            tables += f"| {name} | " + " | ".join(cells) + " |\n"
+    else:
+        pass
     traced = [level for level in report["levels"] if level["gil"] is not None]
     if traced:
         tables += (

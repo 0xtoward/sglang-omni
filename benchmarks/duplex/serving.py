@@ -23,6 +23,7 @@ from benchmarks.metrics.server_probes import (
     level_memory_path,
     level_trace_path,
     scheduler_batches,
+    simple_stage_batches,
     stage_memory,
     stage_split,
 )
@@ -356,6 +357,11 @@ def summarize_level(
         ),
         "scheduler_batches": (
             scheduler_batches(level_event_dir(run_dir))
+            if level_event_dir(run_dir).is_dir()
+            else None
+        ),
+        "simple_stage_batches": (
+            simple_stage_batches(level_event_dir(run_dir))
             if level_event_dir(run_dir).is_dir()
             else None
         ),
