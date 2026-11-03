@@ -1024,3 +1024,7 @@ that happened to contain an older version of the test.
 ```bash
 python -m pytest tests/unit_test/models/test_streaming_cascade.py tests/unit_test/pipeline/test_streaming_cascade.py tests/unit_test/serve/test_session_bridge.py tests/unit_test/serve/test_session_wire.py tests/unit_test/serve/test_realtime_turn_based.py tests/unit_test/pipeline/test_session_graph.py -q
 ```
+
+- `unit_test/fishaudio_drama3/test_scheduler.py`: CPU tests for the production
+  prefill interval hooks, queue-budget release, fixed warmup fallback, and
+  bounded cost estimates.

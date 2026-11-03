@@ -76,6 +76,18 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     reference_sampling: bool | None = None
     reference_sampling_fallback: ReferenceSamplingFallback | None = None
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS
+    prefill_queue_budget_ms: float = Field(
+        default=0.0,
+        ge=0,
+        allow_inf_nan=False,
+        description="Maximum intentional prefill queue wait in ms; zero keeps fixed interval.",
+    )
+    prefill_interval_max_steps: int = Field(
+        default=8,
+        ge=1,
+        le=16,
+        description="Maximum decode steps between prefills with a queue budget.",
+    )
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE
     async_decode_min_batch_size: int = Field(
         default=DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE, ge=1

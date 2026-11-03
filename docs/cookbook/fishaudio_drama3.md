@@ -315,3 +315,57 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 - [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
 - [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
 - [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
+
+## Bounded prefill interval
+
+To adapt the decode interval to completed prefill and decode costs, set a queue
+wait budget. For example:
+
+```bash
+sgl-omni serve --model-path fishaudio/drama-3 \
+  --tts_engine.factory.enable_async_decode true \
+  --tts_engine.factory.prefill_queue_budget_ms 100 \
+  --tts_engine.factory.prefill_interval_max_steps 8
+```
+
+A zero queue budget (the default) keeps the configured fixed
+`--tts_engine.engine.prefill_decode_interval`. With a positive budget, the
+scheduler uses that fixed interval until it has four completed samples of each
+phase. It then selects `ceil(prefill_seconds / decode_seconds)`, bounded by
+`prefill_interval_max_steps` (1–16, default 8). This is a heuristic that amortizes
+one prefill over a comparable amount of decode time.
+
+The estimates are smoothed host timings: prefill launch to completed result, and
+consecutive decode completion intervals. They include host work and async collect
+variation; they are not GPU kernel measurements. Existing warmup requests supply
+samples without an additional synchronization or calibration workload.
+
+The oldest request reaching its queue budget releases the interval early. An
+empty running batch also releases it. This limits intentional scheduler delay;
+capacity limits and in-flight work can still exceed the budget. It does not
+guarantee time to first audio or playback continuity. Compare latency and audio
+throughput on the deployment workload before selecting a budget.
+
+A `Drama interval` log every 30 seconds reports completed cost estimates, sample
+counts, chosen interval counts, and early-release reasons. Request events retain
+the existing queue and execution timestamps.
+
+### Initial H200 observation
+
+A single unprofiled comparison used async decode, exclusive prefill, the original
+vocoder and windows: dense C128 with 384 requests, plus sparse C8 with 48 requests
+at 4 requests/s. All requests succeeded without length truncation.
+
+| Dense policy | Audio seconds/s | First audio p50/p95 (s) | Longest stall p50/p95 (s) |
+| --- | ---: | ---: | ---: |
+| Fixed 4 | 106.96 | 0.840 / 1.326 | 0.651 / 1.146 |
+| Fixed 8 | 106.94 | 1.087 / 1.378 | 0.605 / 0.985 |
+| Cost ratio, 100 ms budget, maximum 8 | 106.91 | 0.651 / 1.153 | 0.687 / 1.260 |
+
+The dynamic policy selected intervals 3–8. Throughput was similar and earlier
+first audio came with worse stalls. Sparse first-audio p95 was 0.112 / 0.135 /
+0.123 seconds for fixed 4 / fixed 8 / dynamic, with no stalls in any arm.
+The queue-budget release did not trigger; observed releases were from an empty
+running batch. This run validates cost-ratio engagement, not the budget-expiry
+path. The fixed default remains unchanged. These single runs do not establish
+an overall optimization or an audio-quality result.

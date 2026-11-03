@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -62,6 +63,7 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     CodebookSampler,
     triton_sampling_unsupported_reason,
 )
+from sglang_omni.models.fishaudio_drama3.scheduler import Drama3BudgetInterval
 from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     FUSED_KERNELS,
@@ -73,6 +75,7 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
     SGLangGenerationEngineBuilder,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
@@ -83,6 +86,10 @@ PREFILL_CUDA_GRAPH_MAX_TOKENS = 2048
 DECODE_STEPS_BETWEEN_PREFILLS = 4
 
 logger = logging.getLogger(__name__)
+
+
+class Drama3BudgetScheduler(Drama3BudgetInterval, OmniScheduler[Drama3RequestData]):
+    """Drama scheduler with a bounded cost-based prefill interval."""
 
 
 class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
@@ -118,7 +125,17 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        prefill_queue_budget_ms: float = 0.0,
+        prefill_interval_max_steps: int = 8,
     ) -> None:
+        if not math.isfinite(prefill_queue_budget_ms) or prefill_queue_budget_ms < 0:
+            raise ValueError("prefill_queue_budget_ms must be finite and nonnegative")
+        elif not 1 <= prefill_interval_max_steps <= 16:
+            raise ValueError("prefill_interval_max_steps must be between 1 and 16")
+        else:
+            pass
+        self.prefill_queue_budget_ms = prefill_queue_budget_ms
+        self.prefill_interval_max_steps = prefill_interval_max_steps
         self.context_length = context_length
         self.max_running_requests = max_running_requests
         self.stream_stride = stream_stride
@@ -414,3 +431,22 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "async_decode_resolve_before_prefill": True,
         }
+
+    def scheduler_type(self) -> type[OmniScheduler[Drama3RequestData]]:
+        if self.prefill_queue_budget_ms > 0:
+            return Drama3BudgetScheduler
+        else:
+            return super().scheduler_type()
+
+    def post_scheduler_setup(
+        self,
+        scheduler: OmniScheduler[Drama3RequestData],
+        model_runner: Drama3ModelRunner,
+    ) -> None:
+        if isinstance(scheduler, Drama3BudgetScheduler):
+            scheduler.configure_interval(
+                self.prefill_queue_budget_ms / 1000,
+                self.prefill_interval_max_steps,
+            )
+        else:
+            pass
