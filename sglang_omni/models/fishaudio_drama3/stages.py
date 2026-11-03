@@ -169,6 +169,9 @@ def create_tts_engine_executor(
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+    engine_first_audio_target_ms: float = 0.0,
+    first_audio_downstream_reserve_ms: float | None = None,
+    prefill_interval_max_steps: int = 8,
 ) -> OmniScheduler[Drama3RequestData]:
     overrides = dict(server_args_overrides or {})
     mem_fraction_static = overrides.get("mem_fraction_static")
@@ -201,6 +204,9 @@ def create_tts_engine_executor(
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        engine_first_audio_target_ms=engine_first_audio_target_ms,
+        first_audio_downstream_reserve_ms=first_audio_downstream_reserve_ms,
+        prefill_interval_max_steps=prefill_interval_max_steps,
     ).build(
         model_path,
         device=device,
