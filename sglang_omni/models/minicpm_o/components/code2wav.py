@@ -38,6 +38,8 @@ FLOW_WARMUP_TOKENS = 32
 FLOW_BATCH_TOKEN_SQUARE_BUDGET = 16 * 512 * 512
 # note (0xtoward): fork-only probe; vocode_code2wav_payloads logs each batch's phase times.
 PHASE_PROBE = os.environ.get("SGLANG_OMNI_C2W_PHASES") == "1"
+# note (0xtoward): fork-only timing arm; one HiFT call on the zero-padded batch, so shorter rows' tails differ from per-row decoding.
+HIFT_PADDED_ARM = os.environ.get("SGLANG_OMNI_C2W_HIFT_PADDED") == "1"
 
 
 class MiniCPMOCode2Wav(nn.Module):
@@ -525,6 +527,10 @@ class MiniCPMOCode2Wav(nn.Module):
         rows_by_token_length: defaultdict[int, list[int]] = defaultdict(list)
         for row, token_length in enumerate(token_lengths):
             rows_by_token_length[token_length].append(row)
+        if HIFT_PADDED_ARM:
+            rows_by_token_length = {max(token_lengths): list(range(len(token_lengths)))}
+        else:
+            pass
         waveforms_by_row: dict[int, torch.Tensor] = {}
         # note (MayDomine): padding changes HiFT's noncausal convolution boundaries.
         for token_length, row_indices in rows_by_token_length.items():
@@ -536,7 +542,7 @@ class MiniCPMOCode2Wav(nn.Module):
             group_waveforms, _ = self.token2wav.hift(speech_feat=speech_mel)
             for group_row, row in enumerate(row_indices):
                 waveforms_by_row[row] = group_waveforms[group_row].reshape(-1)[
-                    : token_length * SAMPLES_PER_CODEC_TOKEN
+                    : token_lengths[row] * SAMPLES_PER_CODEC_TOKEN
                 ]
         if probe is not None:
             marks[2].record()
