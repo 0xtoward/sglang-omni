@@ -40,6 +40,15 @@ FLOW_BATCH_TOKEN_SQUARE_BUDGET = 16 * 512 * 512
 PHASE_PROBE = os.environ.get("SGLANG_OMNI_C2W_PHASES") == "1"
 # note (0xtoward): fork-only timing arm; one HiFT call on the zero-padded batch, so shorter rows' tails differ from per-row decoding.
 HIFT_PADDED_ARM = os.environ.get("SGLANG_OMNI_C2W_HIFT_PADDED") == "1"
+# note (0xtoward): fork-only arm; extra Flow graph shapes as "batch:frames,..." on top of the default table.
+EXTRA_FLOW_GRAPH_SHAPES = tuple(
+    (int(batch), int(frames))
+    for batch, frames in (
+        item.split(":")
+        for item in os.environ.get("SGLANG_OMNI_C2W_EXTRA_FLOW_SHAPES", "").split(",")
+        if item
+    )
+)
 
 
 class MiniCPMOCode2Wav(nn.Module):
@@ -234,7 +243,11 @@ class MiniCPMOCode2Wav(nn.Module):
         if enable_flow_cuda_graph and resolved_device.type == "cuda":
             with self.device_context:
                 self.token2wav.capture_flow_graphs(
-                    flow_cuda_graph_capture_shapes,
+                    tuple(
+                        dict.fromkeys(
+                            (*flow_cuda_graph_capture_shapes, *EXTRA_FLOW_GRAPH_SHAPES)
+                        )
+                    ),
                     packed_dit_cuda_graph_capture_shapes,
                 )
         else:
