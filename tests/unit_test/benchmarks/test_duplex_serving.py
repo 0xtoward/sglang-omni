@@ -1,4 +1,4 @@
-"""Duplex serving metrics: unit lag, reply latency, capacity and the sweep."""
+"""Duplex serving metrics: unit lag, reply latency, capacity, the sweep and the server-side views."""
 
 import base64
 import json
@@ -13,6 +13,7 @@ from pydantic import JsonValue
 from benchmarks.duplex.client import SEND_RECEIPTS_FILE
 from benchmarks.duplex.serving import score_session, serving_report, summarize_level
 from benchmarks.eval import benchmark_duplex_serving
+from benchmarks.metrics import server_probes
 
 # MiniCPM-o: 1000 ms units, 24 kHz output.
 PROFILE = "minicpmo-native-pr2377"
@@ -435,12 +436,8 @@ def test_level_splits_requests_by_stage_path_and_names_memory_by_stage(
     }
 
 
-def test_level_counts_batch_sizes_waits_and_busy_share_of_simple_stages(
-    tmp_path: Path,
-) -> None:
-    run_dir = record_run(tmp_path / "concurrency-1", 1, [("pass", ON_TIME)])
-    event_dir = tmp_path / "concurrency-1.events"
-    event_dir.mkdir()
+def write_code2wav_batches(event_dir: Path) -> None:
+    """Code2Wav runs a and b in one batch, then c alone."""
     events = [
         ("a", "stage_dispatch", 5.0, {}),
         ("b", "stage_dispatch", 8.0, {}),
@@ -468,6 +465,15 @@ def test_level_counts_batch_sizes_waits_and_busy_share_of_simple_stages(
         )
     )
 
+
+def test_level_counts_batch_sizes_waits_and_busy_share_of_simple_stages(
+    tmp_path: Path,
+) -> None:
+    run_dir = record_run(tmp_path / "concurrency-1", 1, [("pass", ON_TIME)])
+    event_dir = tmp_path / "concurrency-1.events"
+    event_dir.mkdir()
+    write_code2wav_batches(event_dir)
+
     level = summarize_level(run_dir, PLAYBACK_RESERVE_S, PREBUFFERS_S)
 
     batches = level["simple_stage_batches"]["code2wav"]
@@ -482,6 +488,54 @@ def test_level_counts_batch_sizes_waits_and_busy_share_of_simple_stages(
         {"count": 2, "p50": 15.0, "p90": 19.0}
     ), "the batches computed for 20 and 10 ms"
     assert batches["busy_percent"] == pytest.approx(75.0), "30 of the 40 ms computed"
+
+
+class RecordingProfileServer:
+    """Takes the request profile commands, noting whether the command already ran, and records the Code2Wav batches into the event directory it is given."""
+
+    def __init__(self, command_marker: Path) -> None:
+        self.command_marker = command_marker
+        self.calls: list[tuple[str, bool]] = []
+
+    def __call__(self, url: str, body: dict[str, JsonValue]) -> None:
+        self.calls.append((url, self.command_marker.exists()))
+        if url.endswith("/start_request_profile"):
+            event_dir = Path(body["event_dir"])
+            event_dir.mkdir()
+            write_code2wav_batches(event_dir)
+        else:
+            pass
+
+
+def test_probe_command_runs_between_profile_start_and_stop_then_prints_the_views(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    command_marker = tmp_path / "command-ran"
+    server = RecordingProfileServer(command_marker)
+    monkeypatch.setattr(server_probes, "post_profile_command", server)
+    output_dir = tmp_path / "tts-c4"
+    command = [
+        sys.executable,
+        "-c",
+        "import pathlib, sys; pathlib.Path(sys.argv[1]).touch(); sys.exit(3)",
+    ]
+
+    code = server_probes.main(
+        ["--server-url", "http://server", "--output-dir", str(output_dir), "--"]
+        + [*command, str(command_marker)]
+    )
+
+    assert code == 3, "the command's exit status"
+    assert server.calls == [
+        ("http://server/start_request_profile", False),
+        ("http://server/stop_request_profile", True),
+    ]
+    views = json.loads((output_dir / "server.json").read_text())
+    assert views["simple_stage_batches"]["code2wav"]["batches"] == 2
+    assert views["stages"] == {}, "no request reached the coordinator"
+    assert "| code2wav | 1.5 (2) / 33% / 75% / 4 ms |" in capsys.readouterr().out
 
 
 def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> None:

@@ -1317,7 +1317,12 @@ With `--server-url http://127.0.0.1:8097`, the sweep adds server-side views. Run
 - `--gpu-memory` samples every GPU's used memory and busy share and every compute process's memory once a second, and adds a table of peaks per process. With `--stage-events`, each process is named by the stage that wrote its events. Under MPS the memory stays per process, but `nvidia-smi` charges all SM time to the MPS server, so the busy share is the whole card's.
 - `--nsys-session NAME` collects, at every level, the Nsight Systems session of a server started under `nsys launch --session-new=NAME --trace=python-gil,nvtx --trace-fork-before-exec=true` and adds per process the share of the level some thread held the GIL, the busiest thread's wait share and the holds of 20 ms or more. It costs about 2% throughput and does not work under MPS.
 
-The views live in `benchmarks/metrics/server_probes.py` and work for any pipeline, not only full duplex: wrap a load run of any benchmark in `request_events` (and `gpu_memory_samples`), then call `stage_split`, `scheduler_batches`, `simple_stage_batches` or `stage_memory` on its event directory.
+The views live in `benchmarks/metrics/server_probes.py` and work for any pipeline, not only full duplex. Run it as a module with any benchmark command after `--` to record the request events (and, with `--gpu-memory`, the GPU memory) while the command runs and print the same tables for that run. The events, the samples and the views as `server.json` go into `--output-dir`, and the command's exit status comes back:
+
+```bash
+python -m benchmarks.metrics.server_probes --server-url http://127.0.0.1:8000 --output-dir runs/seedtts-c4 --gpu-memory -- \
+  python -m benchmarks.eval.benchmark_omni_seedtts --generate-only --model minicpmo --port 8000 --max-samples 64 --max-concurrency 4
+```
 
 (minicpm-o-45-on-one-h100)=
 

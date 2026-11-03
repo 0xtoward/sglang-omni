@@ -14,6 +14,7 @@ from pydantic import JsonValue
 from benchmarks.duplex.serving import serving_report
 from benchmarks.duplex.v15_audio import write_json
 from benchmarks.metrics.server_probes import (
+    format_server_tables,
     gpu_memory_samples,
     level_event_dir,
     level_memory_path,
@@ -103,175 +104,13 @@ def format_table(report: dict[str, JsonValue]) -> str:
             f"Every recorded concurrency meets the targets; capacity is at least "
             f"{capacity}."
         )
-    return "\n".join(rows) + f"\n\n{verdict}\n" + format_server_tables(report)
-
-
-def format_server_tables(report: dict[str, JsonValue]) -> str:
-    """Per-segment times of the requests that went through the most stages, and peak GPU memory per process, for the levels that recorded them."""
-    tables = ""
-    staged = [level for level in report["levels"] if level["stages"] is not None]
-    if staged:
-        full_path = max(
-            (stage_path for level in staged for stage_path in level["stages"]),
-            key=lambda stage_path: stage_path.count(">"),
+    return (
+        "\n".join(rows)
+        + f"\n\n{verdict}\n"
+        + format_server_tables(
+            {f"N={level['concurrency']}": level for level in report["levels"]}
         )
-        groups = [level["stages"].get(full_path) for level in staged]
-        segment_names = list(
-            dict.fromkeys(
-                name for group in groups if group for name in group["segments_ms"]
-            )
-        )
-        tables += (
-            f"\nRequests through {full_path}, median (p90) ms:\n\n| segment | "
-            + " | ".join(f"N={level['concurrency']}" for level in staged)
-            + " |\n|---|"
-            + "---:|" * len(staged)
-            + "\n"
-        )
-        for segment_name in ["admission to response", *segment_names]:
-            cells = []
-            for group in groups:
-                value = (
-                    None
-                    if group is None
-                    else (
-                        group["admission_to_response_ms"]
-                        if segment_name == "admission to response"
-                        else group["segments_ms"].get(segment_name)
-                    )
-                )
-                cells.append(
-                    "-"
-                    if value is None or value["p50"] is None
-                    else f"{value['p50']:.0f} ({value['p90']:.0f})"
-                )
-            tables += f"| {segment_name} | " + " | ".join(cells) + " |\n"
-    else:
-        pass
-    sampled = [level for level in report["levels"] if level["gpu_memory"] is not None]
-    if sampled:
-        process_names = sorted(
-            {
-                name
-                for level in sampled
-                for name in level["gpu_memory"]["process_peak_mib"]
-            }
-        )
-        tables += (
-            "\nPeak GPU memory (MiB) and mean GPU busy share:\n\n| process | "
-            + " | ".join(f"N={level['concurrency']}" for level in sampled)
-            + " |\n|---|"
-            + "---:|" * len(sampled)
-            + "\n"
-        )
-        for name in ["card", *process_names]:
-            cells = [
-                str(
-                    level["gpu_memory"]["card_peak_mib"]
-                    if name == "card"
-                    else level["gpu_memory"]["process_peak_mib"].get(name, "-")
-                )
-                for level in sampled
-            ]
-            tables += f"| {name} | " + " | ".join(cells) + " |\n"
-        tables += (
-            "| busy | "
-            + " | ".join(
-                ratio(level["gpu_memory"]["card_busy_percent_mean"] / 100, ".0%")
-                for level in sampled
-            )
-            + " |\n"
-        )
-    else:
-        pass
-    batched = [level for level in report["levels"] if level["scheduler_batches"]]
-    if batched:
-        tables += (
-            "\nRunning requests per scheduler, time-weighted mean (p90), and prefills per s "
-            "x requests per prefill:\n\n| scheduler | "
-            + " | ".join(f"N={level['concurrency']}" for level in batched)
-            + " |\n|---|"
-            + "---:|" * len(batched)
-            + "\n"
-        )
-        for name in sorted(
-            {name for level in batched for name in level["scheduler_batches"]}
-        ):
-            cells = []
-            for level in batched:
-                batches = level["scheduler_batches"].get(name)
-                cells.append(
-                    "-"
-                    if batches is None or batches["running_mean"] is None
-                    else f"{batches['running_mean']:.1f} ({batches['running_p90']}), "
-                    f"{batches['prefills_per_s']:.1f} x {batches['requests_per_prefill_mean']:.1f}"
-                )
-            tables += f"| {name} | " + " | ".join(cells) + " |\n"
-    else:
-        pass
-    simple = [level for level in report["levels"] if level["simple_stage_batches"]]
-    if simple:
-        tables += (
-            "\nBatches of the simple and session stages: requests per batch mean (max) / "
-            "requests that ran alone / busy share / p90 wait from dispatch to the batch:\n\n"
-            "| stage | "
-            + " | ".join(f"N={level['concurrency']}" for level in simple)
-            + " |\n|---|"
-            + "---:|" * len(simple)
-            + "\n"
-        )
-        for name in sorted(
-            {name for level in simple for name in level["simple_stage_batches"]}
-        ):
-            cells = []
-            for level in simple:
-                batches = level["simple_stage_batches"].get(name)
-                cells.append(
-                    "-"
-                    if batches is None
-                    or batches["busy_percent"] is None
-                    or batches["wait_ms"]["p90"] is None
-                    else f"{batches['requests_per_batch_mean']:.1f} "
-                    f"({batches['requests_per_batch_max']}) / "
-                    f"{batches['requests_alone_percent']:.0f}% / "
-                    f"{batches['busy_percent']:.0f}% / {batches['wait_ms']['p90']:.0f} ms"
-                )
-            tables += f"| {name} | " + " | ".join(cells) + " |\n"
-    else:
-        pass
-    traced = [level for level in report["levels"] if level["gil"] is not None]
-    if traced:
-        tables += (
-            "\nGIL from Nsight Systems: share of the window some thread held it / busiest "
-            "thread's wait share / holds of 20 ms or more:\n\n| process | "
-            + " | ".join(f"N={level['concurrency']}" for level in traced)
-            + " |\n|---|"
-            + "---:|" * len(traced)
-            + "\n"
-        )
-        # note (0xtoward): helper processes that barely run Python would only add rows of zeros.
-        for name in sorted(
-            {
-                name
-                for level in traced
-                for name, process in level["gil"]["processes"].items()
-                if process["held_percent"] >= 1
-            }
-        ):
-            cells = []
-            for level in traced:
-                process = level["gil"]["processes"].get(name)
-                cells.append(
-                    "-"
-                    if process is None
-                    else f"{process['held_percent']:.0f}% / "
-                    f"{max(thread['wait_percent'] for thread in process['busiest_threads']):.0f}% / "
-                    f"{process['long_holds']}"
-                )
-            tables += f"| {name} | " + " | ".join(cells) + " |\n"
-    else:
-        pass
-    return tables
+    )
 
 
 def concurrency_levels(text: str) -> list[int]:

@@ -17,16 +17,7 @@ from benchmarks.duplex.oracle_models import MediaTime, TraceRecord, WireEvent
 from benchmarks.duplex.profiles import PROFILES, ProfileName
 from benchmarks.duplex.run_artifacts import load_run
 from benchmarks.duplex.v15_audio import AUDIO_DELTA, LEGACY_AUDIO_DELTA
-from benchmarks.metrics.server_probes import (
-    gil_shares,
-    level_event_dir,
-    level_memory_path,
-    level_trace_path,
-    scheduler_batches,
-    simple_stage_batches,
-    stage_memory,
-    stage_split,
-)
+from benchmarks.metrics.server_probes import server_views
 
 INPUT_BYTES_PER_MS = SAMPLE_RATE * 2 / 1000
 # note (jeffro): a not_exercised session kept the protocol; its model output just
@@ -350,34 +341,7 @@ def summarize_level(
             }
             for prebuffer_s in prebuffers_s
         ],
-        "stages": (
-            stage_split(level_event_dir(run_dir))
-            if level_event_dir(run_dir).is_dir()
-            else None
-        ),
-        "scheduler_batches": (
-            scheduler_batches(level_event_dir(run_dir))
-            if level_event_dir(run_dir).is_dir()
-            else None
-        ),
-        "simple_stage_batches": (
-            simple_stage_batches(level_event_dir(run_dir))
-            if level_event_dir(run_dir).is_dir()
-            else None
-        ),
-        "gpu_memory": (
-            stage_memory(level_memory_path(run_dir), level_event_dir(run_dir))
-            if level_memory_path(run_dir).is_file()
-            else None
-        ),
-        "gil": (
-            gil_shares(
-                level_trace_path(run_dir).with_suffix(".sqlite"),
-                level_event_dir(run_dir),
-            )
-            if level_trace_path(run_dir).with_suffix(".sqlite").is_file()
-            else None
-        ),
+        **server_views(run_dir),
         "real_time_factor": real_time_factor,
         "unmet_targets": [
             target

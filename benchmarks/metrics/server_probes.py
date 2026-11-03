@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Server-side views of one serving level, for any pipeline: each request's time split by stage and each scheduler's real batches from the profiler's request events, GPU memory per stage, and GIL holding per process from Nsight Systems."""
+"""Server-side views of one serving level, for any pipeline: each request's time split by stage and each scheduler's real batches from the profiler's request events, GPU memory per stage, and GIL holding per process from Nsight Systems. Run as a module to record them around any benchmark command."""
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import json
 import re
@@ -500,3 +501,258 @@ def gil_shares(sqlite_path: Path, event_dir: Path) -> dict[str, JsonValue]:
             )
         },
     }
+
+
+def server_views(run_dir: Path) -> dict[str, JsonValue]:
+    """Every view whose input was recorded beside run_dir, None for the others."""
+    event_dir = level_event_dir(run_dir)
+    memory_path = level_memory_path(run_dir)
+    sqlite_path = level_trace_path(run_dir).with_suffix(".sqlite")
+    return {
+        "stages": stage_split(event_dir) if event_dir.is_dir() else None,
+        "scheduler_batches": (
+            scheduler_batches(event_dir) if event_dir.is_dir() else None
+        ),
+        "simple_stage_batches": (
+            simple_stage_batches(event_dir) if event_dir.is_dir() else None
+        ),
+        "gpu_memory": (
+            stage_memory(memory_path, event_dir) if memory_path.is_file() else None
+        ),
+        "gil": (gil_shares(sqlite_path, event_dir) if sqlite_path.is_file() else None),
+    }
+
+
+def format_server_tables(levels: dict[str, dict[str, JsonValue]]) -> str:
+    """Markdown tables of the server-side views, one column per level that recorded them, keyed by the column label."""
+    tables = ""
+    staged = {label: level for label, level in levels.items() if level["stages"]}
+    if staged:
+        full_path = max(
+            (stage_path for level in staged.values() for stage_path in level["stages"]),
+            key=lambda stage_path: stage_path.count(">"),
+        )
+        groups = [level["stages"].get(full_path) for level in staged.values()]
+        segment_names = list(
+            dict.fromkeys(
+                name for group in groups if group for name in group["segments_ms"]
+            )
+        )
+        tables += (
+            f"\nRequests through {full_path}, median (p90) ms:\n\n| segment | "
+            + " | ".join(staged)
+            + " |\n|---|"
+            + "---:|" * len(staged)
+            + "\n"
+        )
+        for segment_name in ["admission to response", *segment_names]:
+            cells = []
+            for group in groups:
+                value = (
+                    None
+                    if group is None
+                    else (
+                        group["admission_to_response_ms"]
+                        if segment_name == "admission to response"
+                        else group["segments_ms"].get(segment_name)
+                    )
+                )
+                cells.append(
+                    "-"
+                    if value is None or value["p50"] is None
+                    else f"{value['p50']:.0f} ({value['p90']:.0f})"
+                )
+            tables += f"| {segment_name} | " + " | ".join(cells) + " |\n"
+    else:
+        pass
+    sampled = {
+        label: level
+        for label, level in levels.items()
+        if level["gpu_memory"] is not None
+    }
+    if sampled:
+        process_names = sorted(
+            {
+                name
+                for level in sampled.values()
+                for name in level["gpu_memory"]["process_peak_mib"]
+            }
+        )
+        tables += (
+            "\nPeak GPU memory (MiB) and mean GPU busy share:\n\n| process | "
+            + " | ".join(sampled)
+            + " |\n|---|"
+            + "---:|" * len(sampled)
+            + "\n"
+        )
+        for name in ["card", *process_names]:
+            cells = [
+                str(
+                    level["gpu_memory"]["card_peak_mib"]
+                    if name == "card"
+                    else level["gpu_memory"]["process_peak_mib"].get(name, "-")
+                )
+                for level in sampled.values()
+            ]
+            tables += f"| {name} | " + " | ".join(cells) + " |\n"
+        tables += (
+            "| busy | "
+            + " | ".join(
+                f"{level['gpu_memory']['card_busy_percent_mean']:.0f}%"
+                for level in sampled.values()
+            )
+            + " |\n"
+        )
+    else:
+        pass
+    batched = {
+        label: level for label, level in levels.items() if level["scheduler_batches"]
+    }
+    if batched:
+        tables += (
+            "\nRunning requests per scheduler, time-weighted mean (p90), and prefills per s "
+            "x requests per prefill:\n\n| scheduler | "
+            + " | ".join(batched)
+            + " |\n|---|"
+            + "---:|" * len(batched)
+            + "\n"
+        )
+        for name in sorted(
+            {name for level in batched.values() for name in level["scheduler_batches"]}
+        ):
+            cells = []
+            for level in batched.values():
+                batches = level["scheduler_batches"].get(name)
+                cells.append(
+                    "-"
+                    if batches is None or batches["running_mean"] is None
+                    else f"{batches['running_mean']:.1f} ({batches['running_p90']}), "
+                    f"{batches['prefills_per_s']:.1f} x {batches['requests_per_prefill_mean']:.1f}"
+                )
+            tables += f"| {name} | " + " | ".join(cells) + " |\n"
+    else:
+        pass
+    simple = {
+        label: level for label, level in levels.items() if level["simple_stage_batches"]
+    }
+    if simple:
+        tables += (
+            "\nBatches of the simple and session stages: requests per batch mean (max) / "
+            "requests that ran alone / busy share / p90 wait from dispatch to the batch:\n\n"
+            "| stage | "
+            + " | ".join(simple)
+            + " |\n|---|"
+            + "---:|" * len(simple)
+            + "\n"
+        )
+        for name in sorted(
+            {
+                name
+                for level in simple.values()
+                for name in level["simple_stage_batches"]
+            }
+        ):
+            cells = []
+            for level in simple.values():
+                batches = level["simple_stage_batches"].get(name)
+                cells.append(
+                    "-"
+                    if batches is None
+                    or batches["busy_percent"] is None
+                    or batches["wait_ms"]["p90"] is None
+                    else f"{batches['requests_per_batch_mean']:.1f} "
+                    f"({batches['requests_per_batch_max']}) / "
+                    f"{batches['requests_alone_percent']:.0f}% / "
+                    f"{batches['busy_percent']:.0f}% / {batches['wait_ms']['p90']:.0f} ms"
+                )
+            tables += f"| {name} | " + " | ".join(cells) + " |\n"
+    else:
+        pass
+    traced = {
+        label: level for label, level in levels.items() if level["gil"] is not None
+    }
+    if traced:
+        tables += (
+            "\nGIL from Nsight Systems: share of the window some thread held it / busiest "
+            "thread's wait share / holds of 20 ms or more:\n\n| process | "
+            + " | ".join(traced)
+            + " |\n|---|"
+            + "---:|" * len(traced)
+            + "\n"
+        )
+        # note (0xtoward): helper processes that barely run Python would only add rows of zeros.
+        for name in sorted(
+            {
+                name
+                for level in traced.values()
+                for name, process in level["gil"]["processes"].items()
+                if process["held_percent"] >= 1
+            }
+        ):
+            cells = []
+            for level in traced.values():
+                process = level["gil"]["processes"].get(name)
+                cells.append(
+                    "-"
+                    if process is None
+                    else f"{process['held_percent']:.0f}% / "
+                    f"{max(thread['wait_percent'] for thread in process['busiest_threads']):.0f}% / "
+                    f"{process['long_holds']}"
+                )
+            tables += f"| {name} | " + " | ".join(cells) + " |\n"
+    else:
+        pass
+    return tables
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Run any benchmark command against a server on this host with its "
+        "request events recorded, then print the server-side views.",
+        usage="%(prog)s --server-url URL --output-dir DIR [--gpu-memory] -- COMMAND ...",
+    )
+    parser.add_argument(
+        "--server-url",
+        required=True,
+        help="HTTP base URL of the server, such as http://127.0.0.1:8000",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="New directory for the request events (server.events), the GPU memory "
+        "samples (server.gpu-memory.jsonl) and the views (server.json)",
+    )
+    parser.add_argument(
+        "--gpu-memory",
+        action="store_true",
+        help="Also sample GPU memory and utilization once a second",
+    )
+    parser.add_argument(
+        "command", nargs=argparse.REMAINDER, help="Benchmark command, after --"
+    )
+    args = parser.parse_args(argv)
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command:
+        parser.error("give the benchmark command after --")
+    else:
+        pass
+    args.output_dir.mkdir(parents=True)
+    run_dir = args.output_dir / "server"
+    with contextlib.ExitStack() as probes:
+        probes.enter_context(request_events(args.server_url, level_event_dir(run_dir)))
+        if args.gpu_memory:
+            probes.enter_context(gpu_memory_samples(level_memory_path(run_dir)))
+        else:
+            pass
+        returncode = subprocess.run(command, check=False).returncode
+    views = server_views(run_dir)
+    (args.output_dir / "server.json").write_text(json.dumps(views, indent=2) + "\n")
+    print(format_server_tables({args.output_dir.name: views}))
+    return returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+else:
+    pass
