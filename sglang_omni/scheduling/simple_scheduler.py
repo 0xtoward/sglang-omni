@@ -11,14 +11,17 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextvars
 import inspect
 import logging
 import queue as _queue_mod
 import threading
 import time
 from collections.abc import Coroutine, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Awaitable, Callable, Generic, Protocol
 
+from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.threaded_simple_scheduler import ComputeInput, ComputeResult
@@ -28,6 +31,28 @@ logger = logging.getLogger(__name__)
 
 class RequestArrivalHook(Protocol):
     def __call__(self, payload: StagePayload) -> None: ...
+
+
+def emit_batch_event(
+    event_name: str, batch: list[IncomingMessage], metadata: dict[str, float]
+) -> None:
+    """Record the event for every request of a batch at one shared time, with the batch size."""
+    recorder = get_recorder()
+    active_run = recorder.capture_active_run_timestamp_ns()
+    if active_run is None:
+        return
+    else:
+        pass
+    run_id, timestamp_ns = active_run
+    for msg in batch:
+        recorder.emit(
+            request_id=msg.request_id,
+            stage=None,
+            event_name=event_name,
+            metadata={"batch_size": len(batch), **metadata},
+            timestamp_ns=timestamp_ns,
+            expected_run_id=run_id,
+        )
 
 
 class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
@@ -78,7 +103,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         )
         # Note (Chenchen, Chenyang):
         # max_concurrency > 1 spawns N worker coroutines that dispatch compute_fn
-        # via asyncio.to_thread so synchronous chunks do not pin the event loop.
+        # to a pool of N threads so synchronous chunks do not pin the event loop.
         # Requires compute_fn to be re-entrant. Mutually exclusive with the
         # batch_compute_fn path (set one or the other, not both).
         self.max_concurrency = max(int(max_concurrency), 1)
@@ -311,9 +336,16 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     else:
                         pass
                     batch = [msg]
+                    collect_start_s = time.monotonic()
                     try:
                         batch = self.collect_batch(msg)
+                        emit_batch_event(
+                            "scheduler_batch_start",
+                            batch,
+                            {"gather_ms": (time.monotonic() - collect_start_s) * 1000},
+                        )
                         self.run_batch(batch, loop)
+                        emit_batch_event("scheduler_batch_end", batch, {})
                     except Exception as exc:
                         logger.exception(
                             "SimpleScheduler: compute_fn failed for %s", msg.request_id
@@ -368,8 +400,11 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                 else:
                     pass
                 try:
-                    result = await asyncio.to_thread(
-                        self.run_compute_in_thread, msg.data
+                    result = await loop.run_in_executor(
+                        compute_executor,
+                        contextvars.copy_context().run,
+                        self.run_compute_in_thread,
+                        msg.data,
                     )
                     if self.consume_if_aborted(msg.request_id):
                         continue
@@ -386,15 +421,20 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     )
                     self.emit_error(msg.request_id, exc, self.outbox)
 
-        bridge_task = asyncio.create_task(bridge_inbox())
-        worker_tasks = [
-            asyncio.create_task(worker()) for _ in range(self.max_concurrency)
-        ]
-        try:
-            await asyncio.gather(bridge_task, *worker_tasks)
-        except asyncio.CancelledError:
-            # Expected during shutdown/task cancellation; suppress intentionally.
-            logger.debug("SimpleScheduler: run_workers cancelled during shutdown")
+        # note (luojiaxuan): compute owns exactly max_concurrency threads because every thread that runs a CUDA stage keeps its own cuBLAS and cuDNN handles and workspaces for the life of the process; the loop's default executor, shared with the inbox poll, grows toward 32 threads.
+        with ThreadPoolExecutor(
+            max_workers=self.max_concurrency,
+            thread_name_prefix="simple-scheduler-compute",
+        ) as compute_executor:
+            bridge_task = asyncio.create_task(bridge_inbox())
+            worker_tasks = [
+                asyncio.create_task(worker()) for _ in range(self.max_concurrency)
+            ]
+            try:
+                await asyncio.gather(bridge_task, *worker_tasks)
+            except asyncio.CancelledError:
+                # Expected during shutdown/task cancellation; suppress intentionally.
+                logger.debug("SimpleScheduler: run_workers cancelled during shutdown")
 
     def stop(self) -> None:
         self.running = False

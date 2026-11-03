@@ -1,4 +1,4 @@
-"""Duplex serving metrics: unit lag, reply latency, capacity and the sweep."""
+"""Duplex serving metrics: unit lag, reply latency, capacity, the sweep and the server-side views."""
 
 import base64
 import json
@@ -13,12 +13,14 @@ from pydantic import JsonValue
 from benchmarks.duplex.client import SEND_RECEIPTS_FILE
 from benchmarks.duplex.serving import score_session, serving_report, summarize_level
 from benchmarks.eval import benchmark_duplex_serving
+from benchmarks.metrics import server_probes
 
 # MiniCPM-o: 1000 ms units, 24 kHz output.
 PROFILE = "minicpmo-native-pr2377"
 # Qwen3-Omni behind server VAD: legacy protocol, 24 kHz output.
 TURN_BASED_PROFILE = "qwen3-omni-half-duplex"
 PLAYBACK_RESERVE_S = 0.3
+PREBUFFERS_S = [0.0, 0.2, 0.3]
 START_S = 100.0
 INPUT_S = 2.5
 OUTPUT_SECOND = base64.b64encode(b"\x00\x00" * 24000).decode()
@@ -262,6 +264,7 @@ def test_level_counts_every_unit_of_a_failed_session_as_missed(tmp_path: Path) -
     level = summarize_level(
         record_run(tmp_path / "run", 2, [("pass", ON_TIME), ("fail", [101.16])]),
         PLAYBACK_RESERVE_S,
+        PREBUFFERS_S,
     )
 
     assert level["sessions_failed"] == 1
@@ -277,6 +280,264 @@ def test_level_counts_every_unit_of_a_failed_session_as_missed(tmp_path: Path) -
     ]
 
 
+def test_prebuffer_curve_matches_the_simulated_player_and_speaking_units(
+    tmp_path: Path,
+) -> None:
+    """A reply that needs 0.2 s of prebuffer stalls for exactly what the simulated player underruns at each smaller prebuffer, and only the unit after reply audio counts as speaking."""
+    prebuffers_s = [0.0, 0.08, 0.3]
+    run_dir = record_run(
+        tmp_path / "run",
+        1,
+        [("pass", [101.16, 103.0, 103.1])],
+        reply_audio_s=[103.0, 104.2],
+    )
+
+    level = summarize_level(run_dir, PLAYBACK_RESERVE_S, prebuffers_s)
+
+    underruns_s = [
+        score_session(run_dir / "samples/0/input", PROFILE, prebuffer_s)["replies"][0][
+            "underrun_s"
+        ]
+        for prebuffer_s in prebuffers_s
+    ]
+    assert [entry["stall_s"] for entry in level["continuity"]] == pytest.approx(
+        underruns_s
+    )
+    assert [entry["gap_free_replies"] for entry in level["continuity"]] == [0, 0, 1]
+    # The padded last unit waits for the input end at 102.5.
+    assert level["speaking_unit_lag_s"]["count"] == 1
+    assert level["speaking_unit_lag_s"]["p50"] == pytest.approx(0.6)
+
+
+def test_level_splits_requests_by_stage_path_and_names_memory_by_stage(
+    tmp_path: Path,
+) -> None:
+    """Request events beside a level group requests by the stages they reached, split each stage's time and count each scheduler's batches; their file names name the GPU processes."""
+    run_dir = record_run(tmp_path / "concurrency-1", 1, [("pass", ON_TIME)])
+    event_dir = tmp_path / "concurrency-1.events"
+    event_dir.mkdir()
+    events: dict[tuple[str, int], list[tuple[str, str, float]]] = {
+        ("coordinator", 11): [
+            ("listening", "request_admission", 0.0),
+            ("listening", "terminal_response", 60.0),
+            ("speaking", "request_admission", 0.0),
+            ("speaking", "terminal_response", 205.0),
+        ],
+        ("perception", 12): [
+            (request_id, event_name, time_ms)
+            for request_id in ("listening", "speaking")
+            for event_name, time_ms in (
+                ("stage_input_received", 1.0),
+                ("stage_dispatch", 2.0),
+                ("stage_complete", 8.0),
+            )
+        ],
+        ("thinker", 13): [
+            (request_id, event_name, time_ms)
+            for request_id in ("listening", "speaking")
+            for event_name, time_ms in (
+                ("stage_input_received", 9.0),
+                ("stage_dispatch", 10.0),
+                ("scheduler_prefill_start", 11.0),
+                ("scheduler_prefill_end", 26.0),
+                ("model_path_end", 56.0),
+                ("stage_complete", 57.0),
+            )
+        ],
+        ("talker", 22): [
+            ("speaking", "stage_input_received", 60.0),
+            ("speaking", "stage_dispatch", 60.0),
+            ("speaking", "stage_complete", 160.0),
+            ("speaking", "stage_complete", 170.0),
+        ],
+        ("speech", 23): [
+            ("speaking", "stage_input_received", 161.0),
+            ("speaking", "stage_dispatch", 161.0),
+            ("speaking", "stage_first_stream_chunk_sent", 200.0),
+        ],
+    }
+    for (stage, pid), stage_events in events.items():
+        (event_dir / f"events_{stage}_{pid}.jsonl").write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "request_id": request_id,
+                        "stage": stage,
+                        "event_name": event_name,
+                        "timestamp_ns": int(time_ms * 1e6),
+                    }
+                )
+                + "\n"
+                for request_id, event_name, time_ms in stage_events
+            )
+        )
+    (tmp_path / "concurrency-1.gpu-memory.jsonl").write_text(
+        json.dumps(
+            {
+                "time_s": 1.0,
+                "card_used_mib": [9000],
+                "card_busy_percent": [40],
+                "process_used_mib": {"22": 700, "33": 50},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "time_s": 2.0,
+                "card_used_mib": [9500],
+                "card_busy_percent": [60],
+                "process_used_mib": {"22": 900},
+            }
+        )
+        + "\n"
+    )
+
+    level = summarize_level(run_dir, PLAYBACK_RESERVE_S, PREBUFFERS_S)
+
+    listening = level["stages"]["perception > thinker"]
+    speaking = level["stages"]["perception > thinker > talker > speech"]
+    assert listening["admission_to_response_ms"]["p50"] == pytest.approx(60.0)
+    assert listening["segments_ms"]["thinker to response"]["p50"] == pytest.approx(3.0)
+    assert speaking["admission_to_response_ms"]["p50"] == pytest.approx(205.0)
+    expected_ms = {
+        "admission to perception": 1.0,
+        "thinker prefill": 15.0,
+        "thinker decode": 30.0,
+        "thinker to talker": 3.0,
+        # A stage's repeated event keeps its first time.
+        "talker compute": 100.0,
+        "speech first chunk": 39.0,
+        "speech to response": 5.0,
+    }
+    assert {
+        name: speaking["segments_ms"][name]["p50"] for name in expected_ms
+    } == pytest.approx(expected_ms)
+    assert level["gpu_memory"] == {
+        "samples": 2,
+        "card_peak_mib": 9500,
+        "card_busy_percent_mean": 50.0,
+        "process_peak_mib": {"pid 33": 50, "talker": 900},
+    }
+    # Both thinker requests enter one prefill at 26 ms and run together until 56 ms.
+    assert level["scheduler_batches"] == {
+        "thinker": pytest.approx(
+            {
+                "busy_s": 0.03,
+                "running_mean": 2.0,
+                "running_p50": 2,
+                "running_p90": 2,
+                "running_max": 2,
+                "prefills": 1,
+                "prefills_per_s": 1 / 0.03,
+                "requests_per_prefill_mean": 2.0,
+                "requests_per_prefill_p90": 2.0,
+            }
+        )
+    }
+
+
+def write_code2wav_batches(event_dir: Path) -> None:
+    """Code2Wav runs a and b in one batch, then c alone."""
+    events = [
+        ("a", "stage_dispatch", 5.0, {}),
+        ("b", "stage_dispatch", 8.0, {}),
+        ("a", "scheduler_batch_start", 10.0, {"batch_size": 2, "gather_ms": 2.0}),
+        ("b", "scheduler_batch_start", 10.0, {"batch_size": 2, "gather_ms": 2.0}),
+        ("a", "scheduler_batch_end", 30.0, {"batch_size": 2}),
+        ("b", "scheduler_batch_end", 30.0, {"batch_size": 2}),
+        ("c", "stage_dispatch", 40.0, {}),
+        ("c", "scheduler_batch_start", 40.0, {"batch_size": 1, "gather_ms": 0.0}),
+        ("c", "scheduler_batch_end", 50.0, {"batch_size": 1}),
+    ]
+    (event_dir / "events_code2wav_23.jsonl").write_text(
+        "".join(
+            json.dumps(
+                {
+                    "request_id": request_id,
+                    "stage": "code2wav",
+                    "event_name": event_name,
+                    "timestamp_ns": int(time_ms * 1e6),
+                    "metadata": metadata,
+                }
+            )
+            + "\n"
+            for request_id, event_name, time_ms, metadata in events
+        )
+    )
+
+
+def test_level_counts_batch_sizes_waits_and_busy_share_of_simple_stages(
+    tmp_path: Path,
+) -> None:
+    run_dir = record_run(tmp_path / "concurrency-1", 1, [("pass", ON_TIME)])
+    event_dir = tmp_path / "concurrency-1.events"
+    event_dir.mkdir()
+    write_code2wav_batches(event_dir)
+
+    level = summarize_level(run_dir, PLAYBACK_RESERVE_S, PREBUFFERS_S)
+
+    batches = level["simple_stage_batches"]["code2wav"]
+    assert (batches["batches"], batches["requests_per_batch_max"]) == (2, 2)
+    assert batches["requests_per_batch_mean"] == pytest.approx(1.5)
+    assert batches["requests_alone_percent"] == pytest.approx(100 / 3), "c ran alone"
+    assert batches["gather_ms"]["p50"] == pytest.approx(1.0)
+    assert batches["wait_ms"] == pytest.approx(
+        {"count": 3, "p50": 2.0, "p90": 4.4}
+    ), "a, b and c waited 5, 2 and 0 ms"
+    assert batches["compute_ms"] == pytest.approx(
+        {"count": 2, "p50": 15.0, "p90": 19.0}
+    ), "the batches computed for 20 and 10 ms"
+    assert batches["busy_percent"] == pytest.approx(75.0), "30 of the 40 ms computed"
+
+
+class RecordingProfileServer:
+    """Takes the request profile commands, noting whether the command already ran, and records the Code2Wav batches into the event directory it is given."""
+
+    def __init__(self, command_marker: Path) -> None:
+        self.command_marker = command_marker
+        self.calls: list[tuple[str, bool]] = []
+
+    def __call__(self, url: str, body: dict[str, JsonValue]) -> None:
+        self.calls.append((url, self.command_marker.exists()))
+        if url.endswith("/start_request_profile"):
+            event_dir = Path(body["event_dir"])
+            event_dir.mkdir()
+            write_code2wav_batches(event_dir)
+        else:
+            pass
+
+
+def test_probe_command_runs_between_profile_start_and_stop_then_prints_the_views(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    command_marker = tmp_path / "command-ran"
+    server = RecordingProfileServer(command_marker)
+    monkeypatch.setattr(server_probes, "post_profile_command", server)
+    output_dir = tmp_path / "tts-c4"
+    command = [
+        sys.executable,
+        "-c",
+        "import pathlib, sys; pathlib.Path(sys.argv[1]).touch(); sys.exit(3)",
+    ]
+
+    code = server_probes.main(
+        ["--server-url", "http://server", "--output-dir", str(output_dir), "--"]
+        + [*command, str(command_marker)]
+    )
+
+    assert code == 3, "the command's exit status"
+    assert server.calls == [
+        ("http://server/start_request_profile", False),
+        ("http://server/stop_request_profile", True),
+    ]
+    views = json.loads((output_dir / "server.json").read_text())
+    assert views["simple_stage_batches"]["code2wav"]["batches"] == 2
+    assert views["stages"] == {}, "no request reached the coordinator"
+    assert "| code2wav | 1.5 (2) / 33% / 75% / 4 ms |" in capsys.readouterr().out
+
+
 def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> None:
     passing = [("pass", ON_TIME)]
     report = serving_report(
@@ -286,6 +547,7 @@ def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> N
             record_run(tmp_path / "c2", 2, passing),
         ],
         PLAYBACK_RESERVE_S,
+        PREBUFFERS_S,
     )
 
     assert [level["concurrency"] for level in report["levels"]] == [1, 2, 4]
@@ -298,7 +560,9 @@ def test_capacity_is_unbounded_when_every_level_meets_the_targets(
     tmp_path: Path,
 ) -> None:
     report = serving_report(
-        [record_run(tmp_path / "c1", 1, [("pass", ON_TIME)])], PLAYBACK_RESERVE_S
+        [record_run(tmp_path / "c1", 1, [("pass", ON_TIME)])],
+        PLAYBACK_RESERVE_S,
+        PREBUFFERS_S,
     )
 
     assert report["max_concurrency_meeting_targets"] == 1
@@ -338,6 +602,7 @@ def test_turn_based_level_is_judged_by_reply_real_time_factor(tmp_path: Path) ->
             reply_audio_s=[102.8, 104.0],
         ),
         PLAYBACK_RESERVE_S,
+        PREBUFFERS_S,
     )
 
     assert level["unit_miss_rate"] is None

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for SimpleScheduler batch coalescing window admission.
+"""Tests for SimpleScheduler batch coalescing window admission and the batch events it records.
 
 Kept out of test_scheduler.py for the same reason as
 test_simple_scheduler_concurrent.py: that module imports torch at top level.
@@ -7,10 +7,14 @@ test_simple_scheduler_concurrent.py: that module imports torch at top level.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
+from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
+from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -111,3 +115,53 @@ def test_late_arrival_joins_batch_once_a_backlog_exists() -> None:
         thread.join(timeout=2.0)
     assert len(results) == 3
     assert max(seen_batches) >= 3, f"straggler did not join: {seen_batches}"
+
+
+def test_each_batch_records_a_shared_start_and_end_with_its_size(
+    tmp_path: Path,
+) -> None:
+    scheduler = SimpleScheduler(
+        lambda payload: payload,
+        batch_compute_fn=lambda payloads: list(payloads),
+        max_batch_size=32,
+    )
+    recorder = get_recorder()
+    recorder.start("batch-events-test", str(tmp_path), "code2wav")
+    for request_id in ("r0", "r1", "r2"):
+        scheduler.inbox.put(msg(request_id))
+    thread = threading.Thread(target=scheduler.start, daemon=True)
+
+    thread.start()
+    try:
+        for _ in range(3):
+            scheduler.outbox.get(timeout=5.0)
+        scheduler.inbox.put(msg("r3"))
+        scheduler.outbox.get(timeout=5.0)
+    finally:
+        scheduler.stop()
+        thread.join(timeout=2.0)
+        recorder.stop()
+
+    events = [
+        json.loads(line)
+        for path in tmp_path.glob("events_*.jsonl")
+        for line in path.read_text().splitlines()
+    ]
+    members: dict[tuple[str, int], list[tuple[str, int]]] = defaultdict(list)
+    for event in events:
+        members[event["event_name"], event["timestamp_ns"]].append(
+            (event["request_id"], event["metadata"]["batch_size"])
+        )
+    batches: dict[str, list[list[tuple[str, int]]]] = defaultdict(list)
+    for (event_name, _), batch in members.items():
+        batches[event_name].append(sorted(batch))
+    expected = [[("r0", 3), ("r1", 3), ("r2", 3)], [("r3", 1)]]
+    assert (
+        sorted(batches["scheduler_batch_start"]) == expected
+    ), "one start time per batch"
+    assert sorted(batches["scheduler_batch_end"]) == expected, "one end time per batch"
+    assert all(
+        event["metadata"]["gather_ms"] >= 0
+        for event in events
+        if event["event_name"] == "scheduler_batch_start"
+    ), "starts carry the gather time"

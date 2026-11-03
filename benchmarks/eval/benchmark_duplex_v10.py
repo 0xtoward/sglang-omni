@@ -15,6 +15,7 @@ from openai import OpenAI
 
 from benchmarks.duplex import v10_dataset
 from benchmarks.duplex.artifacts import (
+    add_load_args,
     add_protocol_args,
     add_server_identity_args,
     server_identity,
@@ -58,6 +59,9 @@ def record(args: argparse.Namespace) -> int:
             kind=v10_dataset.RUN_KIND,
             profile=args.profile,
             concurrency=args.concurrency,
+            arrival_mean_gap_s=args.arrival_mean_gap_s,
+            arrival_seed=args.arrival_seed,
+            warmup_wav=args.warmup_wav,
             turn_detection=args.turn_detection,
             legacy_tail_s=args.legacy_tail,
         )
@@ -157,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_server_identity_args(record_parser)
     add_protocol_args(record_parser)
+    add_load_args(record_parser)
     record_parser.add_argument(
         "--dataset-revision", required=True, help="Dataset release or archive digest"
     )

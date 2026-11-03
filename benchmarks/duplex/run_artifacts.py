@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import JsonValue
 
+from benchmarks.duplex.sessions import RUN_KIND as SESSIONS_RUN_KIND
+
 Timeline = Literal["simulated_playout", "media"]
 TIMELINES = {
     "simulated_playout": {
@@ -24,7 +26,11 @@ TIMELINES = {
         "ignoring receipt time",
     },
 }
-RUN_KINDS = ("full-duplex-bench-v1.5-paired", "full-duplex-bench-v1.0")
+RUN_KINDS = (
+    "full-duplex-bench-v1.5-paired",
+    "full-duplex-bench-v1.0",
+    SESSIONS_RUN_KIND,
+)
 
 
 def file_sha256(path: Path) -> str:
@@ -37,7 +43,7 @@ def load_run(run_dir: Path) -> tuple[dict[str, JsonValue], dict[str, JsonValue],
     manifest_path = run_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     if manifest.get("kind") not in RUN_KINDS:
-        raise ValueError(f"{run_dir} is not a Full-Duplex-Bench run directory")
+        raise ValueError(f"{run_dir} is not a recorded duplex run directory")
     else:
         pass
     return (

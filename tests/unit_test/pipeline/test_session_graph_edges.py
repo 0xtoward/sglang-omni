@@ -7,7 +7,7 @@ import asyncio
 import multiprocessing
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from multiprocessing.queues import Queue
 from multiprocessing.synchronize import Event
 from pathlib import Path
@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.config.session_audio import REALTIME_MAX_PENDING_CHUNKS
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
@@ -29,9 +30,11 @@ from sglang_omni.proto.session import (
 )
 from sglang_omni.proto.streams import (
     INTERRUPT,
+    SESSION_CONTROL,
     TOOL,
     TOOL_CALL,
     TOOL_RESPONSE,
+    TURN_INTERRUPTED,
     control_type,
 )
 from sglang_omni.scheduling.session import (
@@ -54,6 +57,7 @@ GATE_POLL_S = 0.01
 # Every edge holds one chunk and every node session one pending append, so a held node backs its edges up at once.
 LIMITS = SessionLimits(max_pending_chunks=1)
 SPEECH_STARTED = {"text": "speech_started"}
+SPEECH_STOPPED = {"text": "speech_stopped"}
 # A chunk crosses an inbox, a node session, a stage process and its pump; this outlasts those hops.
 SETTLE_S = 0.3
 FACTORY = f"{__name__}.create_edge_stage"
@@ -133,10 +137,11 @@ class EdgeHooks(SessionHooks):
 
 
 class FrontHooks(SessionHooks):
-    """Emits an interrupt of the chunk's turn when it hears SPEECH_STARTED, as a dialog node does."""
+    """Emits an interrupt and then turn.interrupted of the chunk's turn when it hears SPEECH_STARTED, and hands the turn's audio on as one text at SPEECH_STOPPED, as a dialog node does."""
 
     def __init__(self) -> None:
         self.emitters: dict[SessionIdentity, ChunkEmitter] = {}
+        self.heard: list[str] = []
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         pass
@@ -153,13 +158,20 @@ class FrontHooks(SessionHooks):
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
         if chunk.payload == SPEECH_STARTED:
-            context.emit(
-                control_chunk(
-                    INTERRUPT, chunk.t_start_ms, seq=chunk.seq, turn=chunk.turn
+            for event in (INTERRUPT, TURN_INTERRUPTED):
+                context.emit(
+                    control_chunk(
+                        event, chunk.t_start_ms, seq=chunk.seq, turn=chunk.turn
+                    )
                 )
+        elif chunk.payload == SPEECH_STOPPED:
+            text = " ".join(self.heard)
+            self.heard.clear()
+            context.emit(
+                replace(chunk, modality="text", payload={"text": text}, format="text")
             )
         else:
-            pass
+            self.heard.append(chunk.payload["text"])
         return payload
 
 
@@ -204,8 +216,8 @@ def text_chunk(text: str, seq: int, turn: int | None = None) -> TimedChunk:
     return TimedChunk("text", seq * 20, 20, seq, {"text": text}, "text", turn=turn)
 
 
-def speech_chunk(seq: int, turn: int) -> TimedChunk:
-    return TimedChunk("audio", seq * 20, 20, seq, SPEECH_STARTED, "pcm16", turn=turn)
+def speech_chunk(seq: int, turn: int, payload: dict = SPEECH_STARTED) -> TimedChunk:
+    return TimedChunk("audio", seq * 20, 20, seq, payload, "pcm16", turn=turn)
 
 
 async def settle() -> None:
@@ -221,6 +233,18 @@ def cascade_graph(order: tuple[str, ...] = ("front", "llm", "tts")) -> SessionGr
         "tts": SessionNode(("tts",), ("llm:text",), controls=(interrupt,)),
     }
     return SessionGraph({name: nodes[name] for name in order}, {"tts": ("text",)})
+
+
+def dialog_graph() -> SessionGraph:
+    """A dialog-like front that publishes its turn controls and feeds the llm, which takes its interrupt as a preempting control."""
+    interrupt = ControlEdge("front", INTERRUPT, should_preempt=True)
+    return SessionGraph(
+        {
+            "front": SessionNode(("front",), ("input:pcm16",)),
+            "llm": SessionNode(("llm",), ("front:text",), controls=(interrupt,)),
+        },
+        {"front": (SESSION_CONTROL,), "llm": ("text",)},
+    )
 
 
 def edge_graph(edge: DataEdge) -> SessionGraph:
@@ -276,6 +300,7 @@ async def open_graph(
     graph: SessionGraph,
     names: tuple[str, ...],
     params: dict[str, object] | None = None,
+    limits: SessionLimits = LIMITS,
 ) -> AsyncIterator[tuple[Coordinator, SessionIdentity, Gates, Log]]:
     gates = Gates(names)
     async with pipeline(
@@ -286,7 +311,7 @@ async def open_graph(
     ) as (coordinator, events, _):
         coordinator.session_graph = graph
         identity = await coordinator.open_session(
-            OmniRequest(None, params=params or {}), limits=LIMITS
+            OmniRequest(None, params=params or {}), limits=limits
         )
         log = Log(events)
         try:
@@ -325,15 +350,25 @@ async def next_data(outputs: AsyncIterator[OutputChunk]) -> OutputChunk:
 
 
 @pytest.mark.asyncio
-async def test_interrupt_drops_queued_stale_output_but_not_the_next_turn(tmp_path):
-    """Declared downstream first, the nodes still open upstream first, take the interrupt upstream first and close downstream first."""
+@pytest.mark.parametrize(
+    "max_pending_chunks, unsent_appends",
+    [(1, 0), (REALTIME_MAX_PENDING_CHUNKS, 2)],
+    ids=["no_unsent_appends", "unsent_appends"],
+)
+async def test_interrupt_drops_queued_stale_output_but_not_the_next_turn(
+    tmp_path, max_pending_chunks, unsent_appends
+):
+    """Declared downstream first, the nodes still open upstream first, take the interrupt upstream first and close downstream first.
+
+    With the realtime pending limit, the interrupt meets appends of the turn that the target's node session has not sent yet, and drops them. The client's EOS still drains the graph afterwards.
+    """
     graph = cascade_graph(order=("tts", "llm", "front"))
-    async with open_graph(tmp_path, graph, ("front", "llm", "tts")) as (
-        coordinator,
-        identity,
-        gates,
-        log,
-    ):
+    async with open_graph(
+        tmp_path,
+        graph,
+        ("front", "llm", "tts"),
+        limits=SessionLimits(max_pending_chunks=max_pending_chunks),
+    ) as (coordinator, identity, gates, log):
         assert log.names("open") == ["llm", "tts"]
         outputs = coordinator.session_outputs(identity)
         gates.hold("tts")
@@ -342,6 +377,8 @@ async def test_interrupt_drops_queued_stale_output_but_not_the_next_turn(tmp_pat
         await wait_until(lambda: len(log.of("append", "llm")) == 3)
         await settle()
         assert log.of("append", "tts") == ["text:llm(old0)"]
+        tts_node = coordinator.sessions[coordinator.graphs[identity.id].nodes["tts"].id]
+        await wait_until(lambda: len(tts_node.pending) == unsent_appends)
         await append(coordinator, identity, speech_chunk(3, turn=1))
         await wait_until(lambda: log.names("control") == ["llm", "tts"])
         gates.release("tts")
@@ -349,6 +386,13 @@ async def test_interrupt_drops_queued_stale_output_but_not_the_next_turn(tmp_pat
         output = await next_data(outputs)
         assert output.payload == {"text": "tts(llm(new))"}
         assert log.of("append", "tts") == ["text:llm(old0)", "text:llm(new)"]
+        await append(
+            coordinator, identity, replace(text_chunk("end", 5, turn=2), eos=True)
+        )
+        while (
+            output := await asyncio.wait_for(anext(outputs), OUTPUT_TIMEOUT_S)
+        ).kind != "input_done" or output.input_seq != 5:
+            pass
         await outputs.aclose()
         await coordinator.close_session(identity)
         await wait_until(lambda: log.names("close") == ["tts", "llm"])
@@ -372,6 +416,63 @@ async def test_input_arriving_during_interrupt_waits_and_is_not_fenced(tmp_path)
         gates.release("llm", "control")
         output = await next_data(outputs)
         assert output.payload == {"text": "tts(llm(new))"}
+        await outputs.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_owner_slow_to_take_an_interrupt_holds_neither_the_input_acks_nor_the_stop(
+    tmp_path,
+):
+    """While an owner of the interrupted node has not yet taken the preempting interrupt, the client still hears turn.interrupted and has its input confirmed, and the node's next input waits for the interrupt."""
+    async with open_graph(tmp_path, dialog_graph(), ("front", "llm")) as (
+        coordinator,
+        identity,
+        gates,
+        log,
+    ):
+        outputs = coordinator.session_outputs(identity)
+        stopped_turns: list[int | None] = []
+        confirmed_inputs: list[int] = []
+
+        async def hear_the_stop_and_the_confirmations() -> None:
+            while not stopped_turns or confirmed_inputs != [0, 1]:
+                output = await anext(outputs)
+                if output.kind == "input_done":
+                    confirmed_inputs.append(output.input_seq)
+                elif control_type(output) == TURN_INTERRUPTED:
+                    stopped_turns.append(output.turn)
+                else:
+                    pass
+
+        gates.hold("llm", "control")
+        try:
+            await append(coordinator, identity, speech_chunk(0, turn=1))
+            await wait_until(lambda: "llm" in log.names("control"))
+            await append(
+                coordinator, identity, speech_chunk(1, turn=2, payload={"text": "new"})
+            )
+            hearing = asyncio.create_task(hear_the_stop_and_the_confirmations())
+            # A timed-out read of the outputs would close the session behind the held owner, so this wait leaves the read running.
+            heard_while_held, _ = await asyncio.wait(
+                {hearing}, timeout=OUTPUT_TIMEOUT_S
+            )
+            await append(
+                coordinator, identity, speech_chunk(2, turn=2, payload=SPEECH_STOPPED)
+            )
+            await settle()
+            appended_before_the_interrupt = log.of("append", "llm")
+        finally:
+            gates.release("llm", "control")
+        await asyncio.wait_for(hearing, OUTPUT_TIMEOUT_S)
+        assert heard_while_held == {hearing}
+        assert stopped_turns == [1]
+        assert appended_before_the_interrupt == []
+        while (
+            output := await asyncio.wait_for(anext(outputs), OUTPUT_TIMEOUT_S)
+        ).format != "text":
+            pass
+        assert output.payload == {"text": "llm(new)"}
+        assert log.of("append", "llm") == ["text:new"]
         await outputs.aclose()
 
 
