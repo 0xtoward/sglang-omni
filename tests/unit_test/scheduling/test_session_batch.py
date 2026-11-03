@@ -2,7 +2,6 @@
 """Batched appends across sessions on one stage scheduler."""
 
 import threading
-from pathlib import Path
 from typing import Literal
 from unittest.mock import Mock
 
@@ -10,7 +9,6 @@ import pytest
 
 import sglang_omni.scheduling.session as session_module
 from sglang_omni.admission import QueueFullError
-from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
@@ -186,30 +184,25 @@ def test_without_session_batches_each_append_runs_alone_with_the_same_results():
 
 def test_batched_appends_emit_one_shared_stage_start_timestamp(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
-    recorder = get_recorder()
-    recorder.start("batch-start-test", str(tmp_path), "stage")
     emit_stage_started = Mock()
     monkeypatch.setattr(
         session_module, "emit_session_stage_started", emit_stage_started
     )
-    time_ns = Mock(return_value=123)
-    monkeypatch.setattr(session_module.time, "time_ns", time_ns)
+    capture_stage_start = Mock(return_value=("batch-start-test", 123))
+    monkeypatch.setattr(
+        session_module, "capture_session_stage_start", capture_stage_start
+    )
 
-    try:
-        hooks = RecordingHooks()
-        scheduler = SessionScheduler(hooks)
-        outputs = run_backlog(
-            scheduler,
-            opens("a", "b")
-            + [message("a0", "append", "a"), message("b0", "append", "b")],
-        )
-    finally:
-        recorder.stop(wait=True)
+    hooks = RecordingHooks()
+    scheduler = SessionScheduler(hooks)
+    outputs = run_backlog(
+        scheduler,
+        opens("a", "b") + [message("a0", "append", "a"), message("b0", "append", "b")],
+    )
 
     assert outputs["a0"].type == outputs["b0"].type == "result"
-    assert time_ns.call_count == 1
+    assert capture_stage_start.call_count == 1
     assert emit_stage_started.call_count == 2
     assert {
         call.kwargs["request_id"] for call in emit_stage_started.call_args_list

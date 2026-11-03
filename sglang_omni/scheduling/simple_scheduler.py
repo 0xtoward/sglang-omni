@@ -21,6 +21,7 @@ from collections.abc import Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Awaitable, Callable, Generic, Protocol
 
+from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.threaded_simple_scheduler import ComputeInput, ComputeResult
@@ -30,6 +31,28 @@ logger = logging.getLogger(__name__)
 
 class RequestArrivalHook(Protocol):
     def __call__(self, payload: StagePayload) -> None: ...
+
+
+def emit_batch_event(
+    event_name: str, batch: list[IncomingMessage], metadata: dict[str, float]
+) -> None:
+    """Record the event for every request of a batch at one shared time, with the batch size."""
+    recorder = get_recorder()
+    active_run = recorder.capture_active_run_timestamp_ns()
+    if active_run is None:
+        return
+    else:
+        pass
+    run_id, timestamp_ns = active_run
+    for msg in batch:
+        recorder.emit(
+            request_id=msg.request_id,
+            stage=None,
+            event_name=event_name,
+            metadata={"batch_size": len(batch), **metadata},
+            timestamp_ns=timestamp_ns,
+            expected_run_id=run_id,
+        )
 
 
 class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
@@ -313,9 +336,16 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     else:
                         pass
                     batch = [msg]
+                    collect_start_s = time.monotonic()
                     try:
                         batch = self.collect_batch(msg)
+                        emit_batch_event(
+                            "scheduler_batch_start",
+                            batch,
+                            {"gather_ms": (time.monotonic() - collect_start_s) * 1000},
+                        )
                         self.run_batch(batch, loop)
+                        emit_batch_event("scheduler_batch_end", batch, {})
                     except Exception as exc:
                         logger.exception(
                             "SimpleScheduler: compute_fn failed for %s", msg.request_id
