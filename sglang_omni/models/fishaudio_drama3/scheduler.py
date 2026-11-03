@@ -7,13 +7,10 @@ import logging
 import math
 import time
 from collections import Counter
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
-if TYPE_CHECKING:
-    from sglang.srt.managers.schedule_batch import ScheduleBatch
-    from sglang.srt.managers.scheduler import GenerationBatchResult
-else:
-    pass
+from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.managers.scheduler import GenerationBatchResult
 
 logger = logging.getLogger(__name__)
 EWMA_WEIGHT = 0.2

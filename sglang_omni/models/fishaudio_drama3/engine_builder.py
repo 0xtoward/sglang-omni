@@ -89,7 +89,7 @@ logger = logging.getLogger(__name__)
 
 
 class Drama3BudgetScheduler(Drama3BudgetInterval, OmniScheduler[Drama3RequestData]):
-    """Drama scheduler with a bounded cost-based prefill interval."""
+    """Drama scheduler with a bounded budget-based prefill interval."""
 
 
 class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
