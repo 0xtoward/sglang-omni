@@ -27,6 +27,8 @@ RUN_STATUS_FILE_NAME = re.compile(r"run_status_(?P<pid>\d+)\.json")
 EVENT_FILES_SETTLE_S = 2.0
 EVENT_FILES_POLL_S = 0.1
 EVENT_FILES_TIMEOUT_S = 120.0
+# note (0xtoward): every producer thread holds its events until the stop and drops any past this capacity (1024 by default).
+EVENT_BUFFER_CAPACITY = 1 << 18
 MEMORY_SAMPLE_PERIOD_S = 1.0
 PROFILE_REQUEST_TIMEOUT_S = 30.0
 # note (0xtoward): a scheduler emits one batch's prefill events in one loop, well under a millisecond apart; two batches are a model step apart.
@@ -107,7 +109,11 @@ def request_events(server_url: str, event_dir: Path) -> Iterator[None]:
     run_id = event_dir.name
     post_profile_command(
         f"{server_url}/start_request_profile",
-        {"run_id": run_id, "event_dir": str(event_dir.resolve())},
+        {
+            "run_id": run_id,
+            "event_dir": str(event_dir.resolve()),
+            "event_buffer_capacity": EVENT_BUFFER_CAPACITY,
+        },
     )
     try:
         yield
