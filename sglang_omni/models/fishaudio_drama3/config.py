@@ -76,11 +76,17 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     reference_sampling: bool | None = None
     reference_sampling_fallback: ReferenceSamplingFallback | None = None
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS
-    prefill_queue_budget_ms: float = Field(
+    engine_first_audio_target_ms: float = Field(
         default=0.0,
         ge=0,
         allow_inf_nan=False,
-        description="Maximum intentional prefill queue wait in ms; zero keeps fixed interval.",
+        description="Engine enqueue to first-audio target in ms; zero keeps fixed interval.",
+    )
+    first_audio_downstream_reserve_ms: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description="Explicit vocoder/transport allowance in ms; required with a target.",
     )
     prefill_interval_max_steps: int = Field(
         default=8,

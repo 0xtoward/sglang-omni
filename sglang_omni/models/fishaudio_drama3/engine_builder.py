@@ -125,16 +125,31 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
-        prefill_queue_budget_ms: float = 0.0,
+        engine_first_audio_target_ms: float = 0.0,
+        first_audio_downstream_reserve_ms: float | None = None,
         prefill_interval_max_steps: int = 8,
     ) -> None:
-        if not math.isfinite(prefill_queue_budget_ms) or prefill_queue_budget_ms < 0:
-            raise ValueError("prefill_queue_budget_ms must be finite and nonnegative")
+        if (
+            not math.isfinite(engine_first_audio_target_ms)
+            or engine_first_audio_target_ms < 0
+        ):
+            raise ValueError(
+                "engine_first_audio_target_ms must be finite and nonnegative"
+            )
+        elif engine_first_audio_target_ms > 0 and (
+            first_audio_downstream_reserve_ms is None
+            or not math.isfinite(first_audio_downstream_reserve_ms)
+            or first_audio_downstream_reserve_ms <= 0
+        ):
+            raise ValueError(
+                "A first-audio target requires a positive finite downstream reserve"
+            )
         elif not 1 <= prefill_interval_max_steps <= 24:
             raise ValueError("prefill_interval_max_steps must be between 1 and 24")
         else:
             pass
-        self.prefill_queue_budget_ms = prefill_queue_budget_ms
+        self.engine_first_audio_target_ms = engine_first_audio_target_ms
+        self.first_audio_downstream_reserve_ms = first_audio_downstream_reserve_ms
         self.prefill_interval_max_steps = prefill_interval_max_steps
         self.context_length = context_length
         self.max_running_requests = max_running_requests
@@ -433,7 +448,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         }
 
     def scheduler_type(self) -> type[OmniScheduler[Drama3RequestData]]:
-        if self.prefill_queue_budget_ms > 0:
+        if self.engine_first_audio_target_ms > 0:
             return Drama3BudgetScheduler
         else:
             return super().scheduler_type()
@@ -444,9 +459,12 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         model_runner: Drama3ModelRunner,
     ) -> None:
         if isinstance(scheduler, Drama3BudgetScheduler):
+            assert self.first_audio_downstream_reserve_ms is not None
             scheduler.configure_interval(
-                self.prefill_queue_budget_ms / 1000,
+                self.engine_first_audio_target_ms / 1000,
+                self.first_audio_downstream_reserve_ms / 1000,
                 self.prefill_interval_max_steps,
+                self.stream_stride,
             )
         else:
             pass

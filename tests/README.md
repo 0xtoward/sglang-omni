@@ -1026,5 +1026,5 @@ python -m pytest tests/unit_test/models/test_streaming_cascade.py tests/unit_tes
 ```
 
 - `unit_test/fishaudio_drama3/test_scheduler.py`: CPU tests for the production
-  prefill interval hooks, queue-budget release, fixed warmup fallback, and
-  bounded cost estimates.
+  prefill deadline hooks, actual first-window costs, fixed warmup fallback,
+  arrival/deadline handling, and bounded deferral.
