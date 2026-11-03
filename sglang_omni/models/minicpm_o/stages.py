@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
+from collections import defaultdict
 from collections.abc import Mapping
 from contextlib import nullcontext
 
@@ -19,7 +22,10 @@ from sglang_omni.models.minicpm_o.bootstrap import (
     create_thinker_scheduler,
 )
 from sglang_omni.models.minicpm_o.components.audio_encoder import MiniCPMOAudioEncoder
-from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
+from sglang_omni.models.minicpm_o.components.code2wav import (
+    PHASE_PROBE,
+    MiniCPMOCode2Wav,
+)
 from sglang_omni.models.minicpm_o.components.image_encoder import MiniCPMOImageEncoder
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
 from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
@@ -291,6 +297,8 @@ def vocode_code2wav_payloads(
     model: MiniCPMOCode2Wav, payloads: list[StagePayload]
 ) -> list[StagePayload]:
     """Vocode talker payloads in one batch, one speaker reference per row."""
+    batch_start = time.perf_counter()
+    model.phase_probe = defaultdict(float) if PHASE_PROBE else None
     codec_tokens: list[list[int]] = []
     references: list[bytes | None] = []
     for payload in payloads:
@@ -305,12 +313,14 @@ def vocode_code2wav_payloads(
         f"minicpm_code2wav_batch size={len(payloads)} "
         f"max_codec_tokens={max(len(token_ids) for token_ids in codec_tokens)}"
     )
+    parsed = time.perf_counter()
     # note (Junnan Li): model.vocode rejects empty rows, which turns without speech produce.
     voiced = [index for index, tokens in enumerate(codec_tokens) if tokens]
     voiced_waveforms = model.vocode(
         [codec_tokens[index] for index in voiced],
         [references[index] for index in voiced],
     )
+    vocoded = time.perf_counter()
     waveforms = [np.zeros(0, dtype=np.float32) for _ in codec_tokens]
     for index, waveform in zip(voiced, voiced_waveforms, strict=True):
         waveforms[index] = waveform
@@ -326,6 +336,21 @@ def vocode_code2wav_payloads(
             )
         )
         outputs.append(payload)
+    probe = model.phase_probe
+    if probe is not None:
+        model.phase_probe = None
+        done = time.perf_counter()
+        probe.update(
+            rows=len(payloads),
+            generated_tokens=[len(tokens) for tokens in codec_tokens],
+            parse_ms=(parsed - batch_start) * 1e3,
+            vocode_ms=(vocoded - parsed) * 1e3,
+            post_ms=(done - vocoded) * 1e3,
+            total_ms=(done - batch_start) * 1e3,
+        )
+        logger.info(f"c2w_phases {json.dumps(probe)}")
+    else:
+        pass
     return outputs
 
 

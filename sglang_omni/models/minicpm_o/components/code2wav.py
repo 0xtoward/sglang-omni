@@ -7,6 +7,7 @@ import io
 import logging
 import os
 import threading
+import time
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
@@ -35,6 +36,19 @@ SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
 FLOW_WARMUP_TOKENS = 32
 # note (0xtoward): dense Flow attention memory grows with rows x (reference + codec tokens)^2; a full batch of 16 rows up to 512 tokens stays one call.
 FLOW_BATCH_TOKEN_SQUARE_BUDGET = 16 * 512 * 512
+# note (0xtoward): fork-only probe; vocode_code2wav_payloads logs each batch's phase times.
+PHASE_PROBE = os.environ.get("SGLANG_OMNI_C2W_PHASES") == "1"
+# note (0xtoward): fork-only timing arm; one HiFT call on the zero-padded batch, so shorter rows' tails differ from per-row decoding.
+HIFT_PADDED_ARM = os.environ.get("SGLANG_OMNI_C2W_HIFT_PADDED") == "1"
+# note (0xtoward): fork-only arm; extra Flow graph shapes as "batch:frames,..." on top of the default table.
+EXTRA_FLOW_GRAPH_SHAPES = tuple(
+    (int(batch), int(frames))
+    for batch, frames in (
+        item.split(":")
+        for item in os.environ.get("SGLANG_OMNI_C2W_EXTRA_FLOW_SHAPES", "").split(",")
+        if item
+    )
+)
 
 
 class MiniCPMOCode2Wav(nn.Module):
@@ -154,6 +168,7 @@ class MiniCPMOCode2Wav(nn.Module):
             max_workers=reference_workers, thread_name_prefix="minicpmo-reference"
         )
         self.sample_rate = OUTPUT_SAMPLE_RATE
+        self.phase_probe: defaultdict[str, float] | None = None
         self.eval()
         if enable_dit_torch_compile:
             flow = self.token2wav.flow
@@ -228,7 +243,11 @@ class MiniCPMOCode2Wav(nn.Module):
         if enable_flow_cuda_graph and resolved_device.type == "cuda":
             with self.device_context:
                 self.token2wav.capture_flow_graphs(
-                    flow_cuda_graph_capture_shapes,
+                    tuple(
+                        dict.fromkeys(
+                            (*flow_cuda_graph_capture_shapes, *EXTRA_FLOW_GRAPH_SHAPES)
+                        )
+                    ),
                     packed_dit_cuda_graph_capture_shapes,
                 )
         else:
@@ -433,7 +452,15 @@ class MiniCPMOCode2Wav(nn.Module):
         else:
             pass
 
+        reference_start = time.perf_counter()
         speaker_prompts = self.prepare_references(references)
+        if self.phase_probe is not None:
+            self.phase_probe["refs_ms"] += (time.perf_counter() - reference_start) * 1e3
+            self.phase_probe["prompt_tokens"] = [
+                prompt.prompt_tokens.shape[1] for prompt in speaker_prompts
+            ]
+        else:
+            pass
         combined_token_lengths = [
             len(tokens) + prompt.prompt_tokens.shape[1]
             for tokens, prompt in zip(token_sequences, speaker_prompts, strict=True)
@@ -486,6 +513,14 @@ class MiniCPMOCode2Wav(nn.Module):
     ) -> list[np.ndarray]:
         """Run flow and HiFT. The caller selects the decode stream."""
         token2wav_device = self.token2wav.device
+        probe = self.phase_probe
+        if probe is not None:
+            device_module = torch.get_device_module(token2wav_device)
+            marks = [device_module.Event(enable_timing=True) for _ in range(3)]
+            marks[0].record()
+            wall = [time.perf_counter()]
+        else:
+            pass
         token_lengths = [len(tokens) for tokens in token_sequences]
         speech_tokens = pad_sequence(
             [torch.tensor(tokens, dtype=torch.int32) for tokens in token_sequences],
@@ -495,11 +530,20 @@ class MiniCPMOCode2Wav(nn.Module):
             token_lengths, dtype=torch.int32, device=token2wav_device
         )
         mel = self.flow_mel(speech_tokens, speech_token_lengths, speaker_prompts)
+        if probe is not None:
+            marks[1].record()
+            wall.append(time.perf_counter())
+        else:
+            pass
 
         mel_upsample_rate = self.token2wav.flow.up_rate
         rows_by_token_length: defaultdict[int, list[int]] = defaultdict(list)
         for row, token_length in enumerate(token_lengths):
             rows_by_token_length[token_length].append(row)
+        if HIFT_PADDED_ARM:
+            rows_by_token_length = {max(token_lengths): list(range(len(token_lengths)))}
+        else:
+            pass
         waveforms_by_row: dict[int, torch.Tensor] = {}
         # note (MayDomine): padding changes HiFT's noncausal convolution boundaries.
         for token_length, row_indices in rows_by_token_length.items():
@@ -511,10 +555,27 @@ class MiniCPMOCode2Wav(nn.Module):
             group_waveforms, _ = self.token2wav.hift(speech_feat=speech_mel)
             for group_row, row in enumerate(row_indices):
                 waveforms_by_row[row] = group_waveforms[group_row].reshape(-1)[
-                    : token_length * SAMPLES_PER_CODEC_TOKEN
+                    : token_lengths[row] * SAMPLES_PER_CODEC_TOKEN
                 ]
+        if probe is not None:
+            marks[2].record()
+            wall.append(time.perf_counter())
+        else:
+            pass
         host_waveforms = torch.cat(
             [waveforms_by_row[row] for row in range(len(token_lengths))]
         ).cpu()
+        if probe is not None:
+            wall.append(time.perf_counter())
+            probe["flow_calls"] += 1
+            probe["hift_calls"] += len(rows_by_token_length)
+            probe["flow_rows_x_frames"] += len(token_lengths) * mel.shape[2]
+            probe["flow_launch_ms"] += (wall[1] - wall[0]) * 1e3
+            probe["hift_launch_ms"] += (wall[2] - wall[1]) * 1e3
+            probe["sync_ms"] += (wall[3] - wall[2]) * 1e3
+            probe["flow_gpu_ms"] += marks[0].elapsed_time(marks[1])
+            probe["hift_gpu_ms"] += marks[1].elapsed_time(marks[2])
+        else:
+            pass
         sample_counts = [length * SAMPLES_PER_CODEC_TOKEN for length in token_lengths]
         return [waveform.numpy() for waveform in host_waveforms.split(sample_counts)]
