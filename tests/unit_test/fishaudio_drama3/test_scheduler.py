@@ -72,11 +72,15 @@ def test_low_sample_count_keeps_configured_interval() -> None:
     assert scheduler.interval_reason == "warmup"
 
 
-def test_completed_cost_ratio_is_bounded_and_slow_decode_reduces_interval() -> None:
+@pytest.mark.parametrize("maximum_steps", [8, 24])
+def test_completed_cost_ratio_is_bounded_and_slow_decode_reduces_interval(
+    maximum_steps: int,
+) -> None:
     scheduler = BudgetScheduler(True, 0.0)
     prefill = make_batch(True)
     decode = make_batch(False)
-    completion_seconds = [0.12] * 4 + [1.0, 1.01, 1.02, 1.03, 1.04]
+    scheduler.configure_interval(0.1, maximum_steps)
+    completion_seconds = [0.5] * 4 + [1.0, 1.01, 1.02, 1.03, 1.04]
 
     with patch(
         "sglang_omni.models.fishaudio_drama3.scheduler.time.monotonic",
@@ -106,9 +110,9 @@ def test_completed_cost_ratio_is_bounded_and_slow_decode_reduces_interval() -> N
         prefill
     )  # noqa: leading-underscore  # production hook
 
-    assert fast_interval == 8
+    assert fast_interval == maximum_steps
     assert (
-        scheduler._prefill_decode_interval_remaining == 2
+        scheduler._prefill_decode_interval_remaining == 5
     )  # noqa: leading-underscore  # production hook
     assert scheduler.interval_reason == "cost_ratio"
-    assert scheduler.prefill_seconds == pytest.approx(0.12)
+    assert scheduler.prefill_seconds == pytest.approx(0.5)

@@ -332,7 +332,7 @@ A zero queue budget (the default) keeps the configured fixed
 `--tts_engine.engine.prefill_decode_interval`. With a positive budget, the
 scheduler uses that fixed interval until it has four completed samples of each
 phase. It then selects `ceil(prefill_seconds / decode_seconds)`, bounded by
-`prefill_interval_max_steps` (1–16, default 8). This is a heuristic that amortizes
+`prefill_interval_max_steps` (1–24, default 8). This is a heuristic that amortizes
 one prefill over a comparable amount of decode time.
 
 The estimates are smoothed host timings: prefill launch to completed result, and
@@ -369,3 +369,8 @@ The queue-budget release did not trigger; observed releases were from an empty
 running batch. This run validates cost-ratio engagement, not the budget-expiry
 path. The fixed default remains unchanged. These single runs do not establish
 an overall optimization or an audio-quality result.
+
+The maximum is a cap, not a requested interval: P/D = 33.61/6.10 ms selects
+approximately 6 even with a cap of 24. The countdown follows scheduling passes
+in the existing scheduler; it does not promise that every pass executes decode
+or produces one output frame. Exploring cap 24 is pending GPU validation.

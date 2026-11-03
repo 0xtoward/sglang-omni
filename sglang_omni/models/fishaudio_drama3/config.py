@@ -85,8 +85,8 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     prefill_interval_max_steps: int = Field(
         default=8,
         ge=1,
-        le=16,
-        description="Maximum decode steps between prefills with a queue budget.",
+        le=24,
+        description="Maximum scheduling passes between prefills with a queue budget.",
     )
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE
     async_decode_min_batch_size: int = Field(

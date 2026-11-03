@@ -130,8 +130,8 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
     ) -> None:
         if not math.isfinite(prefill_queue_budget_ms) or prefill_queue_budget_ms < 0:
             raise ValueError("prefill_queue_budget_ms must be finite and nonnegative")
-        elif not 1 <= prefill_interval_max_steps <= 16:
-            raise ValueError("prefill_interval_max_steps must be between 1 and 16")
+        elif not 1 <= prefill_interval_max_steps <= 24:
+            raise ValueError("prefill_interval_max_steps must be between 1 and 24")
         else:
             pass
         self.prefill_queue_budget_ms = prefill_queue_budget_ms
