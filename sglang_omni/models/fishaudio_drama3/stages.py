@@ -257,7 +257,7 @@ def measure_max_padded_frames_per_decode(
     else:
         pass
     logger.info(
-        f"Drama 3 vocoder: a non-streaming decode takes up to "
+        f"Drama 3 vocoder: a decode takes up to "
         f"{max_padded_frames_per_decode} padded frames of {bytes_per_padded_frame} "
         f"bytes each; share {share_bytes / 2**30:.2f} GiB, held "
         f"{held_bytes / 2**30:.2f} GiB"
@@ -281,6 +281,7 @@ def create_vocoder_executor(
     decode_dtype: Literal["float32", "float16"],
     max_new_tokens: int,
     total_gpu_memory_fraction: float | None = None,
+    stream_window_batching: bool,
 ) -> Drama3VocoderScheduler:
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     torch_device = torch.device(resolved_device)
@@ -294,22 +295,7 @@ def create_vocoder_executor(
         decode: WindowDecoder = ChannelsLastDecoder(codec, dtype=torch.float16)
     else:
         decode = codec.from_indices
-    if window_cuda_graphs:
-        decode_window: WindowDecoder = WindowGraphDecoder(
-            decode,
-            num_codebooks=num_codebooks,
-            frame_length=int(codec.frame_length),
-            device=torch_device,
-            window_lengths=stream_window_lengths(
-                stream_stride=stream_stride,
-                stream_followup_stride_ramp=stream_followup_stride_ramp,
-                stream_followup_stride=stream_followup_stride,
-                stream_overlap_tokens=stream_overlap_tokens,
-            ),
-        )
-    else:
-        decode_window = decode
-    if torch_device.type == "cpu":
+    if torch_device.type == "cpu" or not stream_window_batching:
         max_padded_frames_per_decode = None
     else:
         max_padded_frames_per_decode = measure_max_padded_frames_per_decode(
@@ -319,6 +305,40 @@ def create_vocoder_executor(
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             max_new_tokens=max_new_tokens,
         )
+    if window_cuda_graphs:
+        window_lengths = stream_window_lengths(
+            stream_stride=stream_stride,
+            stream_followup_stride_ramp=stream_followup_stride_ramp,
+            stream_followup_stride=stream_followup_stride,
+            stream_overlap_tokens=stream_overlap_tokens,
+        )
+        decode_window: WindowDecoder = WindowGraphDecoder(
+            decode,
+            num_codebooks=num_codebooks,
+            frame_length=int(codec.frame_length),
+            device=torch_device,
+            window_lengths=tuple(
+                length
+                for length in window_lengths
+                if not stream_window_batching or length <= max_new_tokens
+            ),
+            max_padded_frames_per_decode=max_padded_frames_per_decode,
+            batch_sizes=(1, 2, 4, 8) if stream_window_batching else (1,),
+        )
+    else:
+        decode_window = decode
+    if torch_device.type != "cpu" and (
+        window_cuda_graphs or not stream_window_batching
+    ):
+        max_padded_frames_per_decode = measure_max_padded_frames_per_decode(
+            decode,
+            device=torch_device,
+            num_codebooks=num_codebooks,
+            total_gpu_memory_fraction=total_gpu_memory_fraction,
+            max_new_tokens=max_new_tokens,
+        )
+    else:
+        pass
     return Drama3VocoderScheduler(
         codec,
         device=resolved_device,
@@ -331,4 +351,5 @@ def create_vocoder_executor(
         max_batch_wait_ms=max_batch_wait_ms,
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
+        stream_window_batching=stream_window_batching,
     )

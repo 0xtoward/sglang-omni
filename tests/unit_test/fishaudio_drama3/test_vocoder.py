@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -11,9 +13,9 @@ import torch
 import torch.nn.functional as F
 from dac.nn.layers import Snake1d
 
+from sglang_omni.models.fishaudio_drama3 import channels_last_decoder
 from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
     ChannelsLastDecoder,
-    snake_channels_last_kernel,
 )
 from sglang_omni.models.fishaudio_drama3.config import Drama3VocoderFactoryArgs
 from sglang_omni.models.fishaudio_drama3.request_builders import (
@@ -97,6 +99,7 @@ def vocoder_with(
     *,
     factory_args: Drama3VocoderFactoryArgs | None = None,
     max_padded_frames_per_decode: int | None = None,
+    stream_window_batching: bool = False,
 ) -> Drama3VocoderScheduler:
     """The vocoder with the configured windows."""
     window_kwargs = (factory_args or Drama3VocoderFactoryArgs()).model_dump(
@@ -115,8 +118,14 @@ def vocoder_with(
         device="cpu",
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
+        stream_window_batching=stream_window_batching,
         **window_kwargs,
     )
+
+
+def run_ready_steps(vocoder: Drama3VocoderScheduler) -> None:
+    while vocoder.has_ready_work():
+        vocoder.run_ready_step()
 
 
 def final_payload(
@@ -171,11 +180,14 @@ def streamed(
     is_done_first: bool,
     codec: FrameNumberCodec | None = None,
     decode_window: WindowDecoder | None = None,
+    stream_window_batching: bool = False,
 ) -> tuple[FrameNumberCodec, list[OutgoingMessage]]:
     """Stream chunks of the given sizes, then hand over the final payload with all
     total_frame_count frames and signal the end of the stream."""
     codec = FrameNumberCodec() if codec is None else codec
-    vocoder = vocoder_with(codec, decode_window)
+    vocoder = vocoder_with(
+        codec, decode_window, stream_window_batching=stream_window_batching
+    )
     frames = numbered_frames(total_frame_count)
     start = 0
     for chunk_id, frame_count in enumerate(chunk_frame_counts):
@@ -187,6 +199,7 @@ def streamed(
                 from_stage="tts_engine",
             ),
         )
+        run_ready_steps(vocoder)
         start += frame_count
     payload = final_payload(frames, is_streaming=True)
     if is_done_first:
@@ -195,6 +208,7 @@ def streamed(
     else:
         vocoder.handle_streaming_new_request("request-a", payload)
         vocoder.handle_stream_done("request-a")
+    run_ready_steps(vocoder)
     return codec, drained(vocoder)
 
 
@@ -280,15 +294,20 @@ STREAMING_CASES = [
         )
     ],
 )
+@pytest.mark.parametrize("stream_window_batching", [False, True])
 def test_streaming_emits_the_fixed_windows_however_frames_arrive(
     total_frame_count: int,
     chunk_frame_counts: list[int],
     chunk_ranges: FrameRanges,
     decoded_ranges: FrameRanges,
     is_done_first: bool,
+    stream_window_batching: bool,
 ) -> None:
     codec, messages = streamed(
-        total_frame_count, chunk_frame_counts, is_done_first=is_done_first
+        total_frame_count,
+        chunk_frame_counts,
+        is_done_first=is_done_first,
+        stream_window_batching=stream_window_batching,
     )
 
     assert chunk_frame_ranges(messages) == chunk_ranges
@@ -387,6 +406,53 @@ def test_window_graphs_decode_every_window_length_like_eager() -> None:
     for decoded_audio, expected_audio in replay_results:
         assert torch.equal(decoded_audio, expected_audio)
     assert torch.equal(decoder(codes[:, :, :20]), causal_decode(codes[:, :, :20]))
+
+
+@pytest.mark.accelerator
+def test_window_graphs_decode_batched_windows_like_eager() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    device = torch.device("cuda")
+    codebook_weights = torch.arange(
+        1, NUM_CODEBOOKS + 1, dtype=torch.float32, device=device
+    )
+
+    def causal_decode(indices: torch.Tensor) -> torch.Tensor:
+        frame_values = (indices.float() * codebook_weights[:, None]).sum(
+            dim=1, keepdim=True
+        )
+        return frame_values.cumsum(dim=-1).repeat_interleave(SAMPLES_PER_FRAME, dim=-1)
+
+    decoder = WindowGraphDecoder(
+        causal_decode,
+        num_codebooks=NUM_CODEBOOKS,
+        frame_length=SAMPLES_PER_FRAME,
+        device=device,
+        window_lengths=(10, 20, 32),
+        batch_sizes=(1, 2, 4),
+        max_padded_frames_per_decode=80,
+    )
+    codes = torch.randint(0, 100, (5, NUM_CODEBOOKS, 40), device=device)
+
+    assert decoder.graph_shape(3, 7) == (4, 10)
+    assert decoder.graph_shape(4, 32) is None
+
+    replay_results: list[tuple[torch.Tensor, torch.Tensor]] = []
+    for row_count, frame_count in (
+        (2, 20),
+        (3, 7),
+        (4, 32),
+        (1, 11),
+        (5, 10),
+        (3, 40),
+        (3, 9),
+    ):
+        window = codes[:row_count, :, :frame_count]
+        replay_results.append((decoder(window), causal_decode(window)))
+    for decoded_audio, expected_audio in replay_results:
+        assert torch.equal(decoded_audio, expected_audio)
 
 
 def test_the_final_result_counts_prompt_rows_and_audio_frames() -> None:
@@ -612,7 +678,9 @@ def test_fused_snake_padding_is_bitwise_equal_to_snake_then_pad(
     )
     for target, left, right in [(unpadded, 0, 0), (output, pad_left, pad_right)]:
         rows = batch_size * target.shape[1]
-        snake_channels_last_kernel[((rows + 31) // 32, (channel_count + 63) // 64)](
+        channels_last_decoder.snake_channels_last_kernel[
+            ((rows + 31) // 32, (channel_count + 63) // 64)
+        ](
             activation,
             alpha,
             inverse_alpha,
@@ -647,7 +715,9 @@ def test_snake_new_lengths_reuse_the_compiled_kernel(dtype: torch.dtype) -> None
             (2, frame_count + 54 + pad_right, 96), device="cuda", dtype=dtype
         )
         rows = 2 * output.shape[1]
-        compiled = snake_channels_last_kernel[((rows + 31) // 32, 2)](
+        compiled = channels_last_decoder.snake_channels_last_kernel[
+            ((rows + 31) // 32, 2)
+        ](
             activation,
             alpha,
             inverse_alpha,
@@ -684,7 +754,7 @@ def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
     activation = untrimmed[:, :125]
     output = torch.empty(activation.shape, dtype=dtype, device="cuda")
 
-    snake_channels_last_kernel[(12, 2)](
+    channels_last_decoder.snake_channels_last_kernel[(12, 2)](
         activation,
         alpha,
         inverse_alpha,
@@ -778,6 +848,7 @@ def test_streaming_crossfade_preserves_audio_across_chunk_sizes(
         "request-a", final_payload(frames, is_streaming=True)
     )
     vocoder.handle_stream_done("request-a")
+    run_ready_steps(vocoder)
 
     assert [end for _, end in codec.decoded_frame_ranges()] == [10, 20, 32, 64, 128]
     np.testing.assert_allclose(
@@ -856,6 +927,7 @@ def test_the_frame_streamer_has_sent_every_window_when_the_vocoder_decodes_it(
                     chunk_id=chunk_id, data=message.data, from_stage="tts_engine"
                 ),
             )
+        run_ready_steps(vocoder)
         streamed_counts.append(request_data.streamed_frame_count)
 
     window_ends = sorted(
@@ -918,6 +990,7 @@ def vocoded_through_the_engine(
             chunk_id += 1
     vocoder.handle_streaming_new_request("request-a", payload)
     vocoder.handle_stream_done("request-a")
+    run_ready_steps(vocoder)
     return drained(vocoder)
 
 
@@ -993,3 +1066,384 @@ def test_non_streaming_batch_preserves_request_audio_with_bounded_padding(
         or codes.shape[0] * codes.shape[-1] <= max_padded_frames_per_decode
         for codes in codec.decoded_codes
     )
+
+
+def test_fifo_decodes_older_followups_before_a_new_first_window() -> None:
+    """Older followups remain ahead of a newly ready first window."""
+    vocoder = vocoder_with(FrameNumberCodec(), stream_window_batching=True)
+    frames = numbered_frames(26)
+
+    def send(request_id: str, chunk_id: int, start: int, end: int) -> None:
+        vocoder.handle_stream_chunk(
+            request_id,
+            StreamItem(
+                chunk_id=chunk_id, data=frames[start:end].T, from_stage="tts_engine"
+            ),
+        )
+
+    send("request-a", 0, 0, 4)
+    run_ready_steps(vocoder)
+    send("request-a", 1, 4, 14)
+    send("request-a", 2, 14, 26)
+    send("request-b", 0, 0, 4)
+    run_ready_steps(vocoder)
+
+    messages = drained(vocoder)
+    assert [message.request_id for message in messages] == [
+        "request-a",
+        "request-a",
+        "request-a",
+        "request-b",
+    ]
+    assert chunk_frame_ranges(messages) == [(0, 4), (4, 14), (14, 26), (0, 4)]
+
+
+def test_windows_decoded_together_give_each_stream_its_own_audio() -> None:
+    codec = FrameNumberCodec()
+    vocoder = vocoder_with(codec, stream_window_batching=True)
+    request_ids = ["request-c", "request-a", "request-b"]
+    for offset, request_id in enumerate(request_ids):
+        frames = numbered_frames(14)
+        frames[:, 1:] += offset * 100
+        vocoder.handle_stream_chunk(
+            request_id,
+            StreamItem(chunk_id=0, data=frames.T, from_stage="tts_engine"),
+        )
+    run_ready_steps(vocoder)
+
+    messages = drained(vocoder)
+    assert [tuple(codes.shape) for codes in codec.decoded_codes] == [
+        (3, NUM_CODEBOOKS, 4),
+        (3, NUM_CODEBOOKS, 14),
+    ]
+    for offset, request_id in enumerate(request_ids):
+        own = [message for message in messages if message.request_id == request_id]
+        np.testing.assert_array_equal(
+            streamed_audio(own),
+            np.repeat(np.arange(14) + offset * 100, SAMPLES_PER_FRAME),
+        )
+
+
+def test_done_queues_missing_windows_and_flushes_in_fifo_order() -> None:
+    vocoder = vocoder_with(FrameNumberCodec(), stream_window_batching=True)
+    frames = numbered_frames(30)
+
+    def send(request_id: str, chunk_id: int, start: int, end: int) -> None:
+        vocoder.handle_stream_chunk(
+            request_id,
+            StreamItem(
+                chunk_id=chunk_id, data=frames[start:end].T, from_stage="tts_engine"
+            ),
+        )
+
+    send("request-a", 0, 0, 4)
+    run_ready_steps(vocoder)
+    send("request-a", 1, 4, 14)
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("request-a")
+    assert len(vocoder.codec.decoded_codes) == 1
+    send("request-b", 0, 0, 4)
+    run_ready_steps(vocoder)
+
+    messages = drained(vocoder)
+    assert [(message.request_id, message.type) for message in messages] == [
+        ("request-a", "stream"),
+        ("request-a", "stream"),
+        ("request-a", "stream"),
+        ("request-a", "stream"),
+        ("request-a", "result"),
+        ("request-b", "stream"),
+    ]
+    assert chunk_frame_ranges([m for m in messages if m.request_id == "request-a"]) == [
+        (0, 4),
+        (4, 14),
+        (14, 26),
+        (26, 30),
+    ]
+
+
+@pytest.mark.parametrize(
+    "crossfade_samples,budget,tail_shapes",
+    [
+        (0, 75, [(1, 17), (1, 21), (1, 25)]),
+        (20, 74, [(1, 17), (1, 21), (1, 25)]),
+    ],
+)
+def test_queued_single_tails_preserve_audio_and_finish_each_request(
+    crossfade_samples: int, budget: int, tail_shapes: list[tuple[int, int]]
+) -> None:
+    cancelled_request_id = "cancelled"
+    complete_frames = 14
+    codec = FrameNumberCodec()
+    vocoder = vocoder_with(
+        codec,
+        max_padded_frames_per_decode=budget,
+        stream_window_batching=True,
+        factory_args=Drama3VocoderFactoryArgs(
+            stream_crossfade_samples=crossfade_samples
+        ),
+    )
+    frames = {
+        request_id: numbered_frames(length)
+        for request_id, length in [
+            ("a", 17),
+            (cancelled_request_id, 24),
+            ("b", 21),
+            ("c", 25),
+        ]
+    }
+    for request_id, own_frames in frames.items():
+        vocoder.handle_stream_chunk(
+            request_id,
+            StreamItem(
+                chunk_id=0, data=own_frames[:complete_frames].T, from_stage="tts_engine"
+            ),
+        )
+    run_ready_steps(vocoder)
+    prior_messages = drained(vocoder)
+    prior_decode_count = len(codec.decoded_codes)
+    for request_id, own_frames in frames.items():
+        vocoder.handle_stream_done(request_id)
+        vocoder.handle_streaming_new_request(
+            request_id, final_payload(own_frames, is_streaming=True)
+        )
+    vocoder.abort(cancelled_request_id)
+
+    assert not drained(vocoder), "Done queues tail audio and results"
+    run_ready_steps(vocoder)
+    messages = drained(vocoder)
+
+    assert [
+        (codes.shape[0], codes.shape[-1])
+        for codes in codec.decoded_codes[prior_decode_count:]
+    ] == tail_shapes
+    assert all(message.request_id != cancelled_request_id for message in messages)
+    assert cancelled_request_id not in vocoder.pending_frames
+    assert cancelled_request_id not in vocoder.stream_states
+    frames.pop(cancelled_request_id)
+    for request_id, own_frames in frames.items():
+        own = [
+            message
+            for message in prior_messages + messages
+            if message.request_id == request_id
+        ]
+        np.testing.assert_allclose(
+            streamed_audio(own),
+            np.repeat(np.arange(len(own_frames), dtype=np.float32), SAMPLES_PER_FRAME),
+            atol=1e-5,
+        )
+        assert own[-1].type == "result"
+        assert sum(message.type == "result" for message in own) == 1
+        assert request_id not in vocoder.pending_frames
+        assert request_id not in vocoder.ready_request_ids
+
+
+@pytest.mark.parametrize(
+    "use_graph,budget,first_batch_rows",
+    [(False, 41, 2), (False, 42, 3), (True, 63, 2), (True, 64, 3)],
+)
+def test_stream_window_budget_counts_overlap_and_graph_padding(
+    use_graph: bool, budget: int, first_batch_rows: int
+) -> None:
+    first_window_size = 4
+    followup_end = 14
+    request_ids = ["third", "first", "second"]
+    codec = FrameNumberCodec()
+    if use_graph:
+        graph = WindowGraphDecoder.__new__(WindowGraphDecoder)
+        graph.batch_sizes = (1, 2, 4)
+        graph.window_lengths = (4, 16)
+        graph.graphs = dict.fromkeys(
+            [(1, 4), (2, 4), (4, 4), (1, 16), (2, 16), (4, 16)]
+        )
+        decode_window = Mock(spec=WindowGraphDecoder, side_effect=codec.from_indices)
+        decode_window.graph_shape.side_effect = graph.graph_shape
+    else:
+        decode_window = None
+    vocoder = vocoder_with(
+        codec,
+        decode_window,
+        max_padded_frames_per_decode=budget,
+        stream_window_batching=True,
+    )
+    frames = numbered_frames(followup_end)
+    for request_id in request_ids:
+        vocoder.handle_stream_chunk(
+            request_id,
+            StreamItem(
+                chunk_id=0, data=frames[:first_window_size].T, from_stage="tts_engine"
+            ),
+        )
+    vocoder.run_ready_step()
+    drained(vocoder)
+    for request_id in request_ids:
+        vocoder.handle_stream_chunk(
+            request_id,
+            StreamItem(
+                chunk_id=1, data=frames[first_window_size:].T, from_stage="tts_engine"
+            ),
+        )
+
+    vocoder.run_ready_step()
+    first_messages = drained(vocoder)
+    run_ready_steps(vocoder)
+    remaining_messages = drained(vocoder)
+
+    assert codec.decoded_codes[1].shape == (
+        first_batch_rows,
+        NUM_CODEBOOKS,
+        followup_end,
+    )
+    assert [message.request_id for message in first_messages] == request_ids[
+        :first_batch_rows
+    ]
+    assert [message.request_id for message in remaining_messages] == request_ids[
+        first_batch_rows:
+    ]
+    assert chunk_frame_ranges(first_messages + remaining_messages) == [
+        (first_window_size, followup_end)
+    ] * len(request_ids)
+
+
+def test_fifo_fallback_decodes_inline_without_ready_work() -> None:
+    vocoder = vocoder_with(FrameNumberCodec(), stream_window_batching=False)
+    frames = numbered_frames(4)
+
+    vocoder.handle_stream_chunk(
+        "request-a", StreamItem(chunk_id=0, data=frames.T, from_stage="tts_engine")
+    )
+    chunks = drained(vocoder)
+    vocoder.handle_streaming_new_request(
+        "request-a", final_payload(frames, is_streaming=True)
+    )
+    vocoder.handle_stream_done("request-a")
+    terminal = drained(vocoder)
+
+    assert not vocoder.has_ready_work()
+    assert chunk_frame_ranges(chunks) == [(0, 4)]
+    assert [message.type for message in terminal] == ["result"]
+    assert "request-a" not in vocoder.stream_states
+
+
+@pytest.mark.parametrize("is_tail", [False, True])
+def test_fifo_batch_stops_at_an_incompatible_older_frontier(is_tail: bool) -> None:
+    codec = FrameNumberCodec()
+    vocoder = vocoder_with(
+        codec,
+        stream_window_batching=True,
+        factory_args=Drama3VocoderFactoryArgs(stream_followup_stride_ramp=(4,)),
+    )
+    frames = numbered_frames(8)
+    vocoder.handle_stream_chunk(
+        "middle", StreamItem(chunk_id=0, data=frames[:4].T, from_stage="tts_engine")
+    )
+    run_ready_steps(vocoder)
+    drained(vocoder)
+
+    vocoder.handle_stream_chunk(
+        "oldest", StreamItem(chunk_id=0, data=frames[:4].T, from_stage="tts_engine")
+    )
+    if is_tail:
+        vocoder.handle_streaming_new_request(
+            "middle", final_payload(frames[:6], is_streaming=True)
+        )
+        vocoder.handle_stream_done("middle")
+    else:
+        vocoder.handle_stream_chunk(
+            "middle", StreamItem(chunk_id=1, data=frames[4:].T, from_stage="tts_engine")
+        )
+    vocoder.handle_stream_chunk(
+        "newest", StreamItem(chunk_id=0, data=frames[:4].T, from_stage="tts_engine")
+    )
+    vocoder.run_ready_step()
+    first_messages = drained(vocoder)
+    run_ready_steps(vocoder)
+    remaining_messages = drained(vocoder)
+
+    assert [message.request_id for message in first_messages] == ["oldest"]
+    assert [
+        message.request_id for message in remaining_messages if message.type == "stream"
+    ] == ["middle", "newest"]
+    assert [codes.shape[0] for codes in codec.decoded_codes] == [1, 1, 1, 1]
+    assert codec.decoded_codes[2].shape[-1] == (6 if is_tail else 8)
+
+
+def test_cancel_during_batch_decode_suppresses_output_and_cleans_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    cancelled = threading.Event()
+    codec = FrameNumberCodec()
+    vocoder = vocoder_with(codec, stream_window_batching=True)
+    decode = codec.from_indices
+    record_abort = vocoder.record_aborted_request_id
+
+    def blocking_decode(indices: torch.Tensor) -> torch.Tensor:
+        entered.set()
+        assert release.wait(timeout=5)
+        return decode(indices)
+
+    def record_cancel(request_id: str) -> None:
+        record_abort(request_id)
+        cancelled.set()
+
+    monkeypatch.setattr(codec, "from_indices", blocking_decode)
+    monkeypatch.setattr(vocoder, "record_aborted_request_id", record_cancel)
+    frames = numbered_frames(4)
+    for request_id in ["cancelled", "survivor"]:
+        vocoder.handle_stream_chunk(
+            request_id, StreamItem(chunk_id=0, data=frames.T, from_stage="tts_engine")
+        )
+    worker = threading.Thread(target=vocoder.run_ready_step)
+    aborter = threading.Thread(target=vocoder.abort, args=("cancelled",))
+
+    worker.start()
+    try:
+        assert entered.wait(timeout=5)
+        aborter.start()
+        assert cancelled.wait(timeout=5)
+    finally:
+        release.set()
+        worker.join(timeout=5)
+        if aborter.ident is not None:
+            aborter.join(timeout=5)
+        else:
+            pass
+
+    assert not worker.is_alive() and not aborter.is_alive()
+    assert codec.decoded_codes[0].shape[0] == 2
+    assert [message.request_id for message in drained(vocoder)] == ["survivor"]
+    assert "cancelled" not in vocoder.pending_frames
+    assert "cancelled" not in vocoder.stream_states
+    assert "cancelled" not in vocoder.stream_window_counts
+    assert "cancelled" not in vocoder.ready_request_ids
+
+
+def test_failed_batch_reports_once_and_cleans_each_selected_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codec = FrameNumberCodec()
+    vocoder = vocoder_with(codec, stream_window_batching=True)
+    frames = numbered_frames(4)
+
+    def fail_decode(indices: torch.Tensor) -> torch.Tensor:
+        raise RuntimeError("codec decode failed")
+
+    monkeypatch.setattr(codec, "from_indices", fail_decode)
+    for request_id in ["a", "b"]:
+        vocoder.handle_stream_chunk(
+            request_id, StreamItem(chunk_id=0, data=frames.T, from_stage="tts_engine")
+        )
+    run_ready_steps(vocoder)
+
+    assert [(message.request_id, message.type) for message in drained(vocoder)] == [
+        ("a", "error"),
+        ("b", "error"),
+    ]
+    assert not vocoder.pending_frames
+    assert not vocoder.stream_states
+    assert not vocoder.stream_window_counts
+    assert not vocoder.has_ready_work()

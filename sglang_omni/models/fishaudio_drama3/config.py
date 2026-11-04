@@ -101,6 +101,10 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     max_batch_wait_ms: int = Field(default=2, ge=0)
     window_cuda_graphs: bool = True
     decode_dtype: Literal["float32", "float16"] = "float16"
+    stream_window_batching: bool = Field(
+        default=False,
+        description="Batch up to eight consecutive ready equal-length streaming windows in FIFO order.",
+    )
 
 
 class Drama3VocoderStageConfig(StageConfig):

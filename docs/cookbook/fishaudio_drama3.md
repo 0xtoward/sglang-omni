@@ -387,3 +387,11 @@ Loading takes 6.4 to 6.8 s native and 6.9 to 7.2 s for the reference. Peak MLX m
 - [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
 - [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
 - [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
+
+## Streaming window scheduling
+
+`--vocoder.factory.stream_window_batching true` batches up to eight already-ready complete windows with the same codec input length, including overlap. The oldest ready stream frontier anchors each batch. A different-length window or a final tail ends the cohort; later compatible windows cannot pass it. There is no wait to form a batch and no first-window priority.
+
+Each stream exposes one frontier. Done callbacks enqueue missing frames and completion; full windows drain in order, then the original B1 flush emits the last PCM before the final result. Disabling streaming batching restores the original inline B1 chunk and completion path. CUDA Graph batch buckets are fixed at 1, 2, 4, and 8; the padded-frame budget uses the actual replay shape, and replay outputs are cloned before reuse.
+
+Streaming batching defaults to false. Async decode keeps its existing false default and is controlled independently with `--tts_engine.factory.enable_async_decode true`. Enable either or both explicitly when comparing workload behavior. The non-streaming batch wait does not delay ready streaming windows.
