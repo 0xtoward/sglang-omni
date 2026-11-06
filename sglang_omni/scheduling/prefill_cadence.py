@@ -490,7 +490,7 @@ class PrefillCadence:
         step_ms = 1000 * self.step_s if self.step_s is not None else 0.0
         prefill_ms = 1000 * self.prefill_s if self.prefill_s is not None else 0.0
         text = (
-            f"Drama cadence: step {step_ms:.1f} ms, prefill {prefill_ms:.1f} ms, critical interval "
+            f"prefill cadence: step {step_ms:.1f} ms, prefill {prefill_ms:.1f} ms, critical interval "
             f"{1000 * self.critical_interval_s:.1f} ms, wait cap {1000 * self.wait_cap_s():.0f} ms, "
             f"frames/request {self.frames_per_request():.0f}, rate {self.request_rate(now_s):.1f}/s "
             f"(arrivals {self.arrival_rate(now_s):.1f}/s), prefill fit "
