@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 import time
 from collections.abc import Callable, Sequence
 from types import FunctionType
@@ -38,10 +39,15 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
 from sglang_omni.models.qwen3_tts.request_builders import Qwen3TTSSGLangRequestData
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.cadence_scheduler import CadenceScheduler
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
     TtsEngineBuilder,
+)
+from sglang_omni.scheduling.prefill_cadence import (
+    PrefillCadence,
+    PrefillCadenceConfig,
 )
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -72,6 +78,45 @@ else:
 
 
 logger = logging.getLogger(__name__)
+# The codec runs at 12 Hz, so a frame is 1/12 s of audio, and the vocoder streams 1 frame, then 2,
+# then 4, then 8 at a time (DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP and the followup stride). The
+# schedule grows, so a stream has to generate faster than playback to stay smooth: 1.5x real time
+# against a 100 ms stall budget, against Drama 3's 1.8x.
+QWEN3_TTS_FRAME_SECONDS = 1 / 12
+QWEN3_TTS_CADENCE_WINDOWS = (1, 2, 4)
+QWEN3_TTS_CADENCE_FOLLOWUP_WINDOW = 8
+
+
+def qwen3_tts_cadence_config() -> PrefillCadenceConfig | None:
+    """The cadence policy this run asked for, read from the environment.
+
+    An experiment branch reads the policy here rather than from the pipeline config, because this
+    model has no engine factory-args class to carry the flags and inventing one is a larger change
+    than the measurement needs. A real port gives it the four flags Drama 3 already has.
+    """
+    policy = os.environ.get("SGLANG_OMNI_QWEN3TTS_CADENCE", "").strip()
+    if policy not in ("slo", "longest", "latency"):
+        return None
+    else:
+        return PrefillCadenceConfig(
+            longest_interval=int(
+                os.environ.get("SGLANG_OMNI_QWEN3TTS_CADENCE_LONGEST", "64")
+            ),
+            first_audio_slo_s=float(
+                os.environ.get("SGLANG_OMNI_QWEN3TTS_CADENCE_SLO_MS", "500")
+            )
+            / 1000,
+            max_stall_s=float(
+                os.environ.get("SGLANG_OMNI_QWEN3TTS_CADENCE_STALL_MS", "100")
+            )
+            / 1000,
+            first_window=QWEN3_TTS_CADENCE_WINDOWS[0],
+            window_ramp=QWEN3_TTS_CADENCE_WINDOWS[1:],
+            followup_window=QWEN3_TTS_CADENCE_FOLLOWUP_WINDOW,
+            frame_seconds=QWEN3_TTS_FRAME_SECONDS,
+            is_longest_only=policy == "longest",
+            is_latency_driven=policy == "latency",
+        )
 
 
 def is_truthy(value: object) -> bool:
@@ -492,10 +537,31 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         else:
             pass
 
+    def scheduler_type(self) -> type[OmniScheduler[Qwen3TTSSGLangRequestData]]:
+        if qwen3_tts_cadence_config() is None:
+            return super().scheduler_type()
+        else:
+            return CadenceScheduler
+
     def post_scheduler_setup(
         self, scheduler: OmniScheduler[Qwen3TTSSGLangRequestData], model_runner: object
     ) -> None:
         del model_runner
+        config = qwen3_tts_cadence_config()
+        if config is None or not isinstance(scheduler, CadenceScheduler):
+            pass
+        else:
+            cadence = PrefillCadence(config=config)
+            scheduler.install_cadence(cadence)
+            logger.info(
+                "Qwen3-TTS prefill interval: first audio %.0f ms, stall %.0f ms, critical frame "
+                "interval %.1f ms against a %.1f ms frame, longest interval %d",
+                1000 * config.first_audio_slo_s,
+                1000 * config.max_stall_s,
+                1000 * cadence.critical_interval_s,
+                1000 * config.frame_seconds,
+                config.longest_interval,
+            )
         schedule = get_schedule()
         running = int(schedule.max_running_requests)
         context = int(get_model().context_length)

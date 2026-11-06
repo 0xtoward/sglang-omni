@@ -55,7 +55,7 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
-from sglang_omni.models.fishaudio_drama3.prefill_cadence import (
+from sglang_omni.scheduling.prefill_cadence import (
     PrefillCadence,
     PrefillCadenceConfig,
 )
@@ -76,7 +76,7 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     CodebookSampler,
     triton_sampling_unsupported_reason,
 )
-from sglang_omni.models.fishaudio_drama3.scheduler import Drama3Scheduler
+from sglang_omni.scheduling.cadence_scheduler import CadenceScheduler
 from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     FUSED_KERNELS,
@@ -440,7 +440,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
 
     def scheduler_type(self) -> type[OmniScheduler[Drama3RequestData]]:
         if self.prefill_interval_policy in ("slo", "longest", "latency"):
-            return Drama3Scheduler
+            return CadenceScheduler
         else:
             return super().scheduler_type()
 
@@ -449,7 +449,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         scheduler: OmniScheduler[Drama3RequestData],
         model_runner: SGLModelRunner,
     ) -> None:
-        if isinstance(scheduler, Drama3Scheduler):
+        if isinstance(scheduler, CadenceScheduler):
             cadence = PrefillCadence(config=self.prefill_cadence_config)
             scheduler.install_cadence(cadence)
             logger.info(

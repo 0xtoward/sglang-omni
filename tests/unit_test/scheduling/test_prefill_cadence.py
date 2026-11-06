@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni.models.fishaudio_drama3.prefill_cadence import (
+from sglang_omni.scheduling.prefill_cadence import (
     AUDIO_FRAME_SECONDS,
     PrefillCadence,
     PrefillCadenceConfig,

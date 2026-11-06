@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Drama 3 engine scheduler that picks each prefill's decode interval online."""
+"""Engine scheduler that picks each prefill's decode interval online."""
 from __future__ import annotations
 
 import logging
@@ -7,17 +7,23 @@ import time
 
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 
-from sglang_omni.models.fishaudio_drama3.prefill_cadence import PrefillCadence
-from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.prefill_cadence import PrefillCadence
+from sglang_omni.scheduling.types import RequestDataT
 
 logger = logging.getLogger(__name__)
 
 REPORT_INTERVAL_S = 30.0
 
 
-class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
-    """Upstream's interval countdown, armed with the interval the cadence picks per prefill."""
+class CadenceScheduler(OmniScheduler[RequestDataT]):
+    """Upstream's interval countdown, armed with the interval the cadence picks per prefill.
+
+    Nothing here is a property of one model: the countdown, the arrival count and the wait cap
+    are the scheduler's own, and the audio the interval is judged against reaches the policy
+    through its config. The caller supplies that config, so a second model needs a window
+    schedule and a frame duration, not a second scheduler.
+    """
 
     def install_cadence(self, cadence: PrefillCadence) -> None:
         self.cadence = cadence
