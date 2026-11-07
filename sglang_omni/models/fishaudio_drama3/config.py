@@ -37,6 +37,7 @@ DEFAULT_ENABLE_ASYNC_DECODE = False
 DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
 DEFAULT_PREFILL_COALESCE_REQUESTS = 0
 DEFAULT_PREFILL_COALESCE_WAIT_MS = 60.0
+DEFAULT_TOP_PRIORITY_STREAM = False
 # The codec of the public S2-Pro release, pinned to an immutable commit.
 DEFAULT_CODEC_PATH = "fishaudio/s2-pro@1de9996b6be38b745688de084d87a5633f714e4e"
 PREPROCESSING_TOTAL_RESERVE_BYTES = "6GiB"
@@ -82,6 +83,8 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     async_decode_min_batch_size: int = Field(
         default=DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE, ge=1
     )
+    # Runs the scheduler loop on the device's highest-priority stream, ahead of the vocoder's decodes.
+    top_priority_stream: bool = DEFAULT_TOP_PRIORITY_STREAM
 
 
 class Drama3EngineStageConfig(EngineStageConfig):

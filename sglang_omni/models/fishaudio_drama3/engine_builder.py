@@ -37,6 +37,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
+    DEFAULT_TOP_PRIORITY_STREAM,
     DEFAULT_TOWER_FUSED_LAYERS,
     DEFAULT_TRITON_SAMPLING,
     ReferenceSamplingFallback,
@@ -122,6 +123,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
         prefill_coalesce_requests: int = DEFAULT_PREFILL_COALESCE_REQUESTS,
         prefill_coalesce_wait_ms: float = DEFAULT_PREFILL_COALESCE_WAIT_MS,
+        top_priority_stream: bool = DEFAULT_TOP_PRIORITY_STREAM,
     ) -> None:
         self.context_length = context_length
         self.max_running_requests = max_running_requests
@@ -140,6 +142,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
+        self.top_priority_stream = top_priority_stream
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
 
@@ -421,4 +424,5 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             "async_decode_resolve_before_prefill": True,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
+            "should_run_top_priority_stream": self.top_priority_stream,
         }
