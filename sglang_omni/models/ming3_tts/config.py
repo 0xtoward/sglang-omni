@@ -45,7 +45,8 @@ def default_stages(dense: bool = False) -> list[StageConfig]:
             factory=FactoryArgs(
                 max_seq_len=4096,
                 enable_acoustic_graph=True,
-                enable_fused_flow_head=dense,
+                # note (0xtoward): fused flow head qualifies on Tiny too (can_fuse_flow_head guards at runtime)
+                enable_fused_flow_head=True,
                 enable_dense_streaming=dense,
                 prefill_graph_token_counts=(
                     [
