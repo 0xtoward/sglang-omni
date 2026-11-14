@@ -89,7 +89,7 @@ def test_checkpoint_defaults_preserve_unqualified_tiny_execution(
     preprocessing, engine, vocoder = config.stages
     assert preprocessing.gpu == (0 if dense else None)
     assert engine.factory.enable_async_decode is dense
-    assert engine.factory.enable_fused_flow_head is dense
+    assert engine.factory.enable_fused_flow_head is True
     assert bool(engine.factory.prefill_graph_token_counts) is dense
     assert bool(vocoder.factory.graph_latent_steps) is dense
     assert config.mps == "off"

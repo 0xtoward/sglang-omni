@@ -748,7 +748,7 @@ def create_tts_engine_executor(
         SGLangOutputProcessor(),
         stop_policy,
         acoustic_graph_max_batch_size,
-        enable_fused_flow_head=enable_fused_flow_head and dense,
+        enable_fused_flow_head=enable_fused_flow_head,
     )
     return OmniScheduler(
         tp_worker=worker,
