@@ -1,82 +1,68 @@
 # Fork advisory bot E2E verification log
 
 Repository: [fengxiaohu/sglang-omni](https://github.com/fengxiaohu/sglang-omni)  
-Date: 2026-11-16 (UTC)
+Date: 2026-11-16 (UTC+8)
 
-## Phase A — completed
+`ADVISORY_REVIEW_ENABLED` is **false** again after the kill-switch check.
 
-| Item | Status | Evidence |
-|------|--------|----------|
-| Fork `main` contains bot + labeler workflows | Done | [`pr-advisory-review.yaml`](workflows/pr-advisory-review.yaml), [`pr-documentation-labeler.yaml`](workflows/pr-documentation-labeler.yaml) on `main` @ `d364e988f` + labeler commit |
-| `ADVISORY_REVIEW_ENABLED` | Done | `false` for Phase B (offline / kill-switch baseline) |
-| `DOCS_REVIEW_MODEL` / `DOCS_REVIEW_BUDGET` | Done | Already set on fork |
-| `UNIT_TEST_REVIEW_MODEL` | Done | Copied from `UNIT_TEST_REVIEW_PILOT_MODEL` |
-| `docs-review-ledger` branch + JSON | Done | [`docs-review-ledger.json`](https://github.com/fengxiaohu/sglang-omni/blob/docs-review-ledger/docs-review-ledger.json) |
+## Phase A
 
-## Phase B–C — blocked (Actions disabled on fork)
+| Item | Evidence |
+|------|----------|
+| Workflows on default `main` | `pr-advisory-review.yaml`, `pr-documentation-labeler.yaml` |
+| Variables | `DOCS_REVIEW_MODEL`, `DOCS_REVIEW_BUDGET`, `UNIT_TEST_REVIEW_MODEL` |
+| Ledger | [`docs-review-ledger`](https://github.com/fengxiaohu/sglang-omni/blob/docs-review-ledger/docs-review-ledger.json) |
+| Secret `DOCS_REVIEW_API_KEY` | Set from the local docs-review keychain item. A direct call to the configured endpoint returned **HTTP 401** (`invalid API key, or the requested model is not available to this key`). |
 
-`gh workflow run` returns:
+## Phase B — offline dispatch
+
+| Scope | PR | Run | Result |
+|-------|----|-----|--------|
+| docs | [#41](https://github.com/fengxiaohu/sglang-omni/pull/41) | [43745789910](https://github.com/fengxiaohu/sglang-omni/actions/runs/43745789910) | success; artifact `docs-review-43745789910-1` is a one-element `docs` array; collection-only `report.md` |
+| unit_tests | [#42](https://github.com/fengxiaohu/sglang-omni/pull/42) | [43745805350](https://github.com/fengxiaohu/sglang-omni/actions/runs/43745805350) | success; artifact `docs-review-43745805350-1` is `unit_tests` |
+
+Neither pull request gained a comment containing `<!-- sglang-omni-advisory-review -->`.
+
+## Phase C — live
+
+### Documentation probe [#41](https://github.com/fengxiaohu/sglang-omni/pull/41)
+
+- Labeler [43746101603](https://github.com/fengxiaohu/sglang-omni/actions/runs/43746101603) succeeded. The pull request has the `documentation` label.
+- Omni CI for that push is a single `pull_request` run ([43746103767](https://github.com/fengxiaohu/sglang-omni/actions/runs/43746103767)). No second Omni CI appeared after `addLabels`. `omni-ci.yaml` listens for `labeled`, and the labeler uses `GITHUB_TOKEN`, which does not start that workflow.
+- Advisory [43746101504](https://github.com/fengxiaohu/sglang-omni/actions/runs/43746101504) uploaded an artifact and then failed the incomplete-review step. `report.json` says `execution=incomplete`, `incomplete_reason=model request failed`. No sticky comment was posted, so the follow-up push could not show an in-place comment update.
+- Ledger reserved that run as `execution: incomplete` (50 cents estimated, not a complete review).
+
+### Unit-test probe [#42](https://github.com/fengxiaohu/sglang-omni/pull/42)
+
+- First live run [43746125347](https://github.com/fengxiaohu/sglang-omni/actions/runs/43746125347): incomplete, `No contract source was collected`.
+- After the test referenced `sglang_omni.pipeline.coordinator`, run [43746424991](https://github.com/fengxiaohu/sglang-omni/actions/runs/43746424991) recorded the oversized-module limitation in the artifact:
 
 ```text
-HTTP 422: Actions has been disabled for this repository.
+sglang_omni/pipeline/coordinator.py: contract source exceeds the collection budget (38099 bytes, 36000 bytes left)
 ```
 
-Probe pull requests are open and ready once Actions are enabled:
+The report stayed incomplete, so the sticky unit-test section was not posted. Hash skip (`review input unchanged since the last complete run`) needs a prior **complete** reservation; this ledger entry is incomplete, so that skip was not exercised.
 
-| PR | Purpose |
-|----|---------|
-| [#41](https://github.com/fengxiaohu/sglang-omni/pull/41) | Docs path → `documentation` label + docs advisory scope |
-| [#42](https://github.com/fengxiaohu/sglang-omni/pull/42) | `tests/unit_test/` change → unit_tests scope |
+## Negative cases
 
-**Unblock (maintainer, one time):** GitHub → **Settings → Actions → General** → allow Actions for this repository (e.g. “Allow all actions”). Then re-run the commands below.
+| Case | PR | Run | Observed |
+|------|----|-----|----------|
+| Draft | [#43](https://github.com/fengxiaohu/sglang-omni/pull/43) | advisory [43746440505](https://github.com/fengxiaohu/sglang-omni/actions/runs/43746440505) **skipped** | Advisory does not run on drafts. The labeler still added `documentation` on `synchronize` (it has no draft filter). |
+| Code only | [#44](https://github.com/fengxiaohu/sglang-omni/pull/44) | [43746447446](https://github.com/fengxiaohu/sglang-omni/actions/runs/43746447446) success | Log: `No in-scope changes; advisory review skipped.` No `documentation` label. |
+| Kill switch | [#41](https://github.com/fengxiaohu/sglang-omni/pull/41) with `ADVISORY_REVIEW_ENABLED=false` | [43746526181](https://github.com/fengxiaohu/sglang-omni/actions/runs/43746526181) **skipped** | Same skip as the earlier disabled run [43745513734](https://github.com/fengxiaohu/sglang-omni/actions/runs/43745513734). |
 
-### After unblock — Phase B offline
+## Checklist
 
-```sh
-gh workflow run pr-advisory-review.yaml --repo fengxiaohu/sglang-omni \
-  -f pull_request_number=41 -f offline=true -f review_scope=docs
-gh workflow run pr-advisory-review.yaml --repo fengxiaohu/sglang-omni \
-  -f pull_request_number=42 -f offline=true -f review_scope=unit_tests
-```
-
-Expect: run success, artifact `docs-review-*`, **no** PR comment containing `<!-- sglang-omni-advisory-review -->`.
-
-### After unblock — Phase C live
-
-1. Ensure secret `DOCS_REVIEW_API_KEY` exists (model vars reference it).
-2. `gh variable set ADVISORY_REVIEW_ENABLED --repo fengxiaohu/sglang-omni --body true`
-3. Push to PR #41 or close/reopen to trigger `pull_request_target`.
-4. Confirm label `documentation` on #41 and sticky advisory comment; push again to confirm comment **updates** not duplicates.
-
-### Negative cases (after unblock)
-
-| Case | How |
-|------|-----|
-| Kill switch | `ADVISORY_REVIEW_ENABLED=false`, push to open PR → advisory job skipped |
-| Draft | Open a **draft** PR touching `docs/` → no automatic advisory run |
-| Code only | PR changing only `sglang_omni/` → no `documentation` label, advisory skipped |
+- [x] Fork Actions allowed; default branch has both workflows and reviewer scripts
+- [x] Offline docs + unit_tests dispatch, artifacts present, no sticky comment
+- [x] Docs probe received `documentation`; labeling did not start a second Omni CI
+- [ ] Sticky comment and in-place update (blocked: model endpoint HTTP 401)
+- [x] Unit-test oversized contract limitation is in the artifact
+- [ ] Unit-test sticky section and hash skip (blocked: no complete model run)
+- [x] Draft advisory skipped; code-only skipped with no documentation label; kill switch skips the job
 
 ## Phase D — upstream
 
-Merge order: #3971 → #3973 → #3976; #3993 can land in parallel.  
-Repeat configuration and C1/C2 on `sgl-project/sglang-omni` with maintainer-owned secrets. Keep `ADVISORY_REVIEW_ENABLED=false` until sign-off.
+Merge #3971, then #3973, then #3976. #3993 can land in parallel. On `sgl-project/sglang-omni`, repeat configuration and the two probe pull requests with a maintainer-owned `DOCS_REVIEW_API_KEY`. Leave `ADVISORY_REVIEW_ENABLED=false` until that key is accepted by the model endpoint and a maintainer signs off.
 
-## Checklist (copy for sign-off)
-
-- [x] Fork `main` has workflows + reviewer scripts
-- [x] Ledger branch and repository variables
-- [x] Probe PRs #41 / #42 created
-- [ ] Actions enabled on fork (manual)
-- [ ] Offline dispatch docs + unit_tests
-- [ ] Live sticky comment + label on #41
-- [ ] Unit-test scope on #42
-- [ ] Negative: draft / kill switch / code-only
-- [ ] Evidence links filled in below
-
-### Evidence links (fill after runs)
-
-- Labeler run:
-- Advisory run (docs):
-- Advisory run (unit_tests):
-- Sticky comment URL:
-- Artifact run IDs:
+Replace the fork secret before any further live run. The key currently stored returns HTTP 401.
