@@ -19,6 +19,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -235,7 +236,7 @@ func (a *app) openWindow() {
 	a.applyLocale() // the system's language, unless the settings name one
 	a.buildMenu()
 	a.startOpening()
-	a.win = mygo.NewWindow(mygo.WindowOptions{
+	opts := mygo.WindowOptions{
 		Title:          "Voxt",
 		Width:          windowWidth,
 		Height:         windowHeight,
@@ -247,7 +248,13 @@ func (a *app) openWindow() {
 		Transparent:    true,
 		Content:        ui.View(a.view),
 		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
-	})
+	}
+	if runtime.GOOS == "windows" {
+		// Keep the window controls above the page so its header can use the full width.
+		opts.TitleBarStyle = mygo.TitleBarDefault
+		opts.AutoHideMenuBar = true
+	}
+	a.win = mygo.NewWindow(opts)
 	a.life = a.win
 	a.maybeOnboard()        // onboarding.go: the setup guide, on the first start
 	a.offerLegacy()         // legacy_import.go: the previous Voxt's data, for who set up without the guide's card
