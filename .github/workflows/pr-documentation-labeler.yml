@@ -154,6 +154,27 @@ jobs:
                 addedModelPackageInit
             );
 
+            // note (0xtoward): each label is the model target /tag-and-rerun-ci takes.
+            const ciModelTargets = {
+              minicpm_o: 'minicpmo',
+              qwen3_omni: 'qwen3-omni',
+              fun_asr: 'fun-asr',
+              qwen3_asr: 'qwen3-asr',
+              whisper_asr: 'whisper-asr',
+              higgs_tts: 'higgs',
+              moss_tts_local: 'moss',
+              qwen3_tts: 'qwen3-tts',
+              fun_cosyvoice3: 'cosyvoice3',
+            };
+            for (const [directory, target] of Object.entries(ciModelTargets)) {
+              suggest(
+                target,
+                [...touchedPaths].some((path) =>
+                  path.startsWith(`sglang_omni/models/${directory}/`)
+                )
+              );
+            }
+
             suggest(
               'good first issue',
               /\bgood[\s_-]+first[\s_-]+(?:issue|pr|pull request)\b/i.test(

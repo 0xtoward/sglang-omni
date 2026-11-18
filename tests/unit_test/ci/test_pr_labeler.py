@@ -172,6 +172,43 @@ def run_labeler(
             ["model support"],
         ),
         (
+            "Two CI models beside a model without CI",
+            "neutral",
+            [
+                {
+                    "filename": "sglang_omni/models/qwen3_asr/pipeline.py",
+                    "status": "modified",
+                },
+                {
+                    "filename": "sglang_omni/models/fun_cosyvoice3/stages.py",
+                    "status": "modified",
+                },
+                {
+                    "filename": "sglang_omni/models/moss_tts/stages.py",
+                    "status": "modified",
+                },
+                {
+                    "filename": "tests/unit_test/minicpm_o/test_talker.py",
+                    "status": "modified",
+                },
+            ],
+            None,
+            ["cosyvoice3", "qwen3-asr"],
+        ),
+        (
+            "Module moved out of a CI model",
+            "neutral",
+            [
+                {
+                    "filename": "sglang_omni/codec/vocoder.py",
+                    "previous_filename": "sglang_omni/models/qwen3_tts/vocoder.py",
+                    "status": "renamed",
+                }
+            ],
+            None,
+            ["qwen3-tts"],
+        ),
+        (
             "Unrelated change",
             "neutral",
             [{"filename": "sglang_omni/x.py", "status": "modified"}],
