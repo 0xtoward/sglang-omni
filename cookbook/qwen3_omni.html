@@ -33,8 +33,8 @@
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=4418a689" />
     <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=3b484c19" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=3b484c19" />
   
   <!-- So that users can add custom icons -->
   <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
@@ -42,7 +42,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3476fdda"></script>
+    <script src="../_static/documentation_options.js?v=7f7c277e"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -51,17 +51,18 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'cookbook/qwen3_omni';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=4014cbb0"></script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="MiniCPM-o" href="minicpm_o.html" />
-    <link rel="prev" title="Whisper ASR" href="whisper_asr.html" />
+    <link rel="next" title="Qwen3-ASR" href="qwen3_asr.html" />
+    <link rel="prev" title="Qwen3-TTS" href="qwen3_tts.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.1.7" />
-    <meta name="docbuild:last-update" content="Oct 11, 2026"/>
+  <meta name="docsearch:version" content="0.2.0" />
+    <meta name="docbuild:last-update" content="Nov 20, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -206,58 +207,124 @@
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">🚀 Installation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_npu.html">🚀 Installation — Ascend NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_xpu.html">🚀 Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_cpu.html">🚀 Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_musa.html">🚀 Installation — MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/voxt.html">Install Voxt (Mac app)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/examples.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="current nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="higgs_tts.html">Higgs TTS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="voxtral_tts.html">Voxtral TTS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
-<li class="toctree-l1"><a class="reference internal" href="qwen3_tts.html">Qwen3 TTS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="ming_tts.html">Ming-Omni-TTS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="moss_tts.html">MOSS-TTS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="moss_tts_local.html">MOSS-TTS-Local</a></li>
-<li class="toctree-l1"><a class="reference internal" href="dots_tts.html">dots.tts</a></li>
-<li class="toctree-l1"><a class="reference internal" href="minimax_music3.html">MiniMax Music 3</a></li>
-<li class="toctree-l1"><a class="reference internal" href="zonos2.html">ZONOS2</a></li>
-<li class="toctree-l1"><a class="reference internal" href="qwen3_asr.html">Qwen3-ASR</a></li>
-<li class="toctree-l1"><a class="reference internal" href="fun_asr.html">Fun-ASR-Nano</a></li>
-<li class="toctree-l1"><a class="reference internal" href="arkasr.html">ARK-ASR-3B</a></li>
-<li class="toctree-l1"><a class="reference internal" href="nemotron3_5_asr.html">Nemotron 3.5 ASR</a></li>
-<li class="toctree-l1"><a class="reference internal" href="moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
-<li class="toctree-l1"><a class="reference internal" href="whisper_asr.html">Whisper ASR</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Qwen3-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="minicpm_o.html">MiniCPM-o</a></li>
-<li class="toctree-l1"><a class="reference internal" href="ming_omni.html">Ming-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
-<li class="toctree-l1"><a class="reference internal" href="personaplex.html">PersonaPlex</a></li>
-<li class="toctree-l1"><a class="reference internal" href="llada2_uni.html">LLaDA2.0-Uni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
-<li class="toctree-l1"><a class="reference internal" href="auk.html">AuK</a></li>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="companies/qwen.html">Qwen</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="qwen3_tts.html">Qwen3-TTS</a></li>
+<li class="toctree-l2 current active"><a class="current reference internal" href="#">Qwen3-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="qwen3_asr.html">Qwen3-ASR</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/openmoss.html">OpenMOSS</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="moss_tts.html">MOSS-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="moss_tts_local.html">MOSS-TTS-Local</a></li>
+<li class="toctree-l2"><a class="reference internal" href="moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/openai.html">OpenAI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="whisper_asr.html">Whisper ASR</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/nvidia.html">NVIDIA</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="nemotron3_5_asr.html">Nemotron 3.5 ASR</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nemotron_transcribe.html">Nemotron Transcribe</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
+<li class="toctree-l2"><a class="reference internal" href="personaplex.html">PersonaPlex</a></li>
+<li class="toctree-l2"><a class="reference internal" href="cosmos3_nano.html">Cosmos3 Nano serving</a></li>
+<li class="toctree-l2"><a class="reference internal" href="nemotron_diarization.html">Nemotron 3 Diarization</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/fish_audio.html">Fish Audio</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fishaudio_drama3.html">Fish Audio Drama 3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/fun_audio_llm.html">FunAudioLLM</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
+<li class="toctree-l2"><a class="reference internal" href="fun_asr.html">Fun-ASR-Nano</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/openbmb.html">OpenBMB</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="minicpm_o.html">MiniCPM-o</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/boson_ai.html">Boson AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="higgs_tts.html">Higgs TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/minimax.html">MiniMax</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="minimax_music3.html">MiniMax Music 3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/inclusionai.html">InclusionAI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="ming_omni.html">Ming-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="llada2_uni.html">LLaDA2.0-Uni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ming_tts.html">Ming-Omni-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ming3_asr.html">Ming-3.0-asr-tiny</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ming3_audio.html">Ming-3.0-audio-flash</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ming3_tts.html">Ming-3.0-TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/tencent.html">Tencent</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="auk.html">AuK</a></li>
+<li class="toctree-l2"><a class="reference internal" href="hy_simulmt.html">Hy-SimulMT</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/zyphra.html">Zyphra</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="zonos2.html">Zonos2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="zonos3.html">Zonos3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/autoark_ai.html">AutoArk AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="arkasr.html">ARK-ASR-3B</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/mistral_ai.html">Mistral AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="voxtral_tts.html">Voxtral TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="companies/dots_studio.html">Dots Studio</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="dots_tts.html">dots.tts</a></li>
+</ul>
+</details></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/qwen3_omni.html">Omni Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_chat_stage.html">Native Chat Stage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/audio_translations.html">Audio Translations</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts.html">TTS Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/asr.html">ASR Model Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology.html">Process Topology, Replicas, and GPU Sharing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts_process_topology.html">TTS Process Topology</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology_migration.html">Process Topology Migration</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Rust Router</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Benchmarks</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../benchmarks/relay.html">Benchmark Relay</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../benchmarks/qwen3_tts_leading_silence.html">Qwen3-TTS Base: Leading Silence in X-Vector Voice Cloning</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../developer_reference/mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../developer_reference/mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/apiserver_design.html">API Server Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/pipeline.html">Pipeline Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/config.html">Config</a></li>
@@ -266,8 +333,13 @@
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/profiler.html">Request-level profiler</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../developer_reference/full_duplex_bench.html">Full-Duplex-Bench v1.5 runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/full_duplex_guide.html">Full-Duplex Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/tts_bench.html">TTS benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/tts_model_integration.html">TTS Model Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/asr_bench.html">ASR benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/omni_offline_bench.html">MiniCPM-o offline benchmark runbook</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/rl_admin_control.html">RL Admin Control</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/ci_labels.html">CI Workflows and Labels</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/bump_version.html">Bumping the SGLang Pin</a></li>
 </ul>
 
@@ -510,6 +582,8 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-omni-persistent-session-stages">Qwen3-Omni persistent session stages</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
 </ul>
             </nav>
         </div>
@@ -537,7 +611,7 @@ docker<span class="w"> </span>run<span class="w"> </span>-it<span class="w"> </s
 pip<span class="w"> </span>install<span class="w"> </span>uv
 
 uv<span class="w"> </span>venv<span class="w"> </span>.venv<span class="w"> </span>-p<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">source</span><span class="w"> </span>.venv/bin/activate
-uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--prerelease<span class="o">=</span>allow<span class="w"> </span><span class="s2">"sglang-omni==0.1.7"</span>
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--prerelease<span class="o">=</span>allow<span class="w"> </span><span class="s2">"sglang-omni==0.2.0"</span>
 </pre></div>
 </div>
 <p>See <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a> for Docker digests and source installs.</p>
@@ -550,13 +624,13 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 <h2>Compatibility Matrix<a class="headerlink" href="#compatibility-matrix" title="Link to this heading">#</a></h2>
 <p>Colocated topology requires <code class="docutils literal notranslate"><span class="pre">--config</span> <span class="pre">examples/configs/qwen3_omni_colocated_h20.yaml</span></code>
 (or <code class="docutils literal notranslate"><span class="pre">qwen3_omni_colocated_h200.yaml</span></code> on H200) to set per-stage GPU memory budgets.</p>
+<p>All configurations listed below are supported.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Mode</p></th>
 <th class="head"><p>Topology</p></th>
 <th class="head"><p>Thinker TP</p></th>
 <th class="head"><p>Precision</p></th>
-<th class="head"><p>Status</p></th>
 </tr>
 </thead>
 <tbody>
@@ -564,80 +638,68 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 <td><p>—</p></td>
 <td><p>—</p></td>
 <td><p>BF16</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-odd"><td><p>Thinker-only</p></td>
 <td><p>—</p></td>
 <td><p>—</p></td>
 <td><p>FP8</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-even"><td><p>Thinker-only</p></td>
 <td><p>—</p></td>
 <td><p>—</p></td>
 <td><p>AutoRound INT4</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-odd"><td><p>Thinker-Talker</p></td>
 <td><p>Disaggregated</p></td>
 <td><p>TP=1</p></td>
 <td><p>BF16</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-even"><td><p>Thinker-Talker</p></td>
 <td><p>Disaggregated</p></td>
 <td><p>TP=1</p></td>
 <td><p>FP8</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-odd"><td><p>Thinker-Talker</p></td>
 <td><p>Disaggregated</p></td>
 <td><p>TP=1</p></td>
 <td><p>AutoRound INT4 thinker + BF16 talker/code2wav</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-even"><td><p>Thinker-Talker</p></td>
 <td><p>Disaggregated</p></td>
 <td><p>TP=2</p></td>
 <td><p>BF16</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-odd"><td><p>Thinker-Talker</p></td>
 <td><p>Disaggregated</p></td>
 <td><p>TP=2</p></td>
 <td><p>FP8</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-even"><td><p>Thinker-Talker</p></td>
 <td><p>Disaggregated</p></td>
 <td><p>TP=2</p></td>
 <td><p>AutoRound INT4 thinker + BF16 talker/code2wav</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-odd"><td><p>Thinker-Talker</p></td>
 <td><p>Colocated</p></td>
 <td><p>TP=1</p></td>
 <td><p>BF16</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-even"><td><p>Thinker-Talker</p></td>
 <td><p>Colocated</p></td>
 <td><p>TP=1</p></td>
 <td><p>FP8</p></td>
-<td><p>✅</p></td>
 </tr>
 <tr class="row-odd"><td><p>Thinker-Talker</p></td>
 <td><p>Colocated</p></td>
 <td><p>TP=1</p></td>
 <td><p>AutoRound INT4 thinker + BF16 talker/code2wav</p></td>
-<td><p>✅</p></td>
 </tr>
 </tbody>
 </table>
 </div>
 </section>
 <section id="input-output-modalities">
-<h2>Input / Output Modalities<a class="headerlink" href="#input-output-modalities" title="Link to this heading">#</a></h2>
+<span id="input--output-modalities"></span><h2>Input / Output Modalities<a class="headerlink" href="#input-output-modalities" title="Link to this heading">#</a></h2>
 <p>All input modality combinations work with both text-only and speech servers.
 <code class="docutils literal notranslate"><span class="pre">modalities:</span> <span class="pre">[&quot;text&quot;,</span> <span class="pre">&quot;audio&quot;]</span></code> requires a <strong>speech-mode server</strong> (omit <code class="docutils literal notranslate"><span class="pre">--text-only</span></code>).</p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -763,7 +825,7 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
 <td><p>float</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">1.0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.0</span></code> (greedy)</p></td>
 <td><p>Thinker</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">top_p</span></code></p></td>
@@ -898,9 +960,49 @@ must check for an <code class="docutils literal notranslate"><span class="pre">e
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">modalities:</span> <span class="pre">[&quot;text&quot;,</span> <span class="pre">&quot;audio&quot;]</span></code> has no effect on a text-only server.</strong> No error is raised — the response simply contains no audio. Use a speech-mode server (without <code class="docutils literal notranslate"><span class="pre">--text-only</span></code>) to get audio output.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">content</span></code> must be <code class="docutils literal notranslate"><span class="pre">&quot;&quot;</span></code> when the query is entirely in <code class="docutils literal notranslate"><span class="pre">audios</span></code>, <code class="docutils literal notranslate"><span class="pre">videos</span></code>, or <code class="docutils literal notranslate"><span class="pre">images</span></code>.</strong> Leaving a text query in <code class="docutils literal notranslate"><span class="pre">content</span></code> alongside audio causes the model to process both, which is usually not what you want.</p></li>
 <li><p><strong>Colocated topology does not support <code class="docutils literal notranslate"><span class="pre">--thinker.tp_size</span> <span class="pre">2</span></code>.</strong> The server raises a <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> at startup (“Qwen Phase 1 colocation does not support thinker TP”). Use disaggregated topology for TP=2.</p></li>
-<li><p><strong>Requests that exceed the model’s context length are rejected with an error.</strong> The preprocessor raises a <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> when the prompt token count alone meets or exceeds <code class="docutils literal notranslate"><span class="pre">max_seq_len</span></code>, or when <code class="docutils literal notranslate"><span class="pre">prompt</span> <span class="pre">tokens</span> <span class="pre">+</span> <span class="pre">max_new_tokens</span> <span class="pre">≥</span> <span class="pre">max_seq_len</span></code>. Reduce input length or lower <code class="docutils literal notranslate"><span class="pre">max_tokens</span></code> to stay within the limit.</p></li>
+<li><p><strong>Requests that exceed the model’s context length are rejected with an error.</strong> The preprocessor raises a <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> when the prompt token count alone meets or exceeds <code class="docutils literal notranslate"><span class="pre">max_seq_len</span></code>, or when <code class="docutils literal notranslate"><span class="pre">prompt</span> <span class="pre">tokens</span> <span class="pre">+</span> <span class="pre">max_new_tokens</span> <span class="pre">≥</span> <span class="pre">max_seq_len</span></code>. Reduce input length or lower <code class="docutils literal notranslate"><span class="pre">max_tokens</span></code> to stay within the limit. Without <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.max_seq_len</span></code> and <code class="docutils literal notranslate"><span class="pre">--thinker.factory.max_seq_len</span></code>, the limit is the thinker’s context in the checkpoint config (65,536 tokens for the Instruct checkpoint). Setting both to a lower value caps it. The talker’s context is likewise the checkpoint’s unless <code class="docutils literal notranslate"><span class="pre">--talker_ar.factory.max_seq_len</span></code> sets it. When a long spoken prompt leaves less room than <code class="docutils literal notranslate"><span class="pre">talker_max_new_tokens</span></code>, the talker generates only the frames that fit, so the audio can end before the text.</p></li>
 </ul>
 </section>
+</section>
+<section id="qwen3-omni-persistent-session-stages">
+<h2>Qwen3-Omni persistent session stages<a class="headerlink" href="#qwen3-omni-persistent-session-stages" title="Link to this heading">#</a></h2>
+<p>The session profile serves Qwen3-Omni as a turn-based realtime voice assistant on <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>: a VAD node ends each user turn and the model answers it with the conversation so far. Launching on H100 or H200, settings, the protocol and benchmarking are in <a class="reference internal" href="../developer_reference/full_duplex_guide.html#turn-based-qwen3-omni"><span class="std std-ref">Full-Duplex Guide</span></a>.</p>
+</section>
+<section id="speculative-decoding">
+<h2>Speculative Decoding<a class="headerlink" href="#speculative-decoding" title="Link to this heading">#</a></h2>
+<p>The thinker can verify tokens proposed by SpeechSpec’s DFlash draft <a class="reference external" href="https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8"><code class="docutils literal notranslate"><span class="pre">yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8</span></code></a> or EAGLE3 draft <a class="reference external" href="https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio"><code class="docutils literal notranslate"><span class="pre">yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio</span></code></a> on a text-only server.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># DFlash: one 8-token block per step</span>
+sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--text-only<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_algorithm<span class="w"> </span>DFLASH<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_draft_model_path<span class="w"> </span>yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_num_draft_tokens<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+
+<span class="c1"># EAGLE3: a 3-step chain</span>
+sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--text-only<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_algorithm<span class="w"> </span>EAGLE3<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_draft_model_path<span class="w"> </span>yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_num_steps<span class="w"> </span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_eagle_topk<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_num_draft_tokens<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><strong>Acceptance length.</strong> Send <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details:</span> <span class="pre">true</span></code> with a chat request to get its <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code>: <code class="docutils literal notranslate"><span class="pre">spec_accept_length</span></code> (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log’s <code class="docutils literal notranslate"><span class="pre">accept</span> <span class="pre">len</span></code>, which counts only verified tokens), <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code>, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty <code class="docutils literal notranslate"><span class="pre">choices</span></code> before <code class="docutils literal notranslate"><span class="pre">[DONE]</span></code>. <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code> and <code class="docutils literal notranslate"><span class="pre">spec_num_proposed_drafts</span></code> are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now; a per-stage field can follow once the Talker has a draft too.</p></li>
+<li><p><strong>Context.</strong> The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.max_seq_len</span> <span class="pre">8192</span></code> to reject oversized prompts early.</p></li>
+<li><p><strong>Sampling.</strong> Keep <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1</span></code>, <code class="docutils literal notranslate"><span class="pre">frequency_penalty=0</span></code>, <code class="docutils literal notranslate"><span class="pre">presence_penalty=0</span></code>, and <code class="docutils literal notranslate"><span class="pre">min_p=0</span></code>. Disable logprobs and <code class="docutils literal notranslate"><span class="pre">return_hidden_states</span></code>. For <code class="docutils literal notranslate"><span class="pre">/generate</span></code>, send <code class="docutils literal notranslate"><span class="pre">return_logprob:</span> <span class="pre">false</span></code>.</p></li>
+<li><p><strong>Scheduling.</strong> Speculative decoding is synchronous by default. Add <code class="docutils literal notranslate"><span class="pre">--thinker.factory.enable_async_decode</span> <span class="pre">true</span></code> to either command to enable overlap, keeping <code class="docutils literal notranslate"><span class="pre">async_decode_min_batch_size=1</span></code>. Mixed prefill/decode batches (<code class="docutils literal notranslate"><span class="pre">enable_mixed_chunk=true</span></code>), sessions and weight updates are unsupported with a draft.</p></li>
+<li><p><strong>Overlap trade-offs.</strong> Overlap can improve decode throughput. Prefill-heavy workloads or short outputs can see higher TTFT and lower throughput.</p></li>
+<li><p><strong>Prefill boundary.</strong> Set <code class="docutils literal notranslate"><span class="pre">SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1</span></code> before launch to process the previous prefill batch’s result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost. Decode rounds continue to overlap.</p></li>
+<li><p><strong>Execution failure.</strong> An execution failure in speculative overlap stops the pipeline and fails its pending requests.</p></li>
+<li><p><strong>Speech output.</strong> Speech generation is unsupported with a draft; use <code class="docutils literal notranslate"><span class="pre">--text-only</span></code>.</p></li>
+</ul>
+<p>Compare modes with matching workloads and prefix-cache conditions. Measure TTFT, throughput and accuracy for your workload.</p>
 </section>
 </section>
 
@@ -916,20 +1018,20 @@ must check for an <code class="docutils literal notranslate"><span class="pre">e
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="whisper_asr.html"
+       href="qwen3_tts.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Whisper ASR</p>
+        <p class="prev-next-title">Qwen3-TTS</p>
       </div>
     </a>
     <a class="right-next"
-       href="minicpm_o.html"
+       href="qwen3_asr.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">MiniCPM-o</p>
+        <p class="prev-next-title">Qwen3-ASR</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -959,6 +1061,8 @@ must check for an <code class="docutils literal notranslate"><span class="pre">e
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-omni-persistent-session-stages">Qwen3-Omni persistent session stages</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
 </ul>
   </nav></div>
 
@@ -992,7 +1096,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Oct 11, 2026.
+  Last updated on Nov 20, 2026.
   <br/>
 </p>
   </div>

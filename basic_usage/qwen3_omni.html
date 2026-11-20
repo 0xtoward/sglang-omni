@@ -33,8 +33,8 @@
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=4418a689" />
     <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
-    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=3b484c19" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=3b484c19" />
   
   <!-- So that users can add custom icons -->
   <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
@@ -42,7 +42,7 @@
   <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
 <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
 
-    <script src="../_static/documentation_options.js?v=3476fdda"></script>
+    <script src="../_static/documentation_options.js?v=7f7c277e"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -51,17 +51,18 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'basic_usage/qwen3_omni';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=4014cbb0"></script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Audio Translations" href="audio_translations.html" />
-    <link rel="prev" title="AuK" href="../cookbook/auk.html" />
+    <link rel="next" title="Native Chat Stage" href="native_chat_stage.html" />
+    <link rel="prev" title="dots.tts" href="../cookbook/dots_tts.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.1.7" />
-    <meta name="docbuild:last-update" content="Oct 11, 2026"/>
+  <meta name="docsearch:version" content="0.2.0" />
+    <meta name="docbuild:last-update" content="Nov 20, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -206,58 +207,124 @@
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">🚀 Installation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_npu.html">🚀 Installation — Ascend NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_xpu.html">🚀 Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_cpu.html">🚀 Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_musa.html">🚀 Installation — MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/voxt.html">Install Voxt (Mac app)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/examples.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_apple_silicon.html">Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../other_platforms/installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/higgs_tts.html">Higgs TTS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/voxtral_tts.html">Voxtral TTS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_tts.html">Qwen3 TTS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_tts.html">Ming-Omni-TTS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts.html">MOSS-TTS</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts_local.html">MOSS-TTS-Local</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/dots_tts.html">dots.tts</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/minimax_music3.html">MiniMax Music 3</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/zonos2.html">ZONOS2</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_asr.html">Qwen3-ASR</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_asr.html">Fun-ASR-Nano</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/arkasr.html">ARK-ASR-3B</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/nemotron3_5_asr.html">Nemotron 3.5 ASR</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/whisper_asr.html">Whisper ASR</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_omni.html">Qwen3-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/minicpm_o.html">MiniCPM-o</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_omni.html">Ming-Omni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/personaplex.html">PersonaPlex</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../cookbook/auk.html">AuK</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/qwen.html">Qwen</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/qwen3_tts.html">Qwen3-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/qwen3_omni.html">Qwen3-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/qwen3_asr.html">Qwen3-ASR</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/openmoss.html">OpenMOSS</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/moss_tts.html">MOSS-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/moss_tts_local.html">MOSS-TTS-Local</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/openai.html">OpenAI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/whisper_asr.html">Whisper ASR</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/nvidia.html">NVIDIA</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/nemotron3_5_asr.html">Nemotron 3.5 ASR</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/nemotron_transcribe.html">Nemotron Transcribe</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/personaplex.html">PersonaPlex</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/cosmos3_nano.html">Cosmos3 Nano serving</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/nemotron_diarization.html">Nemotron 3 Diarization</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/fish_audio.html">Fish Audio</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/fishaudio_drama3.html">Fish Audio Drama 3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/fun_audio_llm.html">FunAudioLLM</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/fun_asr.html">Fun-ASR-Nano</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/openbmb.html">OpenBMB</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/minicpm_o.html">MiniCPM-o</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/boson_ai.html">Boson AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/higgs_tts.html">Higgs TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/minimax.html">MiniMax</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/minimax_music3.html">MiniMax Music 3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/inclusionai.html">InclusionAI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/ming_omni.html">Ming-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/ming_tts.html">Ming-Omni-TTS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/ming3_asr.html">Ming-3.0-asr-tiny</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/ming3_audio.html">Ming-3.0-audio-flash</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/ming3_tts.html">Ming-3.0-TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/tencent.html">Tencent</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/auk.html">AuK</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/hy_simulmt.html">Hy-SimulMT</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/zyphra.html">Zyphra</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/zonos2.html">Zonos2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/zonos3.html">Zonos3</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/autoark_ai.html">AutoArk AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/arkasr.html">ARK-ASR-3B</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/mistral_ai.html">Mistral AI</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/voxtral_tts.html">Voxtral TTS</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../cookbook/companies/dots_studio.html">Dots Studio</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../cookbook/dots_tts.html">dots.tts</a></li>
+</ul>
+</details></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Omni Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="native_chat_stage.html">Native Chat Stage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="audio_translations.html">Audio Translations</a></li>
 <li class="toctree-l1"><a class="reference internal" href="tts.html">TTS Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="asr.html">ASR Model Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="process_topology.html">Process Topology, Replicas, and GPU Sharing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="tts_process_topology.html">TTS Process Topology</a></li>
 <li class="toctree-l1"><a class="reference internal" href="process_topology_migration.html">Process Topology Migration</a></li>
-<li class="toctree-l1"><a class="reference internal" href="omni_router.html">SGLang-Omni Rust Router</a></li>
+<li class="toctree-l1"><a class="reference internal" href="omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Benchmarks</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../benchmarks/relay.html">Benchmark Relay</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../benchmarks/qwen3_tts_leading_silence.html">Qwen3-TTS Base: Leading Silence in X-Vector Voice Cloning</a></li>
+<li class="toctree-l1"><a class="reference internal" href="native_media_routes.html">Native Media Routes</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../developer_reference/mlx/index.html">Native MLX</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../developer_reference/mlx/long_audio.html">Qwen3-ASR long-recording measurements</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/apiserver_design.html">API Server Design</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/pipeline.html">Pipeline Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/config.html">Config</a></li>
@@ -266,8 +333,13 @@
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/profiler.html">Request-level profiler</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../developer_reference/full_duplex_bench.html">Full-Duplex-Bench v1.5 runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/full_duplex_guide.html">Full-Duplex Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/tts_bench.html">TTS benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/tts_model_integration.html">TTS Model Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/asr_bench.html">ASR benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/omni_offline_bench.html">MiniCPM-o offline benchmark runbook</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/rl_admin_control.html">RL Admin Control</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/ci_labels.html">CI Workflows and Labels</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/bump_version.html">Bumping the SGLang Pin</a></li>
 </ul>
 
@@ -503,6 +575,7 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-readiness">Server Readiness</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-only-mode">Text-Only Mode</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-the-server">Launch the Server</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#image-and-text-input">Image and Text Input</a></li>
@@ -543,6 +616,20 @@
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>.</p>
 </section>
+<section id="server-readiness">
+<h2>Server Readiness<a class="headerlink" href="#server-readiness" title="Link to this heading">#</a></h2>
+<p>Before it reports ready, the server sends itself a chat request with a small
+image, one second of audio and a short instruction (text and audio output in
+speech mode, text output in text-only mode, at most 8 new tokens from each
+stage that generates tokens), once per replica of its most
+replicated process, one after another, so that every replica serves one.
+<code class="docutils literal notranslate"><span class="pre">/health</span></code> returns 503 with status <code class="docutils literal notranslate"><span class="pre">starting</span></code> until these requests have passed
+through every stage, so the one-time kernel builds of that request path happen
+before the first user request. Inputs of other shapes, such as video or a large
+concurrent batch, can still build a kernel variant on first use. A failed
+warmup stops the server. <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_WARMUP_TIMEOUT</span></code> (seconds, default 600)
+bounds each request, and <code class="docutils literal notranslate"><span class="pre">--skip-server-warmup</span></code> reports ready without them.</p>
+</section>
 <section id="text-only-mode">
 <h2>Text-Only Mode<a class="headerlink" href="#text-only-mode" title="Link to this heading">#</a></h2>
 <p>Text-only mode runs the thinker pipeline on a single GPU. It accepts multi-modal input (text, image, audio) and produces text output only.</p>
@@ -560,6 +647,7 @@ run it on a thread pool when CPU preprocessing is the bottleneck under
 concurrent load. Threaded preprocessing changes how requests arrive at the
 thinker, so greedy outputs of the bf16 MoE can differ from the serial default;
 keep the default when comparing accuracy across runs.</p>
+<p>Each preprocessing worker decodes a request’s videos on parallel decoders that share min(16, the stage’s CPUs divided by its workers) FFmpeg threads, split evenly among the request’s videos. Set <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.video_decode_threads</span> <span class="pre">N</span></code> to choose that count. A value at or below the video reader’s own threads (<code class="docutils literal notranslate"><span class="pre">TORCHCODEC_NUM_THREADS</span></code>, 8 by default) decodes each video on the reader alone.</p>
 <p>For MMSU-style audio-input / text-output benchmarks with short requests, use
 the fused text-path config so the full text path stays inside one worker
 process:</p>
@@ -737,7 +825,7 @@ queueing, and vocoder execution; the overall coalescing benchmark does not
 isolate the early-prefix setting.</p>
 </section>
 <section id="id1">
-<h3>Launch the Server<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<span id="launch-the-server-1"></span><h3>Launch the Server<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <p>Speech mode can run as a colocated one-GPU worker using the colocated config:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
@@ -941,81 +1029,11 @@ layout regardless, since TTFA is the latency users notice first.</p>
 </section>
 <section id="realtime-speech-with-server-side-turn-detection">
 <h3>Realtime Speech with Server-Side Turn Detection<a class="headerlink" href="#realtime-speech-with-server-side-turn-detection" title="Link to this heading">#</a></h3>
-<p>The speech pipeline can stream spoken responses over <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>. Enable the
-WebSocket endpoint on the standard speech pipeline:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--port<span class="w"> </span><span class="m">8008</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--enable-realtime
-</pre></div>
-</div>
-<p>After connecting to <code class="docutils literal notranslate"><span class="pre">ws://localhost:8008/v1/realtime</span></code>, request text and audio
-output:</p>
-<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"session.update"</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">"session"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">"modalities"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"text"</span><span class="p">,</span><span class="w"> </span><span class="s2">"audio"</span><span class="p">],</span>
-<span class="w">    </span><span class="nt">"input_audio_format"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pcm16"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"output_audio_format"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pcm16"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"turn_detection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">      </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"semantic_vad"</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">"eagerness"</span><span class="p">:</span><span class="w"> </span><span class="s2">"medium"</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="w">  </span><span class="p">}</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-<p>Stream mono 16 kHz PCM16 input with <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.append</span></code>. Turn
-detection auto-commits each utterance and starts generation. Check
-<code class="docutils literal notranslate"><span class="pre">session.created.capabilities.turn_detection</span></code> before requesting
-<code class="docutils literal notranslate"><span class="pre">semantic_vad</span></code> — older servers only support <code class="docutils literal notranslate"><span class="pre">server_vad</span></code>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">server_vad</span></code> (default) ends a turn after a fixed silence duration.
-<code class="docutils literal notranslate"><span class="pre">semantic_vad</span></code> adds a GPU Smart Turn v3.2 model on top of Silero speech
-detection, so a natural mid-thought pause doesn’t end the turn early.
-<code class="docutils literal notranslate"><span class="pre">eagerness</span></code> (<code class="docutils literal notranslate"><span class="pre">low</span></code>/<code class="docutils literal notranslate"><span class="pre">medium</span></code>/<code class="docutils literal notranslate"><span class="pre">high</span></code>, default <code class="docutils literal notranslate"><span class="pre">medium</span></code>) trades latency for
-patience; <code class="docutils literal notranslate"><span class="pre">silence_duration_ms</span></code> only applies to <code class="docutils literal notranslate"><span class="pre">server_vad</span></code>.</p>
-<p>To enable <code class="docutils literal notranslate"><span class="pre">semantic_vad</span></code>, provision the BSD-2 licensed
-<a class="reference external" href="https://huggingface.co/pipecat-ai/smart-turn-v3">Smart Turn v3.2</a>
-<code class="docutils literal notranslate"><span class="pre">smart-turn-v3.2-gpu.onnx</span></code> model and set <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_SMART_TURN_MODEL_PATH</span></code>
-to its path (file or containing directory). The server never downloads it and
-verifies its SHA-256 on load. If the model is missing or invalid, the
-endpoint still works — semantic requests just fall back to <code class="docutils literal notranslate"><span class="pre">server_vad</span></code>.</p>
-<p>Text arrives in <code class="docutils literal notranslate"><span class="pre">response.text.delta</span></code> events; spoken output arrives as
-base64-encoded mono 24 kHz PCM16 in <code class="docutils literal notranslate"><span class="pre">response.audio.delta</span></code> events, followed by
-<code class="docutils literal notranslate"><span class="pre">response.audio.done</span></code> and <code class="docutils literal notranslate"><span class="pre">response.done</span></code>.</p>
-<p>Audio output is opt-in: sessions remain text-only unless both modalities are
-requested. A thinker-only server rejects audio negotiation because it has no
-<code class="docutils literal notranslate"><span class="pre">code2wav</span></code> stage.</p>
-<p>For text-and-audio sessions, server-owned barge-in is enabled by default. When
-the active turn detector emits <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.speech_started</span></code>, the active
-response is cancelled with reason <code class="docutils literal notranslate"><span class="pre">turn_detected</span></code>; its user transcription still
-completes and enters conversation history before the next queued turn runs.
-Cancelled assistant output is not added to conversation history.</p>
-<p>Clients must stop buffered playback on <code class="docutils literal notranslate"><span class="pre">speech_started</span></code> and reject every later
-<code class="docutils literal notranslate"><span class="pre">response.audio.delta</span></code> for that response until its <code class="docutils literal notranslate"><span class="pre">response.done</span></code>. If speech
-starts before <code class="docutils literal notranslate"><span class="pre">response.created</span></code>, retain a pending-interruption flag and reject
-the response when its ID arrives. Automatic barge-in ends with
-<code class="docutils literal notranslate"><span class="pre">response.done.status=&quot;cancelled&quot;</span></code> and reason <code class="docutils literal notranslate"><span class="pre">turn_detected</span></code>; explicit
-<code class="docutils literal notranslate"><span class="pre">response.cancel</span></code> uses reason <code class="docutils literal notranslate"><span class="pre">client_cancelled</span></code>.</p>
-<p>If assistant audio has already been scheduled for playback, the client must
-also send <code class="docutils literal notranslate"><span class="pre">conversation.item.truncate</span></code> with the assistant <code class="docutils literal notranslate"><span class="pre">item_id</span></code> from
-<code class="docutils literal notranslate"><span class="pre">response.audio.delta</span></code>, <code class="docutils literal notranslate"><span class="pre">content_index:</span> <span class="pre">0</span></code>, and the played duration in
-<code class="docutils literal notranslate"><span class="pre">audio_end_ms</span></code>. The server replies with <code class="docutils literal notranslate"><span class="pre">conversation.item.truncated</span></code> and
-removes that assistant item from conversation history. The whole assistant
-transcript is removed because the endpoint cannot align text with played audio.</p>
-<p>Set <code class="docutils literal notranslate"><span class="pre">turn_detection.interrupt_response</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> in <code class="docutils literal notranslate"><span class="pre">session.update</span></code> to opt
-out. Partial updates preserve the active detector type and settings, so clients
-can change interruption behavior without dropping semantic VAD or its
-eagerness. Changing detector behavior rebuilds the detector and clears pending
-input audio; <code class="docutils literal notranslate"><span class="pre">interrupt_response</span></code> changes independently. Text-only responses
-are not interrupted automatically.</p>
-<p>The browser example in <code class="docutils literal notranslate"><span class="pre">playground/qwen-omni/realtime</span></code> captures microphone
-input, negotiates turn-detection support per connection, and lets the user
-select text-only output or text plus streamed PCM16 audio playback.</p>
+<p>The speech pipeline also streams spoken responses over <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code> with <code class="docutils literal notranslate"><span class="pre">--enable-realtime</span></code>, with server-side turn detection and barge-in. Its protocol is in <a class="reference internal" href="../developer_reference/full_duplex_guide.html#realtime-on-the-speech-pipeline"><span class="std std-ref">Realtime on the speech pipeline</span></a>; the Session graph that most realtime clients use is in <a class="reference internal" href="../developer_reference/full_duplex_guide.html#turn-based-qwen3-omni"><span class="std std-ref">Turn-Based: Qwen3-Omni</span></a>.</p>
 </section>
 </section>
 <section id="single-gpu-fp8-on-h100-h20">
-<h2>Single-GPU FP8 on H100/H20<a class="headerlink" href="#single-gpu-fp8-on-h100-h20" title="Link to this heading">#</a></h2>
+<span id="single-gpu-fp8-on-h100h20"></span><h2>Single-GPU FP8 on H100/H20<a class="headerlink" href="#single-gpu-fp8-on-h100-h20" title="Link to this heading">#</a></h2>
 <p>SGLang-Omni can also serve native FP8 Qwen3-Omni checkpoints. Native FP8 uses
 the checkpoint quantization config when loading the thinker and talker AR stages,
 while keeping the same Qwen3-Omni request format shown below.</p>
@@ -1045,7 +1063,7 @@ precompile session while keeping DeepGEMM available for dense FP8 GEMMs.</p>
 </div>
 </section>
 <section id="single-gpu-autoround-int4-thinker-on-h100-h20">
-<h2>Single-GPU AutoRound INT4 Thinker on H100/H20<a class="headerlink" href="#single-gpu-autoround-int4-thinker-on-h100-h20" title="Link to this heading">#</a></h2>
+<span id="single-gpu-autoround-int4-thinker-on-h100h20"></span><h2>Single-GPU AutoRound INT4 Thinker on H100/H20<a class="headerlink" href="#single-gpu-autoround-int4-thinker-on-h100-h20" title="Link to this heading">#</a></h2>
 <p>SGLang-Omni also supports AutoRound INT4 quantized Qwen3-Omni checkpoints.
 AutoRound uses a 4-bit quantization scheme with group size 128, significantly
 reducing memory footprint compared to BF16 or FP8.</p>
@@ -1068,7 +1086,7 @@ with the AutoRound checkpoint:</p>
 <li><p><strong>Accuracy at ultra-low bit widths</strong>: maintains high accuracy even at 2–4 bits, requiring minimal tuning effort thanks to its sign-gradient descent optimization.</p></li>
 </ul>
 <section id="id2">
-<h3>Image and Text Input<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
+<span id="image-and-text-input-1"></span><h3>Image and Text Input<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
 <p>Send an image with a text question to get both text and audio responses. Set <code class="docutils literal notranslate"><span class="pre">&quot;modalities&quot;:</span> <span class="pre">[&quot;text&quot;,</span> <span class="pre">&quot;audio&quot;]</span></code> to enable audio output.</p>
 <p><strong>cURL</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8008/v1/chat/completions<span class="w"> </span><span class="se">\</span>
@@ -1109,7 +1127,7 @@ with the AutoRound checkpoint:</p>
 </div>
 </section>
 <section id="id3">
-<h3>Audio and Image Input<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
+<span id="audio-and-image-input-1"></span><h3>Audio and Image Input<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
 <p>Send an audio file with an image. The model hears the spoken question and sees the image, then responds with both text and audio.</p>
 <p><strong>cURL</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8008/v1/chat/completions<span class="w"> </span><span class="se">\</span>
@@ -1152,7 +1170,7 @@ with the AutoRound checkpoint:</p>
 </div>
 </section>
 <section id="id4">
-<h3>Video and Audio Input<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
+<span id="video-and-audio-input-1"></span><h3>Video and Audio Input<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
 <p>Send a video with a spoken audio question. The model watches the video, hears the question, and responds with both text and audio.</p>
 <p><strong>cURL</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8008/v1/chat/completions<span class="w"> </span><span class="se">\</span>
@@ -1305,20 +1323,20 @@ with the AutoRound checkpoint:</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="../cookbook/auk.html"
+       href="../cookbook/dots_tts.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">AuK</p>
+        <p class="prev-next-title">dots.tts</p>
       </div>
     </a>
     <a class="right-next"
-       href="audio_translations.html"
+       href="native_chat_stage.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Audio Translations</p>
+        <p class="prev-next-title">Native Chat Stage</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1341,6 +1359,7 @@ with the AutoRound checkpoint:</p>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-readiness">Server Readiness</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-only-mode">Text-Only Mode</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-the-server">Launch the Server</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#image-and-text-input">Image and Text Input</a></li>
@@ -1396,7 +1415,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Oct 11, 2026.
+  Last updated on Nov 20, 2026.
   <br/>
 </p>
   </div>
