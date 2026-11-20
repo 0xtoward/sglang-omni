@@ -56,7 +56,7 @@ jobs:
           path: |
             .venv
             .uv-python
-          key: hosted-cpu-ut-v1-${{ hashFiles('pyproject.toml') }}
+          key: hosted-cpu-ut-v2-${{ hashFiles('pyproject.toml') }}
 
       - name: Cold install environment
         id: install
@@ -66,6 +66,10 @@ jobs:
           start=$(date +%s)
           uv venv .venv -p 3.12
           uv pip install --python .venv/bin/python -e '.[minicpm-o,fun-cosyvoice3]'
+          # Present in the CI image but not in pyproject.toml; test modules
+          # import dac and audiotools directly at collection time.
+          uv pip install --python .venv/bin/python \
+            descript-audio-codec==1.0.0 descript-audiotools==0.7.2
           cosy=.venv/src/CosyVoice
           git clone --filter=blob:none --no-checkout https://github.com/FunAudioLLM/CosyVoice.git "$cosy"
           git -C "$cosy" checkout --detach 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
@@ -88,7 +92,7 @@ jobs:
           cache_hit="${{ steps.cache.outputs.cache-hit }}"
           echo "cache_hit=$cache_hit install_seconds=${install_seconds:-0} venv_bytes=$venv_bytes uv_python_bytes=$uvpy_bytes disk_free_bytes=$disk_free" | tee env_numbers.txt
           echo "::notice title=bootstrap::cache_hit=$cache_hit install_seconds=${install_seconds:-0} venv_bytes=$venv_bytes disk_free_bytes=$disk_free"
-          pip freeze > pip_freeze.txt
+          uv pip freeze --python .venv/bin/python > pip_freeze.txt
           python -m pytest tests/ -m "not benchmark and not accelerator" --collect-only -q > collect.txt 2>&1 || true
           tail -3 collect.txt
           grep -Eo '[0-9]+ tests? collected' collect.txt | tail -1 | tee collect_count.txt || true
@@ -137,7 +141,7 @@ jobs:
           path: |
             .venv
             .uv-python
-          key: hosted-cpu-ut-v1-${{ hashFiles('pyproject.toml') }}
+          key: hosted-cpu-ut-v2-${{ hashFiles('pyproject.toml') }}
 
       - name: Require cached environment
         run: test -x .venv/bin/python
@@ -162,8 +166,13 @@ jobs:
           sampler=$!
           set +e
           wstart=$(date +%s)
+          # Same command as CI (test.yaml) minus -x, plus one --ignore:
+          # vendor/test_sglang_flashattention_backend_patch.py imports
+          # sgl_kernel at collection, and sgl_kernel cannot load without an
+          # NVIDIA driver, which a hosted runner does not have.
           /usr/bin/time -v -o time_report.txt \
             python -m pytest tests/ -m "not benchmark and not accelerator" \
+              --ignore tests/unit_test/vendor/test_sglang_flashattention_backend_patch.py \
               -p scripts.ci.utils.pytest_partition \
               --auto-partition-id "${{ matrix.partition }}" \
               --auto-partition-size "${PARTITION_SIZE}" \
