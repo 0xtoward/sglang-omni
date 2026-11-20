@@ -1,0 +1,106 @@
+name: Voxt Windows Beta
+
+# Builds a beta of main each time it takes a change to Voxt (Voxt/, not its
+# Markdown): the full Go test suite, then the unsigned NSIS installer as an
+# artifact of the run, version X.Y.Z-beta.YYYYMMDD.N (N this workflow's run
+# number). Unlike the macOS beta (voxt-beta.yaml), the tests run here: pull
+# requests are not checked on Windows yet. A newer merge cancels a beta
+# still building. A pull request that changes this file runs it too, ad hoc
+# and unsigned. Run by hand from any branch.
+#
+# The installer is unsigned: Windows SmartScreen warns on first launch.
+# Signing needs a code-signing certificate in this repository's secrets; the
+# update feed needs its own key pair. Both are deliberately out of scope.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Voxt/**"
+      - "!Voxt/**/*.md"
+      - ".github/workflows/voxt-windows-beta.yaml"
+  pull_request:
+    paths:
+      - ".github/workflows/voxt-windows-beta.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: voxt-windows-beta-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: Voxt
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      # The prebuilt SQLite library of the MyGo plugin, checked against its
+      # manifest, as in voxtnew-ci.yaml.
+      - name: SQLite library for the MyGo plugin
+        shell: bash
+        run: |
+          read -r url sum < <(jq -r '.libraries[0].files["windows-amd64"] | "\(.url) \(.sha256)"' "third_party/mygo/plugins/sqlite/mygo-plugin.json")
+          lib="$RUNNER_TEMP/libmygo-sqlite3.dll"
+          curl -fsSL --retry 3 -o "$lib" "$url"
+          echo "$sum  $lib" | sha256sum -c -
+          echo "MYGO_SQLITE_LIBRARY=$lib" >> "$GITHUB_ENV"
+
+      - name: Go tests
+        shell: bash
+        run: CGO_ENABLED=0 go test -count=1 -timeout 20m ./...
+
+      - name: go vet
+        shell: bash
+        run: go vet ./...
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: Voxt
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      - name: Version
+        shell: bash
+        run: |
+          version="$(go run ./internal/tools/windowsrelease version mygo.json)-beta.$(date -u +%Y%m%d).$GITHUB_RUN_NUMBER"
+          go run ./internal/tools/windowsrelease set-version mygo.json "$version"
+          echo "version=$version" >> "$GITHUB_ENV"
+
+      - name: Build the installer
+        shell: bash
+        run: scripts/build-windows.sh
+
+      - name: Checksum
+        shell: bash
+        run: |
+          cd build/windows-amd64
+          sha256sum "Voxt Setup ${{ env.version }} amd64.exe" > "Voxt Setup ${{ env.version }} amd64.exe.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Voxt-${{ env.version }}-windows-amd64-unsigned
+          path: |
+            Voxt/build/windows-amd64/Voxt Setup ${{ env.version }} amd64.exe
+            Voxt/build/windows-amd64/Voxt Setup ${{ env.version }} amd64.exe.sha256
+          retention-days: 30
