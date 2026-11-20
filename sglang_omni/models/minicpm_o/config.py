@@ -248,3 +248,4 @@ Variants = {
     "speech": MiniCPMOSpeechPipelineConfig,
 }
 
+
