@@ -2,7 +2,7 @@ name: Voxt Windows Beta
 
 on:
   push:
-    branches: [main, codex/voxt-windows-beta-20261120]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
