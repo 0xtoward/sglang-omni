@@ -2,7 +2,11 @@ name: Voxt Windows Beta
 
 on:
   push:
-    branches: [main]
+    branches: [codex/voxt-windows-beta-20261120]
+    paths:
+      - "Voxt/**"
+      - "!Voxt/**/*.md"
+      - ".github/workflows/voxt-windows-beta.yaml"
   workflow_dispatch:
 
 permissions:
@@ -42,6 +46,10 @@ jobs:
       - name: Build the NSIS installer
         shell: bash
         run: bash scripts/build-windows.sh
+
+      - name: Check Windows update routing
+        shell: bash
+        run: CGO_ENABLED=0 go test -count=1 -run '^TestWindowsBetaSkipsGitHubReleaseCheck$' .
 
       - name: Check silent installation and uninstallation
         shell: pwsh
@@ -83,6 +91,9 @@ jobs:
       github.repository == 'sgl-project/sglang-omni' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: package
+    concurrency:
+      group: voxt-windows-beta-publish
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -109,13 +120,19 @@ jobs:
               echo "::error::Release $tag targets a different commit."
               exit 1
             fi
-            if [[ "$(jq -r .isDraft <<< "$release")" == "false" ]]; then
-              exit 0
-            fi
+            draft="$(jq -r .isDraft <<< "$release")"
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
               --draft --prerelease --latest=false --title "Voxt $VOXT_VERSION for Windows" \
               --notes "Unsigned Windows x64 beta built from $GITHUB_SHA. Install with $installer."
+            draft=true
           fi
-          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber "$installer" "$checksum"
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          if [[ "$draft" == true ]]; then
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber "$installer" "$checksum"
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          fi
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            | jq -r '[.[][] | select(.prerelease and (.draft | not) and (.tag_name | test("^voxt-win-v[0-9]+\\.[0-9]+\\.[0-9]+-beta\\.[0-9]{8}\\.[0-9]+$")))] | sort_by(.created_at, .id) | reverse | .[5:][] | .tag_name' \
+            | while IFS= read -r old_tag; do
+                gh release delete "$old_tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+              done

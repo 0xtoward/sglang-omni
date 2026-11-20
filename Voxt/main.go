@@ -16,6 +16,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
@@ -116,7 +117,7 @@ func main() {
 	// for Updates…, and About says so.
 	if mygo.Updater.HasFeed() {
 		a.upd = pluginUpdates{}
-	} else if v := mygo.App.Version(); checksReleases(mygo.IsDev(), v) {
+	} else if v := mygo.App.Version(); checksReleases(runtime.GOOS, mygo.IsDev(), v) {
 		a.upd = newReleaseUpdates(a.settings, releasesURL, v, a.checkReleasesNow)
 	}
 	a.bundleStale = h.stale
