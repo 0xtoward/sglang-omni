@@ -1,0 +1,206 @@
+name: Hosted CPU UT Trial
+
+# One-off experiment: can the CPU unit tests run on GitHub-hosted runners?
+# Push to this branch runs the bootstrap job (cold install or cache restore
+# plus a smoke check). workflow_dispatch with mode=shards3/shards6 runs the
+# full CPU suite in 3 or 6 partitions. No secrets are used anywhere.
+
+on:
+  push:
+    branches: [ci-hosted-cpu-ut-trial]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Which part of the trial to run
+        type: choice
+        options:
+          - bootstrap
+          - shards3
+          - shards6
+        default: bootstrap
+
+concurrency:
+  group: hosted-cpu-ut-${{ github.ref }}-${{ inputs.mode || 'push' }}
+  cancel-in-progress: true
+
+env:
+  UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.uv-python
+  UV_TORCH_BACKEND: cpu
+
+jobs:
+  bootstrap:
+    name: bootstrap-env
+    if: github.event_name == 'push' || inputs.mode == 'bootstrap'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          echo "before cleanup:"; df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache || true
+          echo "after cleanup:"; df -h / | tail -1
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/uv" --version
+
+      - name: Cache venv
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .venv
+            .uv-python
+          key: hosted-cpu-ut-v1-${{ hashFiles('pyproject.toml') }}
+
+      - name: Cold install environment
+        id: install
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          start=$(date +%s)
+          uv venv .venv -p 3.12
+          uv pip install --python .venv/bin/python -e '.[minicpm-o,fun-cosyvoice3]'
+          cosy=.venv/src/CosyVoice
+          git clone --filter=blob:none --no-checkout https://github.com/FunAudioLLM/CosyVoice.git "$cosy"
+          git -C "$cosy" checkout --detach 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
+          git -C "$cosy" submodule update --init --depth=1 third_party/Matcha-TTS
+          printf '%s\n' "$PWD/$cosy" "$PWD/$cosy/third_party/Matcha-TTS" \
+            > .venv/lib/python3.12/site-packages/cosyvoice.pth
+          end=$(date +%s)
+          echo "install_seconds=$((end - start))" >> "$GITHUB_OUTPUT"
+
+      - name: Report environment numbers
+        id: numbers
+        run: |
+          set -e
+          source .venv/bin/activate
+          python -c "import torch, sglang, sglang_omni, flashinfer; print('torch', torch.__version__, 'cuda_available', torch.cuda.is_available())"
+          venv_bytes=$(du -sb .venv | cut -f1)
+          uvpy_bytes=$(du -sb .uv-python | cut -f1)
+          disk_free=$(df --output=avail -B1 / | tail -1 | tr -d ' ')
+          install_seconds="${{ steps.install.outputs.install_seconds }}"
+          cache_hit="${{ steps.cache.outputs.cache-hit }}"
+          echo "cache_hit=$cache_hit install_seconds=${install_seconds:-0} venv_bytes=$venv_bytes uv_python_bytes=$uvpy_bytes disk_free_bytes=$disk_free" | tee env_numbers.txt
+          echo "::notice title=bootstrap::cache_hit=$cache_hit install_seconds=${install_seconds:-0} venv_bytes=$venv_bytes disk_free_bytes=$disk_free"
+          pip freeze > pip_freeze.txt
+          python -m pytest tests/ -m "not benchmark and not accelerator" --collect-only -q > collect.txt 2>&1 || true
+          tail -3 collect.txt
+          grep -Eo '[0-9]+ tests? collected' collect.txt | tail -1 | tee collect_count.txt || true
+
+      - name: Upload bootstrap report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-report
+          path: |
+            env_numbers.txt
+            pip_freeze.txt
+            collect.txt
+            collect_count.txt
+          if-no-files-found: ignore
+
+  test:
+    name: shard-${{ matrix.partition }}-of-${{ inputs.mode == 'shards3' && '3' || '6' }}
+    if: inputs.mode == 'shards3' || inputs.mode == 'shards6'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: ${{ fromJSON(inputs.mode == 'shards3' && '[0,1,2]' || '[0,1,2,3,4,5]') }}
+    env:
+      PARTITION_SIZE: ${{ inputs.mode == 'shards3' && '3' || '6' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache || true
+          df -h / | tail -1
+
+      - name: Install GNU time
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq time
+
+      - name: Restore venv cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .venv
+            .uv-python
+          key: hosted-cpu-ut-v1-${{ hashFiles('pyproject.toml') }}
+
+      - name: Require cached environment
+        run: test -x .venv/bin/python
+
+      - name: Run CPU unit tests
+        id: runtests
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          source .venv/bin/activate
+          nproc
+          free -h
+          peak_file="$PWD/mem_peak_kb.txt"
+          ( peak=0
+            while :; do
+              used=$(awk '/^MemTotal:/{t=$2}/^MemAvailable:/{a=$2}END{print t-a}' /proc/meminfo)
+              if [ "$used" -gt "$peak" ]; then peak=$used; fi
+              echo "$peak" > "$peak_file"
+              sleep 5
+            done ) &
+          sampler=$!
+          set +e
+          wstart=$(date +%s)
+          /usr/bin/time -v -o time_report.txt \
+            python -m pytest tests/ -m "not benchmark and not accelerator" \
+              -p scripts.ci.utils.pytest_partition \
+              --auto-partition-id "${{ matrix.partition }}" \
+              --auto-partition-size "${PARTITION_SIZE}" \
+              --partition-model-file .github/unit_test_durations.json \
+              --durations=50 --junitxml=junit.xml 2>&1 | tee pytest.log
+          status=${PIPESTATUS[0]}
+          wend=$(date +%s)
+          kill "$sampler" 2>/dev/null || true
+          wall=$((wend - wstart))
+          summary=$(python - <<'PY'
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('junit.xml')
+          suite = tree.getroot().find('testsuite')
+          print(f"tests={suite.get('tests')} failures={suite.get('failures')} "
+                f"errors={suite.get('errors')} skipped={suite.get('skipped')} "
+                f"pytest_seconds={float(suite.get('time')):.0f}")
+          PY
+          )
+          echo "$summary" | tee test_summary.txt
+          echo "wall_seconds=$wall" | tee -a test_summary.txt
+          echo "status=$status" >> test_summary.txt
+          maxrss=$(awk -F': ' '/Maximum resident set size/{print $2}' time_report.txt)
+          mempeak=$(cat mem_peak_kb.txt)
+          echo "max_rss_kb=$maxrss" | tee -a test_summary.txt
+          echo "system_mem_peak_kb=$mempeak" | tee -a test_summary.txt
+          echo "::notice title=shard-${{ matrix.partition }}/${PARTITION_SIZE}::wall=${wall}s ${summary} max_rss_kb=${maxrss} system_mem_peak_kb=${mempeak} status=${status}"
+          exit "$status"
+
+      - name: Upload shard results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard${{ env.PARTITION_SIZE }}-p${{ matrix.partition }}
+          path: |
+            junit.xml
+            time_report.txt
+            test_summary.txt
+            mem_peak_kb.txt
+            pytest.log
+          if-no-files-found: ignore
