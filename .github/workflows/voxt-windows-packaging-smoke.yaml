@@ -56,7 +56,7 @@ jobs:
           }
 
           New-Item -ItemType Directory -Path 'build/artifact' | Out-Null
-          $installerName = "Voxt-$env:VOXT_VERSION-windows-amd64-setup.exe"
+          $installerName = "Voxt-$($env:VOXT_VERSION)-windows-amd64-setup.exe"
           $installerPath = Join-Path 'build/artifact' $installerName
           Copy-Item -LiteralPath $source.Path -Destination $installerPath
           $sha256 = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
