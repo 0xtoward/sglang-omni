@@ -147,3 +147,323 @@ jobs:
                 name: 'run-lint-only',
               });
             }
+
+            const modelCiSuggestions = [
+              {
+                directory: 'fun_asr',
+                model: 'Fun-ASR-Nano-2512',
+                stages: [
+                  {
+                    name: 'SeedTTS ASR',
+                    target: 'fun-asr',
+                    coveringLabels: ['run-asr-ci', 'run-fun-asr-nano-2512'],
+                    adds: '`run-fun-asr-nano-2512`',
+                  },
+                ],
+              },
+              {
+                directory: 'fun_cosyvoice3',
+                model: 'Fun-CosyVoice3-0.5B-2512',
+                stages: [
+                  {
+                    name: 'TTS',
+                    target: 'cosyvoice3',
+                    coveringLabels: ['run-tts-ci'],
+                    adds: '`run-tts-ci` + `run-fun-cosyvoice3-0.5b-2512`',
+                  },
+                ],
+              },
+              {
+                directory: 'higgs_tts',
+                model: 'Higgs-TTS-3-4B',
+                stages: [
+                  {
+                    name: 'TTS',
+                    target: 'higgs',
+                    coveringLabels: ['run-tts-ci'],
+                    adds: '`run-tts-ci` + `run-higgs-tts-3-4b`',
+                  },
+                  {
+                    name: 'MPS',
+                    target: 'mps-higgs',
+                    coveringLabels: ['run-mps-ci'],
+                    adds: '`run-mps-ci` + `run-higgs-tts-3-4b`',
+                  },
+                ],
+              },
+              {
+                directory: 'minicpm_o',
+                model: 'MiniCPM-o 4.5',
+                stages: [
+                  {
+                    name: 'Omni',
+                    target: 'minicpmo',
+                    coveringLabels: ['run-omni-ci'],
+                    adds: '`run-omni-ci` + `run-minicpm-o-4.5`',
+                  },
+                  {
+                    name: 'native full duplex',
+                    target: 'full-duplex',
+                    coveringLabels: ['run-native-duplex'],
+                    adds: '`run-native-duplex`',
+                  },
+                ],
+              },
+              {
+                directory: 'moss_transcribe_diarize',
+                model: 'MOSS-Transcribe-Diarize',
+                stages: [
+                  {
+                    name: 'multi-speaker ASR',
+                    target: 'moss-td-asr',
+                    coveringLabels: ['run-asr-ci', 'run-moss-transcribe-diarize'],
+                    adds: '`run-moss-transcribe-diarize`',
+                  },
+                ],
+              },
+              {
+                directory: 'moss_tts_local',
+                model: 'MOSS-TTS-Local-Transformer-v1.5',
+                stages: [
+                  {
+                    name: 'TTS',
+                    target: 'moss',
+                    coveringLabels: ['run-tts-ci'],
+                    adds: '`run-tts-ci` + `run-moss-tts-local-transformer-v1.5`',
+                  },
+                  {
+                    name: 'MPS',
+                    target: 'mps-moss',
+                    coveringLabels: ['run-mps-ci'],
+                    adds: '`run-mps-ci` + `run-moss-tts-local-transformer-v1.5`',
+                  },
+                ],
+              },
+              {
+                directory: 'qwen3_asr',
+                model: 'Qwen3-ASR-1.7B',
+                stages: [
+                  {
+                    name: 'SeedTTS ASR',
+                    target: 'qwen3-asr',
+                    coveringLabels: ['run-asr-ci', 'run-qwen3-asr-1.7b'],
+                    adds: '`run-qwen3-asr-1.7b`',
+                  },
+                  {
+                    name: 'cascaded duplex',
+                    target: 'cascaded',
+                    coveringLabels: ['run-cascaded-duplex'],
+                    adds: '`run-cascaded-duplex`',
+                  },
+                ],
+              },
+              {
+                directory: 'qwen3_omni',
+                model: 'Qwen3-Omni-30B-A3B-Instruct',
+                stages: [
+                  {
+                    name: 'Omni',
+                    target: 'qwen3-omni',
+                    coveringLabels: ['run-omni-ci'],
+                    adds: '`run-omni-ci` + `run-qwen3-omni-30b-a3b-instruct`',
+                  },
+                  {
+                    name: 'turn-based duplex',
+                    target: 'turn-based',
+                    coveringLabels: ['run-turn-based-duplex'],
+                    adds: '`run-turn-based-duplex`',
+                  },
+                ],
+              },
+              {
+                directory: 'qwen3_tts',
+                model: 'Qwen3-TTS-12Hz-1.7B',
+                stages: [
+                  {
+                    name: 'TTS',
+                    target: 'qwen3-tts',
+                    coveringLabels: ['run-tts-ci'],
+                    adds: '`run-tts-ci` + `run-qwen3-tts-12hz-1.7b-base`',
+                  },
+                  {
+                    name: 'cascaded duplex',
+                    target: 'cascaded',
+                    coveringLabels: ['run-cascaded-duplex'],
+                    adds: '`run-cascaded-duplex`',
+                  },
+                ],
+              },
+              {
+                directory: 'streaming_cascade',
+                model: 'the streaming cascade: Qwen3-ASR + Qwen3.8-27B + Qwen3-TTS',
+                stages: [
+                  {
+                    name: 'cascaded duplex',
+                    target: 'cascaded',
+                    coveringLabels: ['run-cascaded-duplex'],
+                    adds: '`run-cascaded-duplex`',
+                  },
+                ],
+              },
+              {
+                directory: 'vad',
+                model: 'the VAD session node of both duplex profiles',
+                stages: [
+                  {
+                    name: 'cascaded duplex',
+                    target: 'cascaded',
+                    coveringLabels: ['run-cascaded-duplex'],
+                    adds: '`run-cascaded-duplex`',
+                  },
+                  {
+                    name: 'turn-based duplex',
+                    target: 'turn-based',
+                    coveringLabels: ['run-turn-based-duplex'],
+                    adds: '`run-turn-based-duplex`',
+                  },
+                ],
+              },
+              {
+                directory: 'whisper_asr',
+                model: 'Whisper-large-v3',
+                stages: [
+                  {
+                    name: 'SeedTTS ASR',
+                    target: 'whisper-asr',
+                    coveringLabels: ['run-asr-ci', 'run-whisper-large-v3'],
+                    adds: '`run-whisper-large-v3`',
+                  },
+                ],
+              },
+            ];
+            const suggestionMarker = '<!-- ci-stage-suggestion -->';
+
+            if (pullRequest.draft) {
+              return;
+            } else {
+            }
+
+            const matchedModels = modelCiSuggestions.filter(({ directory }) =>
+              [...touchedPaths].some((path) =>
+                path.startsWith(`sglang_omni/models/${directory}/`)
+              )
+            );
+            const missingCiModels = matchedModels
+              .map((entry) => ({
+                ...entry,
+                missingStages: entry.stages.filter(({ coveringLabels }) =>
+                  coveringLabels.every((label) => !existingLabels.has(label))
+                ),
+              }))
+              .filter(({ missingStages }) => missingStages.length);
+            core.info(
+              `Model CI matches: ${
+                matchedModels.map(({ directory }) => directory).join(', ') ||
+                'none'
+              }; missing stage labels: ${
+                missingCiModels
+                  .flatMap(({ directory, missingStages }) =>
+                    missingStages.map(({ target }) => `${directory}:${target}`)
+                  )
+                  .join(', ') || 'none'
+              }`
+            );
+
+            const commentPages = github.paginate.iterator(
+              github.rest.issues.listComments,
+              {
+                owner,
+                repo,
+                issue_number: pullRequest.number,
+                per_page: 100,
+              }
+            );
+            const existingComments = [];
+            for await (const { data: comments } of commentPages) {
+              existingComments.push(...comments);
+            }
+            const suggestionComment = existingComments.find(
+              ({ body, user }) =>
+                user?.type === 'Bot' && body?.includes(suggestionMarker)
+            );
+
+            let suggestionBody = '';
+            if (missingCiModels.length) {
+              const bullets = [];
+              for (const { directory, model, missingStages } of missingCiModels) {
+                for (const { name, target, adds } of missingStages) {
+                  bullets.push(
+                    `- \`sglang_omni/models/${directory}/\` (${model}) runs in the ${name} stage -> \`${target}\` (adds ${adds})`
+                  );
+                }
+              }
+              const targetsByStage = new Map();
+              for (const { missingStages } of missingCiModels) {
+                for (const { name, target } of missingStages) {
+                  if (!targetsByStage.has(name)) {
+                    targetsByStage.set(name, [target]);
+                  } else if (!targetsByStage.get(name).includes(target)) {
+                    targetsByStage.get(name).push(target);
+                  } else {
+                  }
+                }
+              }
+              const commandTargets = [];
+              const stageNotes = [];
+              for (const [stage, targets] of targetsByStage) {
+                commandTargets.push(targets[0]);
+                if (targets.length > 1) {
+                  stageNotes.push(
+                    `The ${stage} stage accepts one model label at a time, so the command above picks \`${
+                      targets[0]
+                    }\`; swap in ${targets
+                      .slice(1)
+                      .map((target) => `\`${target}\``)
+                      .join(' or ')} to test the other model instead.`
+                  );
+                } else {
+                }
+              }
+              suggestionBody = [
+                suggestionMarker,
+                'This pull request changes model code that has CI coverage, but the matching stage labels are not on the pull request:',
+                '',
+                ...bullets,
+                '',
+                'A maintainer can start the matching GPU CI with:',
+                '',
+                `\`/tag-and-rerun-ci ${commandTargets.join(' ')}\``,
+                '',
+                ...stageNotes,
+                ...(stageNotes.length ? [''] : []),
+                'This bot never adds `run-*` labels by itself; a maintainer decides when GPU CI starts.',
+              ].join('\n');
+            } else {
+              suggestionBody = [
+                suggestionMarker,
+                'No model CI suggestions: every changed model directory with CI coverage already has its stage label on the pull request, or no changed path maps to a CI-covered model.',
+              ].join('\n');
+            }
+
+            if (suggestionComment) {
+              if (suggestionComment.body === suggestionBody) {
+                return;
+              } else {
+              }
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: suggestionComment.id,
+                body: suggestionBody,
+              });
+            } else {
+              if (missingCiModels.length) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pullRequest.number,
+                  body: suggestionBody,
+                });
+              } else {
+              }
+            }

@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,6 +16,7 @@ const {readFileSync} = require('node:fs');
 const input = JSON.parse(readFileSync(0, 'utf8'));
 let added = [];
 let removed = [];
+const comments = [];
 const pullRequest = input.pullRequest;
 const context = {
   payload: {action: input.action ?? 'opened', pull_request: pullRequest},
@@ -26,13 +28,28 @@ async function* fileIterator() {
     yield {data};
   }
 }
+async function* commentIterator() {
+  yield {data: input.existingComments ?? []};
+}
+const listFiles = 'listFiles';
+const listComments = 'listComments';
 const github = {
-  paginate: {iterator: () => fileIterator()},
+  paginate: {
+    iterator: endpoint =>
+      endpoint === listComments ? commentIterator() : fileIterator(),
+  },
   rest: {
-    pulls: {get: async () => ({data: pullRequest})},
+    pulls: {get: async () => ({data: pullRequest}), listFiles},
     issues: {
       addLabels: async request => {added = request.labels},
       removeLabel: async request => {removed.push(request.name)},
+      listComments,
+      createComment: async request => {
+        comments.push({action: 'create', body: request.body});
+      },
+      updateComment: async request => {
+        comments.push({action: 'update', body: request.body});
+      },
     },
   },
 };
@@ -47,6 +64,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   process.stdout.write(JSON.stringify({
     added: added.sort(),
     removed: removed.sort(),
+    comments,
   }));
 })().catch(error => {console.error(error); process.exit(1)});
 """
@@ -57,17 +75,20 @@ def labeler_script() -> str:
     return workflow["jobs"]["label"]["steps"][0]["with"]["script"]
 
 
-def run_labeler(
+def run_bot(
     *,
     title: str,
     branch: str,
     files: list[dict[str, str]],
     existing_labels: list[str] | None = None,
+    existing_comments: list[dict[str, object]] | None = None,
     action: str = "opened",
-) -> tuple[list[str], list[str]]:
+    draft: bool = False,
+) -> dict[str, object]:
     pull_request = {
         "number": 42,
         "title": title,
+        "draft": draft,
         "head": {"ref": branch},
         "labels": [{"name": name} for name in (existing_labels or [])],
     }
@@ -76,6 +97,7 @@ def run_labeler(
         "pullRequest": pull_request,
         "files": files,
         "action": action,
+        "existingComments": existing_comments or [],
     }
     result = subprocess.run(
         ["node", "-e", NODE_RUNNER],
@@ -84,7 +106,24 @@ def run_labeler(
         text=True,
         check=True,
     )
-    changes = json.loads(result.stdout)
+    return json.loads(result.stdout)
+
+
+def run_labeler(
+    *,
+    title: str,
+    branch: str,
+    files: list[dict[str, str]],
+    existing_labels: list[str] | None = None,
+    action: str = "opened",
+) -> tuple[list[str], list[str]]:
+    changes = run_bot(
+        title=title,
+        branch=branch,
+        files=files,
+        existing_labels=existing_labels,
+        action=action,
+    )
     return changes["added"], changes["removed"]
 
 
@@ -276,3 +315,218 @@ def test_edited_title_still_adds_category_label() -> None:
     )
     assert added == ["bug"]
     assert removed == []
+
+
+RESOLVER_PATH = (
+    Path(__file__).resolve().parents[3] / ".github/scripts/resolve_ci_labels.py"
+)
+SUGGESTION_MARKER = "<!-- ci-stage-suggestion -->"
+MINICPM_FILE = {
+    "filename": "sglang_omni/models/minicpm_o/session_adapters.py",
+    "status": "modified",
+}
+QWEN3_ASR_FILE = {
+    "filename": "sglang_omni/models/qwen3_asr/pipeline.py",
+    "status": "modified",
+}
+# note (0xtoward): run-qwen3-tts-12hz-1.7b-customvoice gates no job until it is
+# calibrated on the CI host, and the five stages below serve no model directory.
+LABELS_OUTSIDE_THE_TABLE = frozenset(
+    {
+        "run-lint-only",
+        "run-unit-test-ci-only",
+        "run-intel-cpu-ci",
+        "run-intel-xpu-ci",
+        "run-mac-ci",
+        "run-qwen3-tts-12hz-1.7b-customvoice",
+    }
+)
+
+
+def make_bot_comment(body: str, comment_id: int = 1) -> dict[str, object]:
+    return {
+        "id": comment_id,
+        "user": {"login": "github-actions[bot]", "type": "Bot"},
+        "body": body,
+    }
+
+
+def build_suggestion_body(
+    *,
+    files: list[dict[str, str]],
+    existing_labels: list[str] | None = None,
+) -> str:
+    comments = run_bot(
+        title="[Fix] change a model",
+        branch="topic",
+        files=files,
+        existing_labels=existing_labels,
+    )["comments"]
+
+    return comments[0]["body"] if comments else ""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
+@pytest.mark.parametrize(
+    ("files", "existing_labels", "draft", "expected_targets"),
+    [
+        ([MINICPM_FILE], None, False, ["minicpmo", "full-duplex"]),
+        ([MINICPM_FILE], ["run-omni-ci"], False, ["full-duplex"]),
+        ([MINICPM_FILE], ["run-omni-ci", "run-native-duplex"], False, []),
+        ([MINICPM_FILE], None, True, []),
+        (
+            [
+                QWEN3_ASR_FILE,
+                {
+                    "filename": "sglang_omni/models/qwen3_tts/stages.py",
+                    "status": "modified",
+                },
+            ],
+            None,
+            False,
+            ["qwen3-asr", "cascaded", "qwen3-tts"],
+        ),
+        ([QWEN3_ASR_FILE], ["run-qwen3-asr-1.7b"], False, ["cascaded"]),
+        (
+            [QWEN3_ASR_FILE],
+            ["run-qwen3-asr-1.7b", "run-cascaded-duplex"],
+            False,
+            [],
+        ),
+        (
+            [{"filename": "sglang_omni/models/moss_tts/stages.py", "status": "modified"}],
+            None,
+            False,
+            [],
+        ),
+        (
+            [
+                {
+                    "filename": "sglang_omni/models/streaming_cascade/base.py",
+                    "status": "modified",
+                }
+            ],
+            None,
+            False,
+            ["cascaded"],
+        ),
+        (
+            [
+                {
+                    "filename": "sglang_omni/codec/vocoder.py",
+                    "previous_filename": "sglang_omni/models/qwen3_tts/vocoder.py",
+                    "status": "renamed",
+                }
+            ],
+            None,
+            False,
+            ["qwen3-tts", "cascaded"],
+        ),
+    ],
+)
+def test_suggests_the_slash_targets_of_every_stage_that_serves_a_changed_model(
+    files: list[dict[str, str]],
+    existing_labels: list[str] | None,
+    draft: bool,
+    expected_targets: list[str],
+) -> None:
+    comments = run_bot(
+        title="[Fix] change a model",
+        branch="topic",
+        files=files,
+        existing_labels=existing_labels,
+        draft=draft,
+    )["comments"]
+
+    if expected_targets:
+        assert len(comments) == 1, comments
+        assert SUGGESTION_MARKER in comments[0]["body"]
+        assert (
+            f"/tag-and-rerun-ci {' '.join(expected_targets)}" in comments[0]["body"]
+        )
+    else:
+        assert comments == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
+@pytest.mark.parametrize(
+    ("existing_body", "existing_labels", "expected_action", "expected_text"),
+    [
+        (None, None, "create", "minicpmo"),
+        ("current", None, None, None),
+        (f"{SUGGESTION_MARKER}\nstale text", None, "update", "minicpmo"),
+        (
+            "current",
+            ["run-omni-ci", "run-native-duplex"],
+            "update",
+            "No model CI suggestions",
+        ),
+    ],
+)
+def test_one_sticky_comment_is_reused_and_only_written_when_it_changes(
+    existing_body: str | None,
+    existing_labels: list[str] | None,
+    expected_action: str | None,
+    expected_text: str | None,
+) -> None:
+    current = build_suggestion_body(files=[MINICPM_FILE])
+    body = current if existing_body == "current" else existing_body
+
+    comments = run_bot(
+        title="[Fix] change a model",
+        branch="topic",
+        files=[MINICPM_FILE],
+        existing_labels=existing_labels,
+        existing_comments=[make_bot_comment(body)] if body else [],
+    )["comments"]
+
+    if expected_action is None:
+        assert comments == []
+    else:
+        assert [comment["action"] for comment in comments] == [expected_action]
+        assert expected_text in comments[0]["body"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
+def test_a_comment_from_a_person_is_never_edited_even_with_the_marker() -> None:
+    human_comment = {
+        "id": 7,
+        "user": {"login": "contributor", "type": "User"},
+        "body": f"{SUGGESTION_MARKER}\nI pasted the marker by hand.",
+    }
+
+    comments = run_bot(
+        title="[Fix] change a model",
+        branch="topic",
+        files=[MINICPM_FILE],
+        existing_comments=[human_comment],
+    )["comments"]
+
+    assert [comment["action"] for comment in comments] == ["create"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
+def test_a_push_still_suggests_the_stage_of_a_newly_pushed_model_file() -> None:
+    comments = run_bot(
+        title="[Fix] change a model",
+        branch="topic",
+        files=[MINICPM_FILE],
+        action="synchronize",
+    )["comments"]
+
+    assert [comment["action"] for comment in comments] == ["create"]
+    assert "/tag-and-rerun-ci minicpmo full-duplex" in comments[0]["body"]
+
+
+def test_the_suggestion_table_names_every_label_the_resolver_gates_on() -> None:
+    resolver = RESOLVER_PATH.read_text(encoding="utf-8")
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    resolver_labels = {
+        label
+        for label in re.findall(r'"(run-[a-z0-9.\-]+)"', resolver)
+        if label not in LABELS_OUTSIDE_THE_TABLE
+    }
+
+    assert {"run-tts-ci", "run-minicpm-o-4.5"} <= resolver_labels
+    assert sorted(label for label in resolver_labels if label not in workflow) == []
