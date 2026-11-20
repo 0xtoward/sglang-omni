@@ -1,0 +1,70 @@
+name: Voxt Windows Packaging Smoke
+
+on:
+  push:
+    branches: [codex/voxt-windows-packaging-smoke-20261120]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: Voxt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      - name: Set the beta version
+        shell: pwsh
+        run: |
+          $config = Get-Content mygo.json -Raw | ConvertFrom-Json
+          $baseVersion = [version]$config.version
+          $date = [DateTime]::UtcNow.ToString('yyyyMMdd')
+          $config.version = "$($baseVersion.Major).$($baseVersion.Minor).$($baseVersion.Build + 1)-beta.$date.$env:GITHUB_RUN_NUMBER"
+          $config | ConvertTo-Json -Depth 20 | Set-Content mygo.json -Encoding utf8NoBOM
+          "VOXT_VERSION=$($config.version)" >> $env:GITHUB_ENV
+
+      - name: Build the NSIS installer
+        shell: bash
+        run: bash scripts/build-windows.sh
+
+      - name: Check silent installation and uninstallation
+        shell: pwsh
+        run: |
+          $source = Resolve-Path "build/windows-amd64/Voxt Setup $env:VOXT_VERSION amd64.exe"
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'voxt-install-smoke'
+          $install = Start-Process -FilePath $source.Path -ArgumentList "/S /D=$installDirectory" -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "NSIS install failed with exit code $($install.ExitCode)."
+          }
+          foreach ($file in 'Voxt.exe', 'voxtnew-helper.exe', 'Uninstall.exe') {
+            Get-Item -LiteralPath (Join-Path $installDirectory $file) -ErrorAction Stop
+          }
+          $uninstall = Start-Process -FilePath (Join-Path $installDirectory 'Uninstall.exe') -ArgumentList '/S' -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path -LiteralPath (Join-Path $installDirectory 'Voxt.exe'))) {
+            throw "NSIS uninstall failed. Exit code: $($uninstall.ExitCode)."
+          }
+
+          New-Item -ItemType Directory -Path 'build/artifact' | Out-Null
+          $installerName = "Voxt-$env:VOXT_VERSION-windows-amd64-setup.exe"
+          $installerPath = Join-Path 'build/artifact' $installerName
+          Copy-Item -LiteralPath $source.Path -Destination $installerPath
+          $sha256 = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$sha256  $installerName" | Set-Content "$installerPath.sha256" -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Voxt-${{ env.VOXT_VERSION }}-windows-amd64-unsigned
+          path: Voxt/build/artifact/
+          if-no-files-found: error
+          retention-days: 7
