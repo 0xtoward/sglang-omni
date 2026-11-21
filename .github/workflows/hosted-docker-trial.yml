@@ -1,7 +1,7 @@
 name: Hosted Docker Trial
 
-# One-off experiment on GitHub-hosted runners. No secrets, no pushes to any
-# registry. Four questions:
+# One-off experiment on GitHub-hosted runners. It uses no secrets and pushes to no
+# registry. It asks four questions:
 #   ci-image       can a job pull the pinned CI image and run a CPU partition in it?
 #   build-main     can a hosted runner build docker/Dockerfile, and how long does it take?
 #   cpu-image      how big and how slow is a CPU-only unit-test image?
