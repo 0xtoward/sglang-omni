@@ -1,4 +1,9 @@
 {
+    "0xtoward": {
+        "can_tag_run_ci_label": true,
+        "can_rerun_failed_ci": true,
+        "reason": "live check on the fork only"
+    },
     "Ccyest": {
         "can_tag_run_ci_label": true,
         "can_rerun_failed_ci": true,
