@@ -120,6 +120,7 @@ from sglang_omni.scheduling.types import (
     ARRequestData,
     DeferredAdmission,
     ModelRunnerOutput,
+    PrefillCadence,
     RequestDataT,
     RequestOutput,
     SchedulerOutput,
@@ -127,6 +128,7 @@ from sglang_omni.scheduling.types import (
     SpecTokensDetailsDict,
     StreamOutputBuilder,
 )
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils.process import terminate_gpu_worker
 
 logger = logging.getLogger(__name__)
@@ -316,6 +318,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     request_build_max_pending: int | None
     shutdown_callback: Callable[[], None] | None
     continuation_aware_admission: bool
+    prefill_cadence: PrefillCadence | None
 
 
 class OmniScheduler(Generic[RequestDataT]):
@@ -342,6 +345,7 @@ class OmniScheduler(Generic[RequestDataT]):
         one; the KV is still retained and the row still reused.
     """
 
+    model_runner: ModelRunner[RequestDataT] | None = None
     session_bridge: ARSessionBridge | None = None
     scheduler_thread_id: int | None = None
     previous_pending_decode: PendingDecode | None = None
@@ -395,6 +399,7 @@ class OmniScheduler(Generic[RequestDataT]):
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
         continuation_aware_admission: bool = True,
+        prefill_cadence: PrefillCadence | None = None,
     ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -417,6 +422,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.abort_callback = abort_callback
         self.request_finished_callback = request_finished_callback
         self.shutdown_callback = shutdown_callback
+        self.prefill_cadence = prefill_cadence
         self.shutdown_lock = threading.Lock()
         self.stop_requested: bool = False
         self.request_admission_lock = threading.RLock()
@@ -482,9 +488,7 @@ class OmniScheduler(Generic[RequestDataT]):
             tp_worker.speculative_worker is not None and enable_async_decode
         )
         self.enable_async_decode = enable_async_decode
-        # Ordinary decode batches smaller than this run as a plain synchronous step
-        # instead of the lookahead. The default 1 sends every decode batch the
-        # runner allows through the lookahead.
+        # note (Haoling Pu): decode batches with fewer requests run synchronously, so a light load streams each round's tokens without waiting on the next launch.
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
         self.async_decode_resolve_before_prefill = async_decode_resolve_before_prefill
         # Plain prefill batches join the lookahead: launch, then resolve after
@@ -501,10 +505,6 @@ class OmniScheduler(Generic[RequestDataT]):
             raise ValueError(
                 "enable_overlap requires a speculative worker; use "
                 "enable_async_decode for ordinary decoding"
-            )
-        elif self.enable_overlap and self.async_decode_min_batch_size != 1:
-            raise ValueError(
-                "Speculative async decode requires async_decode_min_batch_size=1"
             )
         else:
             pass
@@ -1462,7 +1462,7 @@ class OmniScheduler(Generic[RequestDataT]):
             try:
                 req_data = self.run_request_builder(payload, active_stage)
             except Exception as exc:
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self.log_request_builder_failure(req_id, exc)
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
@@ -1485,6 +1485,15 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         self.drain_request_build_results()
         self.drain_request_admission_results()
+
+    def log_request_builder_failure(self, request_id: str, error: Exception) -> None:
+        if is_bad_request_error(error):
+            # note (ruiling): the caller already gets this message with a 400, so the traceback is noise.
+            logger.warning(
+                f"OmniScheduler: request builder rejected {request_id}: {error}"
+            )
+        else:
+            logger.exception(f"OmniScheduler: request builder failed for {request_id}")
 
     def request_build_queue_fits_workers(self) -> bool:
         """True when pending+backlog still fits in the request-build pool.
@@ -1707,7 +1716,7 @@ class OmniScheduler(Generic[RequestDataT]):
                         continue
                     else:
                         pass
-                logger.exception(f"OmniScheduler: request builder failed for {req_id}")
+                self.log_request_builder_failure(req_id, exc)
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
@@ -2667,6 +2676,11 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         _Upstream.process_batch_result(self, batch, result)
+        cadence = self.prefill_cadence
+        if cadence is not None and batch.forward_mode.is_extend():
+            cadence.observe_extend_done(time.monotonic())
+        else:
+            pass
         # note (Richard Wang): cache prompt before blocking tail inserts
         for req in batch.reqs:
             if req.output_ids and getattr(
@@ -2685,6 +2699,109 @@ class OmniScheduler(Generic[RequestDataT]):
         self._sched_idled = False  # noqa: leading-underscore
         if batch.extend_num_tokens:
             self.processed_tokens_counter += batch.extend_num_tokens
+        else:
+            pass
+        cadence = self.prefill_cadence
+        if cadence is not None and batch.forward_mode.is_extend():
+            # The realized prefill span pairs with the cadence's table value
+            # in the next arm log line, and the realized cohort feeds the
+            # expected-cohort median used by empty-queue arms.
+            cadence.observe_extend_launch(
+                batch.launch_ts,
+                cohort_tokens=batch.extend_num_tokens,
+                cohort_reqs=len(batch.reqs),
+            )
+        else:
+            pass
+
+    def admissible_cohort(self) -> tuple[int, int]:
+        """(cohort_reqs, cohort_tokens) of the waiting requests that could
+        actually be admitted next, oldest first, capped by allocatable rows.
+        Queue depth beyond that is backlog pressure, not an executed cohort."""
+        allocatable = max(
+            self.max_running_requests - len(self.running_batch.reqs), 0
+        )
+        reqs = 0
+        total = 0
+        for request in self.waiting_queue:
+            if reqs >= allocatable:
+                break
+            prefix_indices = getattr(request, "prefix_indices", None) or ()
+            total += max(len(request.origin_input_ids) - len(prefix_indices), 0)
+            reqs += 1
+        return reqs, total
+
+    def age_valve_admits(self) -> bool:
+        """First-audio valve: lift the hold once the oldest waiting request
+        has been queued past the budget. The valve only fires when the whole
+        queue fits the allocatable rows — when a deeper queue, not the hold,
+        is what delays first audio, admitting early cannot help it and would
+        only chop every cohort."""
+        cadence = self.prefill_cadence
+        if cadence is None or not self.waiting_queue:
+            return False
+        elif not self.running_batch_admits_prefill():
+            return False
+        else:
+            pass
+        allocatable = max(
+            self.max_running_requests - len(self.running_batch.reqs), 0
+        )
+        if len(self.waiting_queue) > allocatable:
+            return False
+        oldest = self.waiting_queue[0]
+        enqueue_s = getattr(oldest, "_coalesce_enqueue_t", None)
+        if enqueue_s is None:
+            return False
+        age_ms = (time.perf_counter() - enqueue_s) * 1000.0
+        if age_ms <= cadence.first_audio_budget_ms:
+            return False
+        cadence.mark_age_valve_intercept()
+        logger.info(
+            f"prefill_cadence_v3 age valve: oldest request queued "
+            f"{age_ms:.1f} ms exceeds budget "
+            f"{cadence.first_audio_budget_ms:.1f} ms, admitting "
+            f"rid={oldest.rid}"
+        )
+        return True
+
+    def _should_defer_prefill(self, running_batch) -> bool:
+        """Upstream deferral, lifted when the age valve fires."""
+        if (
+            self._prefill_decode_interval_remaining > 0  # noqa: leading-underscore
+            and self.age_valve_admits()
+        ):
+            self._prefill_decode_interval_remaining = 0  # noqa: leading-underscore
+        else:
+            pass
+        return _Upstream._should_defer_prefill(self, running_batch)
+
+    def _arm_prefill_decode_interval(self, batch) -> None:
+        """Upstream arming, plus dynamic N recomputation when a cadence is
+        set; without one, byte-for-byte upstream behavior."""
+        if self.prefill_decode_interval == 0 or batch is None:
+            return
+        else:
+            pass
+        is_extend = (
+            batch.is_extend_in_batch
+            if self.require_mlp_sync
+            else batch.forward_mode.is_extend()
+        )
+        if is_extend:
+            cadence = self.prefill_cadence
+            if cadence is not None:
+                cohort_reqs, cohort_tokens = self.admissible_cohort()
+                self.prefill_decode_interval = cadence.compute_interval(
+                    running_bs=len(self.running_batch.reqs),
+                    cohort_tokens=cohort_tokens,
+                    cohort_reqs=cohort_reqs,
+                )
+            else:
+                pass
+            self._prefill_decode_interval_remaining = (  # noqa: leading-underscore
+                self.prefill_decode_interval
+            )
         else:
             pass
 
@@ -2737,6 +2854,12 @@ class OmniScheduler(Generic[RequestDataT]):
             with self.forward_stream_ctx:
                 self.forward_stream.wait_stream(self.schedule_stream)
                 resolve_forward_inputs(batch, self.future_map)
+                if self.model_runner.speculative_verify_takes_logits_hooks:
+                    self.tp_worker.speculative_target_worker.verify_requests = (
+                        self.build_sched_output(batch).requests
+                    )
+                else:
+                    pass
                 with _Upstream._forward_isolation(
                     self, batch, overlap=True
                 ):  # noqa: leading-underscore  # native scheduler contract
@@ -2751,6 +2874,11 @@ class OmniScheduler(Generic[RequestDataT]):
                         )
                     else:
                         pass
+                self.model_runner.after_speculative_step(
+                    batch,
+                    is_prefill=is_prefill,
+                    num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+                )
                 result.copy_done = self.device_module.Event()
                 _Upstream._relay_forward_payload(
                     self, batch, future_indices, result
@@ -4101,6 +4229,10 @@ class OmniScheduler(Generic[RequestDataT]):
             compact_decode_input_history(
                 req.omni_data
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            if self.model_runner is not None:
+                self.model_runner.on_request_retracted(req.rid)
+            else:
+                pass
         else:
             pass
         _Upstream._add_request_to_queue(self, req, is_retracted=is_retracted)
@@ -4318,7 +4450,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
     @DynamicGradMode()
     def event_loop_spec_overlap(self) -> None:
-        """Submit the next speculative round before consuming the previous result."""
+        """Submit the next speculative round before consuming the previous result, except that a decode batch under async_decode_min_batch_size is consumed right after its own launch, and a prefill after which fewer requests than it are decoding is consumed before the next batch is chosen."""
         self.enable_skip_finishing_decode = True
         while self.running:
             self.process_admin_requests()
@@ -4338,9 +4470,29 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 pass
 
+            # note (Haoling Pu): when the decode set stays under the minimum, the pending prefill is processed before choosing, so its first tokens stream without waiting on a launch.
+            if (
+                self.async_decode_min_batch_size > 1
+                and self.result_queue
+                and self.last_batch is not None
+                and self.last_batch.forward_mode.is_extend()
+                and sum(not request.finished() for request in self.running_batch.reqs)
+                + len(self.last_batch.reqs)
+                < self.async_decode_min_batch_size
+            ):
+                pending_batch, pending_result = self.result_queue.popleft()
+                self.process_batch_result(pending_batch, pending_result)
+            else:
+                pass
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
             has_pending_result = bool(self.result_queue)
+            # note (Haoling Pu): after an overlapped round a small batch still launches first, since processing that round can finish and detach a request the batch holds.
+            is_synchronous_decode = (
+                batch is not None
+                and self.batch_is_decode(batch)
+                and len(batch.reqs) < self.async_decode_min_batch_size
+            )
             # note (YzXiao): only result processing decrements inflight_middle_chunks; prefill hooks use it to recognize the final chunk.
             consume_before_launch = has_pending_result and (
                 self.is_disable_overlap_for_batch(batch, last_batch=self.last_batch)
@@ -4378,6 +4530,11 @@ class OmniScheduler(Generic[RequestDataT]):
             if has_pending_result and not consume_before_launch:
                 pending_batch, pending_result = self.result_queue.popleft()
                 self.process_batch_result(pending_batch, pending_result)
+            else:
+                pass
+            if is_synchronous_decode:
+                launched_batch, launched_result = self.result_queue.popleft()
+                self.process_batch_result(launched_batch, launched_result)
             else:
                 pass
             self.last_batch = batch
