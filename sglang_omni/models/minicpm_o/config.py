@@ -251,3 +251,4 @@ Variants = {
     "text": MiniCPMOPipelineConfig,
     "speech": MiniCPMOSpeechPipelineConfig,
 }
+
