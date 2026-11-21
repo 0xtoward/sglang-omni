@@ -1,0 +1,215 @@
+name: Hosted Docker Trial
+
+# One-off experiment on GitHub-hosted runners. No secrets, no pushes to any
+# registry. Four questions:
+#   ci-image       can a job pull the pinned CI image and run a CPU partition in it?
+#   build-main     can a hosted runner build docker/Dockerfile, and how long does it take?
+#   cpu-image      how big and how slow is a CPU-only unit-test image?
+#   cpu-image-run  can that image be kept in the Actions cache and started from it?
+
+on:
+  push:
+    branches: [ci-hosted-docker-trial]
+  workflow_dispatch:
+
+concurrency:
+  group: hosted-docker-trial-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CI_IMAGE: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+
+jobs:
+  ci-image:
+    name: ci-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          start=$(date +%s)
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache || true
+          echo "cleanup_seconds=$(( $(date +%s) - start ))" | tee -a numbers.txt
+          echo "nproc=$(nproc)" | tee -a numbers.txt
+          df -B1 --output=avail / | tail -1 | sed 's/^ */disk_free_before_bytes=/' | tee -a numbers.txt
+
+      - name: Pull the CI image
+        run: |
+          start=$(date +%s)
+          docker pull "$CI_IMAGE" > pull.log 2>&1
+          echo "pull_seconds=$(( $(date +%s) - start ))" | tee -a numbers.txt
+          docker image inspect "$CI_IMAGE" --format 'image_bytes={{.Size}}' | tee -a numbers.txt
+          df -B1 --output=avail / | tail -1 | sed 's/^ */disk_free_after_pull_bytes=/' | tee -a numbers.txt
+
+      - name: Prepare the CI virtualenv in the container
+        run: |
+          sudo mkdir -p /data/omni-ci
+          docker run -d --name ci --entrypoint sleep \
+            -v /dev/shm:/dev/shm -v /data/omni-ci:/data/omni-ci -v "$PWD:$PWD" -w "$PWD" \
+            -e OMNI_CI_HOME=/data/omni-ci/run-trial -e CUDA_VISIBLE_DEVICES= -e TMPDIR=/tmp \
+            -e FLASHINFER_WORKSPACE_BASE=/root -e SGLANG_OMNI_TORCH_COMPILE_DEFAULT=0 \
+            "$CI_IMAGE" infinity
+          start=$(date +%s)
+          set +e
+          docker exec ci bash -c "git config --global --add safe.directory '*'; bash .github/scripts/reconcile_omni_ci_env.sh omni" > env_prepare.log 2>&1
+          status=$?
+          set -e
+          tail -30 env_prepare.log
+          echo "env_prepare_seconds=$(( $(date +%s) - start )) env_prepare_status=$status" | tee -a numbers.txt
+
+      - name: Run CPU partition 0 of 3 in the container
+        run: |
+          set +e
+          docker exec ci bash .github/trial/run_shard.sh omni/bin/activate 0 3
+          cat test_summary.txt >> numbers.txt || true
+          echo "::notice title=ci-image::$(tr '\n' ' ' < numbers.txt)"
+          cat numbers.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-image
+          path: |
+            numbers.txt
+            pull.log
+            env_prepare.log
+            pytest.log
+            junit.xml
+            test_summary.txt
+          if-no-files-found: ignore
+
+  build-main:
+    name: build-main-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache || true
+          df -B1 --output=avail / | tail -1 | sed 's/^ */disk_free_before_bytes=/' | tee -a numbers.txt
+
+      - name: Build docker/Dockerfile
+        run: |
+          start=$(date +%s)
+          set +e
+          DOCKER_BUILDKIT=1 docker build --progress=plain -f docker/Dockerfile -t omni-trial:main . > build.log 2>&1
+          status=$?
+          set -e
+          echo "build_seconds=$(( $(date +%s) - start )) build_status=$status" | tee -a numbers.txt
+          grep -E "^#[0-9]+ (DONE|CACHED|ERROR)" build.log | tail -40 || true
+          tail -20 build.log
+          docker image inspect omni-trial:main --format 'image_bytes={{.Size}}' | tee -a numbers.txt || true
+          df -B1 --output=avail / | tail -1 | sed 's/^ */disk_free_after_build_bytes=/' | tee -a numbers.txt
+          echo "::notice title=build-main::$(tr '\n' ' ' < numbers.txt)"
+          cat numbers.txt >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-main
+          path: |
+            numbers.txt
+            build.log
+          if-no-files-found: ignore
+
+  cpu-image:
+    name: cpu-image-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache || true
+
+      - name: Build the CPU unit-test image
+        run: |
+          start=$(date +%s)
+          DOCKER_BUILDKIT=1 docker build --progress=plain -f .github/trial/cpu-ut.Dockerfile -t omni-trial:cpu-ut . > build.log 2>&1 || { tail -40 build.log; exit 1; }
+          echo "build_seconds=$(( $(date +%s) - start ))" | tee -a numbers.txt
+          docker image inspect omni-trial:cpu-ut --format 'image_bytes={{.Size}}' | tee -a numbers.txt
+
+      - name: Save the image as a compressed archive
+        run: |
+          start=$(date +%s)
+          docker save omni-trial:cpu-ut | zstd -T0 -3 -q -o cpu-ut-image.tar.zst
+          echo "save_seconds=$(( $(date +%s) - start ))" | tee -a numbers.txt
+          echo "archive_bytes=$(stat -c %s cpu-ut-image.tar.zst)" | tee -a numbers.txt
+          echo "::notice title=cpu-image::$(tr '\n' ' ' < numbers.txt)"
+          cat numbers.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Put the archive in the Actions cache
+        uses: actions/cache/save@v4
+        with:
+          path: cpu-ut-image.tar.zst
+          key: cpu-ut-image-${{ github.sha }}-${{ github.run_attempt }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-image
+          path: |
+            numbers.txt
+            build.log
+          if-no-files-found: ignore
+
+  cpu-image-run:
+    name: cpu-image-run
+    needs: cpu-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore the archive from the Actions cache
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: cpu-ut-image.tar.zst
+          key: cpu-ut-image-${{ github.sha }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+
+      - name: Load the image
+        run: |
+          start=$(date +%s)
+          zstd -dc cpu-ut-image.tar.zst | docker load
+          echo "load_seconds=$(( $(date +%s) - start ))" | tee -a numbers.txt
+          rm cpu-ut-image.tar.zst
+
+      - name: Run CPU partition 0 of 3 in the image
+        run: |
+          set +e
+          start=$(date +%s)
+          docker run --rm -v /dev/shm:/dev/shm -v "$PWD:$PWD" -w "$PWD" omni-trial:cpu-ut bash -c \
+            "uv pip install --python /opt/venv/bin/python --no-deps -e . && bash .github/trial/run_shard.sh /opt/venv/bin/activate 0 3"
+          echo "container_seconds=$(( $(date +%s) - start ))" | tee -a numbers.txt
+          cat test_summary.txt >> numbers.txt || true
+          echo "::notice title=cpu-image-run::$(tr '\n' ' ' < numbers.txt)"
+          cat numbers.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-image-run
+          path: |
+            numbers.txt
+            pytest.log
+            junit.xml
+            test_summary.txt
+          if-no-files-found: ignore
