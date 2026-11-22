@@ -14,6 +14,12 @@ memory_threshold_mb="${OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB:-1024}"
 wait_timeout_seconds="${OMNI_CI_GPU_CLEAN_WAIT_SECONDS:-120}"
 poll_seconds="${OMNI_CI_GPU_CLEAN_POLL_SECONDS:-5}"
 
+# CPU jobs explicitly hide all GPUs, including during setup and retries.
+if [ -z "${CUDA_VISIBLE_DEVICES-unset}" ] && [ "${OMNI_CI_ALLOW_UNSCOPED_GPU_CLEAN:-}" != "1" ]; then
+    echo "this job owns no GPU; nothing to clean"
+    exit 0
+fi
+
 # Capture physical targets BEFORE unsetting CVD for nvidia-smi.
 _raw_cvd="${CUDA_VISIBLE_DEVICES:-}"
 target_gpu_ids="${_raw_cvd}"
