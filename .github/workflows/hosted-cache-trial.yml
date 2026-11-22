@@ -12,11 +12,12 @@ name: Hosted Cache Trial
 
 on:
   push:
-    branches: [ci-hosted-trial-2]
+    branches: [ci-hosted-cache-probe]
     # workflow_dispatch needs the workflow file on the default branch before
-    # it is dispatchable at all; a second trial branch avoids re-triggering
+    # it is dispatchable at all; a dedicated branch avoids re-triggering
     # hosted-docker-trial.yml's push trigger (its 46-minute main-image
-    # build) on every commit made for this trial instead.
+    # build) AND hosted-replay-trial.yml's 15-job matrix on every commit
+    # made just to probe the Docker layer cache.
 
 permissions:
   contents: read
