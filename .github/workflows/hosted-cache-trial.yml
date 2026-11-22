@@ -1,0 +1,99 @@
+name: Hosted Cache Trial
+
+# One-off experiment: can a GitHub-hosted runner reuse a Docker layer cache
+# across SEPARATE workflow runs instead of rebuilding the image from
+# scratch every time? Dispatched repeatedly, by hand, across a few trial
+# commits (some touching only tests/, one touching pyproject.toml) to see
+# which layers actually survive and which correctly invalidate.
+#
+# Uses buildx's type=gha cache backend (same mechanism
+# release-docker-npu.yml already uses for the real NPU image), scoped to
+# this branch only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: Also run CPU partition 0/3 inside the built image (slow)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build-with-gha-cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache || true
+          df -B1 --output=avail / | tail -1 | sed 's/^ */disk_free_before_bytes=/' | tee -a numbers.txt
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the CPU unit-test image (buildx + GHA layer cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .github/trial/cpu-ut.Dockerfile
+          tags: omni-trial:cpu-ut
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=cpu-ut-layered
+          cache-to: type=gha,mode=max,scope=cpu-ut-layered
+          outputs: type=docker
+
+      - name: Report image size and disk
+        run: |
+          docker image inspect omni-trial:cpu-ut --format 'image_bytes={{.Size}}' | tee -a numbers.txt
+          df -B1 --output=avail / | tail -1 | sed 's/^ */disk_free_after_build_bytes=/' | tee -a numbers.txt
+          echo "git_sha=${{ github.sha }}" | tee -a numbers.txt
+          echo "::notice title=build::$(tr '\n' ' ' < numbers.txt)"
+          cat numbers.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run CPU partition 0 of 3 inside the built image
+        if: inputs.run_tests == 'true'
+        run: |
+          set +e
+          start=$(date +%s)
+          docker run --rm -v /dev/shm:/dev/shm -v "$PWD:$PWD" -w "$PWD" omni-trial:cpu-ut bash -c '
+            set -e
+            export CUDA_VISIBLE_DEVICES="" PYTHONPATH="$PWD"
+            /opt/venv/bin/python -m pytest tests/ -m "not benchmark and not accelerator" \
+              --continue-on-collection-errors \
+              -p scripts.ci.utils.pytest_partition \
+              --auto-partition-id 0 --auto-partition-size 3 \
+              --partition-model-file .github/unit_test_durations.json \
+              --durations=20 --junitxml=junit.xml
+          ' > pytest.log 2>&1
+          status=$?
+          end=$(date +%s)
+          echo "container_run_seconds=$((end - start)) status=$status" | tee test_summary.txt
+          python3 - <<'PY' >> test_summary.txt
+          import xml.etree.ElementTree as ET
+          try:
+              s = ET.parse("junit.xml").getroot().find("testsuite")
+              print(f"tests={s.get('tests')} failures={s.get('failures')} errors={s.get('errors')} skipped={s.get('skipped')}")
+          except Exception as exc:
+              print(f"junit_unreadable={exc!r}")
+          PY
+          echo "::notice title=build-run-tests::$(tr '\n' ' ' < test_summary.txt)"
+          cat test_summary.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-trial-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            numbers.txt
+            test_summary.txt
+            pytest.log
+            junit.xml
+          if-no-files-found: ignore

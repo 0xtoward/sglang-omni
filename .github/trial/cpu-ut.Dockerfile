@@ -1,4 +1,13 @@
 # Trial only: a CPU-only image that holds the unit-test environment.
+#
+# Layering is split on purpose so a normal PR (which touches tests/ or
+# product code but not pyproject.toml) invalidates only the cheap final
+# layer, and the expensive dependency-install layer stays cached:
+#   1. system packages + uv              -- changes only with this file
+#   2. COPY pyproject.toml + a version   -- changes only when deps change
+#      stub, then install all deps
+#   3. COPY the real source, re-link     -- changes on every commit, but
+#      the editable re-link is seconds, not minutes
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -14,8 +23,15 @@ RUN apt-get update -qq \
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-COPY . /src
 WORKDIR /src
+
+# Dependency-only layer. setuptools reads pyproject.toml's
+# tool.setuptools.dynamic version = {attr = "sglang_omni.__version__"}, so
+# the stub package needs that one attribute and nothing else real: no test
+# file, no product code, lives here, so none of them can bust this layer.
+COPY pyproject.toml ./
+RUN mkdir -p sglang_omni \
+    && printf '__version__ = "0.0.0"\n' > sglang_omni/__init__.py
 
 RUN uv venv /opt/venv -p 3.12 \
     && uv pip install --no-cache --python /opt/venv/bin/python -e '.[minicpm-o,fun-cosyvoice3]' \
@@ -27,3 +43,9 @@ RUN uv venv /opt/venv -p 3.12 \
     && git -C /opt/venv/src/CosyVoice submodule update --init --depth=1 third_party/Matcha-TTS \
     && printf '%s\n' /opt/venv/src/CosyVoice /opt/venv/src/CosyVoice/third_party/Matcha-TTS \
         > /opt/venv/lib/python3.12/site-packages/cosyvoice.pth
+
+# Real source layer: busts on every commit, but the only work left is a
+# no-network editable re-link (setuptools just rewrites the __editable__
+# finder/.pth to point at these real files; no dependency is touched).
+COPY . ./
+RUN uv pip install --no-cache --python /opt/venv/bin/python --no-deps --no-build-isolation -e .
