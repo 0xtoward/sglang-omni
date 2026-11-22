@@ -1,0 +1,255 @@
+name: Hosted Replay Trial Scale48
+
+# Third iteration: 42 real commits sourced from the last 48h of actual
+# pull_request-triggered CI activity on upstream (not an arbitrary slice
+# of main history), 3 partitions each = 126 jobs.
+#
+# Unlike the two earlier iterations, this one filters out the six known
+# host-environment gaps found across the first two runs (no GPU driver,
+# 4 cores instead of 6+, no nvidia-smi, a couple of CPU-numeric-precision
+# and ordering-sensitive cases) at the pytest invocation itself, so a
+# real/new failure stands out instead of being buried under them:
+#   - IGNORE (collection error, missing libcuda.so.1, same on every commit):
+#       tests/unit_test/vendor/test_sglang_flashattention_backend_patch.py
+#   - DESELECT (CPU-only torch wheel lacks torch.cuda.streams.Stream.priority_range):
+#       tests/unit_test/scheduling/test_streaming_vocoder.py::test_vocoder_decode_stream_priority_leaves_the_top_level_free
+#   - DESELECT (asserts a hardcoded thread count; the product code correctly
+#     clamps it to os.cpu_count(), which is 4 here, not >=6 like self-hosted):
+#       tests/unit_test/fun_cosyvoice3/test_vocoder.py::test_onnx_intra_op_threads_reaches_both_encoders
+#   - DESELECT (shells out to nvidia-smi, absent on a hosted runner):
+#       tests/unit_test/serve/test_mps_dp_support.py::TestLaunchFailsClosedBeforeResources::test_unpinned_kv_budget_leaves_no_state
+#   - DESELECT (floating-point tensor comparison, flaky across CPU builds):
+#       tests/unit_test/nemotron_diarization/test_streaming.py::test_incremental_features_match_complete_audio_and_flush_partial_tail
+#   - DESELECT (ordering-sensitive on this CPU, seen on today's tree too):
+#       tests/unit_test/minicpm_o/test_streaming_perception.py::test_batched_perception_matches_each_session_alone
+# None of the replayed commits' own files are touched; the filter lives
+# only in this workflow's pytest command.
+
+on:
+  push:
+    branches: [ci-hosted-trial-2]
+
+env:
+  TARGETS_JSON: '[{"label": "01-feat-fun-asr-nano-pd-dflash-upstream", "ref": "trial/scale48-01-feat-fun-asr-nano-pd-dflash-upstream"}, {"label": "02-ci-stage-suggestion", "ref": "trial/scale48-02-ci-stage-suggestion"}, {"label": "03-feat-nemotron35-asr-npu", "ref": "trial/scale48-03-feat-nemotron35-asr-npu"}, {"label": "04-feat-p018-dflash-runtime", "ref": "trial/scale48-04-feat-p018-dflash-runtime"}, {"label": "05-fix-pd-startup-layout-check", "ref": "trial/scale48-05-fix-pd-startup-layout-check"}, {"label": "06-ark-early-builds-no-hold", "ref": "trial/scale48-06-ark-early-builds-no-hold"}, {"label": "07-realtime-transcription-language-refusal", "ref": "trial/scale48-07-realtime-transcription-language-refusal"}, {"label": "08-realtime-transcription-session-update-at", "ref": "trial/scale48-08-realtime-transcription-session-update-at"}, {"label": "09-pipeline-least-in-flight-replica-binding", "ref": "trial/scale48-09-pipeline-least-in-flight-replica-binding"}, {"label": "10-perf-qwen3-asr-b200-nondraft", "ref": "trial/scale48-10-perf-qwen3-asr-b200-nondraft"}, {"label": "11-codex-session-admission-concurrency", "ref": "trial/scale48-11-codex-session-admission-concurrency"}, {"label": "12-ci-accelerator-unit-test-split", "ref": "trial/scale48-12-ci-accelerator-unit-test-split"}, {"label": "13-p0-7-whisper-draft-graph-stream-wrap", "ref": "trial/scale48-13-p0-7-whisper-draft-graph-stream-wrap"}, {"label": "14-b2-display-speech", "ref": "trial/scale48-14-b2-display-speech"}, {"label": "15-b8-sentence-pause", "ref": "trial/scale48-15-b8-sentence-pause"}, {"label": "16-perf-firered-tts3-batch-ref-encode", "ref": "trial/scale48-16-perf-firered-tts3-batch-ref-encode"}, {"label": "17-luojiaxuan-cascade-pause-on-overlap", "ref": "trial/scale48-17-luojiaxuan-cascade-pause-on-overlap"}, {"label": "18-fix-tts-benchmark-artifact-timing", "ref": "trial/scale48-18-fix-tts-benchmark-artifact-timing"}, {"label": "19-docs-s2-pro-cookbook-refactor", "ref": "trial/scale48-19-docs-s2-pro-cookbook-refactor"}, {"label": "20-cv3-dspark-default-on", "ref": "trial/scale48-20-cv3-dspark-default-on"}, {"label": "21-cascade-tts-start-tool", "ref": "trial/scale48-21-cascade-tts-start-tool"}, {"label": "22-p11-7-fun-asr-calibration", "ref": "trial/scale48-22-p11-7-fun-asr-calibration"}, {"label": "23-p6-4-moss-td-calibration", "ref": "trial/scale48-23-p6-4-moss-td-calibration"}, {"label": "24-fix-pd-kv-reservation-rollback", "ref": "trial/scale48-24-fix-pd-kv-reservation-rollback"}, {"label": "25-fix-session-close-inflight-operation", "ref": "trial/scale48-25-fix-session-close-inflight-operation"}, {"label": "26-fix-moss-speech-chat-serving", "ref": "trial/scale48-26-fix-moss-speech-chat-serving"}, {"label": "27-fix-nemotron-npu-sdpa-bias", "ref": "trial/scale48-27-fix-nemotron-npu-sdpa-bias"}, {"label": "28-tts-sample-rate", "ref": "trial/scale48-28-tts-sample-rate"}, {"label": "29-fix-qwen3-tts-wait-for-codec-slot", "ref": "trial/scale48-29-fix-qwen3-tts-wait-for-codec-slot"}, {"label": "30-bench-stream-duplex-serving-trace", "ref": "trial/scale48-30-bench-stream-duplex-serving-trace"}, {"label": "31-codex-npu-910b-ci", "ref": "trial/scale48-31-codex-npu-910b-ci"}, {"label": "32-mps-dp-b200-replica-counts", "ref": "trial/scale48-32-mps-dp-b200-replica-counts"}, {"label": "33-fix-eos", "ref": "trial/scale48-33-fix-eos"}, {"label": "34-perf-cosyvoice-exact-draft-graph", "ref": "trial/scale48-34-perf-cosyvoice-exact-draft-graph"}, {"label": "35-fdb-speech-error", "ref": "trial/scale48-35-fdb-speech-error"}, {"label": "36-fix-opening-burst-prefill-stall", "ref": "trial/scale48-36-fix-opening-burst-prefill-stall"}, {"label": "37-b3-explicit-dialog-language", "ref": "trial/scale48-37-b3-explicit-dialog-language"}, {"label": "38-feat-nemotron-transcribe-mtp", "ref": "trial/scale48-38-feat-nemotron-transcribe-mtp"}, {"label": "39-feat-llada2-uni-stage-offload", "ref": "trial/scale48-39-feat-llada2-uni-stage-offload"}, {"label": "40-p0-7-whisper-draft-graph-batch", "ref": "trial/scale48-40-p0-7-whisper-draft-graph-batch"}, {"label": "41-ming3-asr-hub-model-id", "ref": "trial/scale48-41-ming3-asr-hub-model-id"}, {"label": "42-fun-asr-dflash-default-on", "ref": "trial/scale48-42-fun-asr-dflash-default-on"}]'
+  IGNORE_ARGS: >-
+    --ignore=tests/unit_test/vendor/test_sglang_flashattention_backend_patch.py
+  DESELECT_ARGS: >-
+    --deselect=tests/unit_test/scheduling/test_streaming_vocoder.py::test_vocoder_decode_stream_priority_leaves_the_top_level_free
+    --deselect=tests/unit_test/fun_cosyvoice3/test_vocoder.py::test_onnx_intra_op_threads_reaches_both_encoders
+    --deselect=tests/unit_test/serve/test_mps_dp_support.py::TestLaunchFailsClosedBeforeResources::test_unpinned_kv_budget_leaves_no_state
+    --deselect=tests/unit_test/nemotron_diarization/test_streaming.py::test_incremental_features_match_complete_audio_and_flush_partial_tail
+    --deselect=tests/unit_test/minicpm_o/test_streaming_perception.py::test_batched_perception_matches_each_session_alone
+
+permissions:
+  contents: read
+
+jobs:
+  build-matrix:
+    name: build-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+      count: ${{ steps.build.outputs.count }}
+    steps:
+      - id: build
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          targets = json.loads(os.environ["TARGETS_JSON"])
+          combos = [dict(t, partition=p) for t in targets for p in (0, 1, 2)]
+          print("matrix=" + json.dumps({"include": combos}))
+          print("count=" + str(len(combos)))
+          PY
+
+  replay:
+    name: replay-${{ matrix.label }}-p${{ matrix.partition }}
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 40
+      matrix: ${{ fromJson(needs.build-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout the replayed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache || true
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore dependency cache for this commit's pyproject.toml
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .venv
+            .uv-python
+          key: hosted-replay-venv-v1-${{ hashFiles('pyproject.toml') }}
+
+      - name: Install environment (cache miss only)
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.uv-python
+          UV_TORCH_BACKEND: cpu
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg sox
+          uv venv .venv -p 3.12
+          uv pip install --python .venv/bin/python -e '.[minicpm-o,fun-cosyvoice3]'
+          uv pip install --python .venv/bin/python \
+            descript-audio-codec==1.0.0 descript-audiotools==0.7.2
+          uv pip install --python .venv/bin/python --no-deps qwen-tts==0.1.1
+          cosy=.venv/src/CosyVoice
+          git clone --filter=blob:none --no-checkout https://github.com/FunAudioLLM/CosyVoice.git "$cosy"
+          git -C "$cosy" checkout --detach 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
+          git -C "$cosy" submodule update --init --depth=1 third_party/Matcha-TTS
+          printf '%s\n' "$PWD/$cosy" "$PWD/$cosy/third_party/Matcha-TTS" \
+            > .venv/lib/python3.12/site-packages/cosyvoice.pth
+
+      - name: Record cache hit/miss for this commit's dependency set
+        run: echo "cache_hit=${{ steps.cache.outputs.cache-hit }}" > cache_status.txt
+
+      - name: Re-link the editable install for this exact commit's source
+        run: |
+          set -e
+          uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e . -q
+
+      - name: Run partition ${{ matrix.partition }}/3 of the CPU marker set, known env gaps filtered out
+        id: run
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set +e
+          source .venv/bin/activate
+          start=$(date +%s)
+          python -m pytest tests/ -m "not benchmark and not accelerator" \
+            --continue-on-collection-errors \
+            $IGNORE_ARGS $DESELECT_ARGS \
+            -p scripts.ci.utils.pytest_partition \
+            --auto-partition-id ${{ matrix.partition }} --auto-partition-size 3 \
+            --partition-model-file .github/unit_test_durations.json \
+            --durations=20 --junitxml=junit.xml > pytest.log 2>&1
+          status=$?
+          end=$(date +%s)
+          {
+            echo "label=${{ matrix.label }}"
+            echo "ref=${{ matrix.ref }}"
+            echo "partition=${{ matrix.partition }}"
+            echo "wall_seconds=$((end - start))"
+            echo "status=$status"
+            cat cache_status.txt
+          } > summary.txt
+          python3 - <<'PY' >> summary.txt
+          import xml.etree.ElementTree as ET
+          try:
+              s = ET.parse("junit.xml").getroot().find("testsuite")
+              print(f"tests={s.get('tests')} failures={s.get('failures')} "
+                    f"errors={s.get('errors')} skipped={s.get('skipped')} "
+                    f"pytest_seconds={float(s.get('time')):.0f}")
+          except Exception as exc:
+              print(f"junit_unreadable={exc!r}")
+          PY
+          grep -E "^FAILED |^ERROR " pytest.log > failed_tests.txt
+          cat summary.txt
+          echo "::notice title=replay-${{ matrix.label }}-p${{ matrix.partition }}::$(tr '\n' ' ' < summary.txt) failed=$(tr '\n' ';' < failed_tests.txt)"
+          exit "$status"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-${{ matrix.label }}-p${{ matrix.partition }}
+          path: |
+            summary.txt
+            failed_tests.txt
+            pytest.log
+            junit.xml
+            cache_status.txt
+          if-no-files-found: ignore
+
+  aggregate:
+    name: aggregate
+    needs: replay
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download every replay result
+        uses: actions/download-artifact@v4
+        with:
+          pattern: replay-*
+          path: all-results
+          merge-multiple: false
+
+      - name: Build one-glance verdict
+        run: |
+          python3 - <<'PY'
+          import glob, re, collections
+          summaries = glob.glob("all-results/*/summary.txt")
+          total = len(summaries)
+          ok = 0
+          cache_hit = 0
+          cache_miss = 0
+          failures = collections.Counter()
+          bad_jobs = []
+          for path in sorted(summaries):
+              text = open(path, encoding="utf-8", errors="replace").read()
+              status = re.search(r"^status=(\d+)", text, re.M)
+              label = re.search(r"^label=(\S+)", text, re.M)
+              ch = re.search(r"^cache_hit=(\S*)", text, re.M)
+              if ch and ch.group(1) == "true":
+                  cache_hit += 1
+              elif ch:
+                  cache_miss += 1
+              if status and status.group(1) == "0":
+                  ok += 1
+              else:
+                  bad_jobs.append(label.group(1) if label else path)
+          failed_dir = "all-results"
+          for path in sorted(glob.glob("all-results/*/failed_tests.txt")):
+              for line in open(path, encoding="utf-8", errors="replace"):
+                  line = line.strip()
+                  if not line:
+                      continue
+                  key = re.sub(r"\[[^\]]*\]", "", line)
+                  failures[key] += 1
+          lines = []
+          lines.append(f"jobs_total={total}")
+          lines.append(f"jobs_green={ok}")
+          lines.append(f"jobs_red={total - ok}")
+          lines.append(f"cache_hit={cache_hit} cache_miss={cache_miss}")
+          lines.append("")
+          lines.append("Failure causes seen (should be empty if the known-gap filter is complete):")
+          if failures:
+              for k, v in failures.most_common():
+                  lines.append(f"  {v:3d}  {k}")
+          else:
+              lines.append("  (none)")
+          out = "\n".join(lines)
+          print(out)
+          open("verdict.txt", "w").write(out)
+          import os
+          with open(os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null"), "a") as f:
+              f.write("```\n" + out + "\n```\n")
+          PY
+          echo "::notice title=scale48-verdict::$(tr '\n' ' ' < verdict.txt)"
+
+      - name: Upload verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale48-verdict
+          path: verdict.txt
+          if-no-files-found: ignore
