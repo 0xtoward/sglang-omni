@@ -388,7 +388,7 @@ This runs the 10 MiniCPM-o stage files of Omni model CI (`.github/workflows/test
 export CI_OUT=/results/$(git -C /sglang-omni rev-parse --short HEAD)/ci/run1
 ```
 
-The prepare block sets the variables of the CI workflow and the `omni-setup` action that change results. Hugging Face stays offline and cache paths stay at their defaults. A new shell is limited to the container CPU set, so `OMNI_CI_CPUSET` reads it back in the format the CI pin script expects. It must print `CI_READY`.
+The prepare block sets the variables of the CI workflow and the `omni-setup` action that change results. Hugging Face stays offline and cache paths stay at their defaults. Set `OMNI_CI_CPUSET` to the CPU list the container gives the new shell. The CI pin script accepts equivalent lists and ranges and fails if the kernel drops a requested CPU. The prepare block must print `CI_READY`.
 
 ```bash
 cd /sglang-omni && . omni/bin/activate
