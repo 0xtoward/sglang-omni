@@ -765,3 +765,5 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
                 stage_name=spec.stage_name,
             )
             assert factory_args["gpu_id"] == expected_gpu
+
+# cache-probe: touch only a test file, not a dependency
