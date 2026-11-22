@@ -1,0 +1,193 @@
+name: Hosted Replay Trial Scale42
+
+# Scale-up of hosted-replay-trial.yml: the same real-commit CPU replay,
+# but across 42 real recent merged PRs (3 partitions each = 126 jobs),
+# to check at scale whether the per-commit dependency cache behaves and
+# whether pass/fail results stay correct, not just on a handful of commits.
+
+on:
+  push:
+    branches: [ci-hosted-trial-2]
+
+env:
+  TARGETS_JSON: >-
+    [{"label":"s42-01-pr4377","ref":"trial/scale42-01-pr4377"},
+              {"label":"s42-02-pr3624","ref":"trial/scale42-02-pr3624"},
+              {"label":"s42-03-pr3623","ref":"trial/scale42-03-pr3623"},
+              {"label":"s42-04-pr4460","ref":"trial/scale42-04-pr4460"},
+              {"label":"s42-05-pr4451","ref":"trial/scale42-05-pr4451"},
+              {"label":"s42-06-pr4454","ref":"trial/scale42-06-pr4454"},
+              {"label":"s42-07-pr4361","ref":"trial/scale42-07-pr4361"},
+              {"label":"s42-08-pr4428","ref":"trial/scale42-08-pr4428"},
+              {"label":"s42-09-pr4455","ref":"trial/scale42-09-pr4455"},
+              {"label":"s42-10-pr4165","ref":"trial/scale42-10-pr4165"},
+              {"label":"s42-11-pr4360","ref":"trial/scale42-11-pr4360"},
+              {"label":"s42-12-pr4330","ref":"trial/scale42-12-pr4330"},
+              {"label":"s42-13-pr4434","ref":"trial/scale42-13-pr4434"},
+              {"label":"s42-14-pr4370","ref":"trial/scale42-14-pr4370"},
+              {"label":"s42-15-pr4373","ref":"trial/scale42-15-pr4373"},
+              {"label":"s42-16-pr4082","ref":"trial/scale42-16-pr4082"},
+              {"label":"s42-17-pr4140","ref":"trial/scale42-17-pr4140"},
+              {"label":"s42-18-pr4397","ref":"trial/scale42-18-pr4397"},
+              {"label":"s42-19-pr4077","ref":"trial/scale42-19-pr4077"},
+              {"label":"s42-20-pr3936","ref":"trial/scale42-20-pr3936"},
+              {"label":"s42-21-pr2425","ref":"trial/scale42-21-pr2425"},
+              {"label":"s42-22-pr4372","ref":"trial/scale42-22-pr4372"},
+              {"label":"s42-23-pr4157","ref":"trial/scale42-23-pr4157"},
+              {"label":"s42-24-pr4260","ref":"trial/scale42-24-pr4260"},
+              {"label":"s42-25-pr4177","ref":"trial/scale42-25-pr4177"},
+              {"label":"s42-26-pr4220","ref":"trial/scale42-26-pr4220"},
+              {"label":"s42-27-pr4395","ref":"trial/scale42-27-pr4395"},
+              {"label":"s42-28-pr3887","ref":"trial/scale42-28-pr3887"},
+              {"label":"s42-29-pr3993","ref":"trial/scale42-29-pr3993"},
+              {"label":"s42-30-pr4374","ref":"trial/scale42-30-pr4374"},
+              {"label":"s42-31-pr4369","ref":"trial/scale42-31-pr4369"},
+              {"label":"s42-32-pr4417","ref":"trial/scale42-32-pr4417"},
+              {"label":"s42-33-pr4413","ref":"trial/scale42-33-pr4413"},
+              {"label":"s42-34-pr4355","ref":"trial/scale42-34-pr4355"},
+              {"label":"s42-35-pr4410","ref":"trial/scale42-35-pr4410"},
+              {"label":"s42-36-pr4408","ref":"trial/scale42-36-pr4408"},
+              {"label":"s42-37-pr4405","ref":"trial/scale42-37-pr4405"},
+              {"label":"s42-38-pr4213","ref":"trial/scale42-38-pr4213"},
+              {"label":"s42-39-pr3263","ref":"trial/scale42-39-pr3263"},
+              {"label":"s42-40-pr4342","ref":"trial/scale42-40-pr4342"},
+              {"label":"s42-41-pr4354","ref":"trial/scale42-41-pr4354"},
+              {"label":"s42-42-pr4376","ref":"trial/scale42-42-pr4376"}]
+
+permissions:
+  contents: read
+
+jobs:
+  build-matrix:
+    name: build-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+      count: ${{ steps.build.outputs.count }}
+    steps:
+      - id: build
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          targets = json.loads(os.environ["TARGETS_JSON"])
+          combos = [dict(t, partition=p) for t in targets for p in (0, 1, 2)]
+          print("matrix=" + json.dumps({"include": combos}))
+          print("count=" + str(len(combos)))
+          PY
+
+  replay:
+    name: replay-${{ matrix.label }}-p${{ matrix.partition }}
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 40
+      matrix: ${{ fromJson(needs.build-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout the replayed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache || true
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Restore dependency cache for this commit's pyproject.toml
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .venv
+            .uv-python
+          key: hosted-replay-venv-v1-${{ hashFiles('pyproject.toml') }}
+
+      - name: Install environment (cache miss only)
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.uv-python
+          UV_TORCH_BACKEND: cpu
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg sox
+          uv venv .venv -p 3.12
+          uv pip install --python .venv/bin/python -e '.[minicpm-o,fun-cosyvoice3]'
+          uv pip install --python .venv/bin/python \
+            descript-audio-codec==1.0.0 descript-audiotools==0.7.2
+          uv pip install --python .venv/bin/python --no-deps qwen-tts==0.1.1
+          cosy=.venv/src/CosyVoice
+          git clone --filter=blob:none --no-checkout https://github.com/FunAudioLLM/CosyVoice.git "$cosy"
+          git -C "$cosy" checkout --detach 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
+          git -C "$cosy" submodule update --init --depth=1 third_party/Matcha-TTS
+          printf '%s\n' "$PWD/$cosy" "$PWD/$cosy/third_party/Matcha-TTS" \
+            > .venv/lib/python3.12/site-packages/cosyvoice.pth
+
+      - name: Record cache hit/miss for this commit's dependency set
+        run: echo "cache_hit=${{ steps.cache.outputs.cache-hit }}" > cache_status.txt
+
+      - name: Re-link the editable install for this exact commit's source
+        run: |
+          set -e
+          uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e . -q
+
+      - name: Run partition ${{ matrix.partition }}/3 of the CPU marker set
+        id: run
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          set +e
+          source .venv/bin/activate
+          start=$(date +%s)
+          python -m pytest tests/ -m "not benchmark and not accelerator" \
+            --continue-on-collection-errors \
+            -p scripts.ci.utils.pytest_partition \
+            --auto-partition-id ${{ matrix.partition }} --auto-partition-size 3 \
+            --partition-model-file .github/unit_test_durations.json \
+            --durations=20 --junitxml=junit.xml > pytest.log 2>&1
+          status=$?
+          end=$(date +%s)
+          {
+            echo "label=${{ matrix.label }}"
+            echo "ref=${{ matrix.ref }}"
+            echo "partition=${{ matrix.partition }}"
+            echo "wall_seconds=$((end - start))"
+            echo "status=$status"
+            cat cache_status.txt
+          } > summary.txt
+          python3 - <<'PY' >> summary.txt
+          import xml.etree.ElementTree as ET
+          try:
+              s = ET.parse("junit.xml").getroot().find("testsuite")
+              print(f"tests={s.get('tests')} failures={s.get('failures')} "
+                    f"errors={s.get('errors')} skipped={s.get('skipped')} "
+                    f"pytest_seconds={float(s.get('time')):.0f}")
+          except Exception as exc:
+              print(f"junit_unreadable={exc!r}")
+          PY
+          grep -E "^FAILED |^ERROR " pytest.log > failed_tests.txt
+          cat summary.txt
+          echo "::notice title=replay-${{ matrix.label }}-p${{ matrix.partition }}::$(tr '\n' ' ' < summary.txt) failed=$(tr '\n' ';' < failed_tests.txt)"
+          exit "$status"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-${{ matrix.label }}-p${{ matrix.partition }}
+          path: |
+            summary.txt
+            failed_tests.txt
+            pytest.log
+            junit.xml
+            cache_status.txt
+          if-no-files-found: ignore
