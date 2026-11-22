@@ -133,7 +133,7 @@ jobs:
           # same pyproject.toml; its editable mapping may point at a stale
           # checkout path layout, so always refresh the (cheap, no-network)
           # editable link against the tree actually checked out this run.
-          .venv/bin/python -m pip install --no-deps --no-build-isolation -e . -q
+          uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e . -q
 
       - name: Run partition ${{ matrix.partition }}/3 of the CPU marker set
         id: run
