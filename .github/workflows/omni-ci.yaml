@@ -7,10 +7,7 @@ name: Omni CI
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
 # any stage label except run-mac-ci, including run-unit-test-ci-only, runs
 # pr-test, and each model suite runs only when its stage is selected.
-# run-lint-only and run-mac-ci alone pass the gate and skip setup. Model
-# suites, including MPS, start after pr-test and use always() so a failed or
-# skipped suite never skips another one. Only setup blocks all downstream
-# model CI.
+# run-lint-only and run-mac-ci alone pass the gate and skip setup.
 #
 # MPS has no result dependency on other model suites and uses the same
 # workflow SHA, so it does not wait for those suites to finish.
@@ -254,6 +251,7 @@ jobs:
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
+      needs.pr-test.result == 'success' &&
       (needs.preflight.outputs.run_asr_multi_speaker == 'true' ||
        needs.preflight.outputs.run_asr_seedtts == 'true')
     uses: ./.github/workflows/test-asr-ci.yaml
@@ -273,6 +271,7 @@ jobs:
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
+      needs.pr-test.result == 'success' &&
       needs.preflight.outputs.run_tts == 'true'
     uses: ./.github/workflows/test-tts-ci.yaml
     with:
@@ -290,6 +289,7 @@ jobs:
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
+      needs.pr-test.result == 'success' &&
       needs.preflight.outputs.run_mps == 'true'
     uses: ./.github/workflows/test-mps-ci.yaml
     with:
@@ -308,6 +308,7 @@ jobs:
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
+      needs.pr-test.result == 'success' &&
       needs.preflight.outputs.run_omni == 'true'
     uses: ./.github/workflows/test-qwen3-omni-ci.yaml
     with:
@@ -324,6 +325,7 @@ jobs:
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
+      needs.pr-test.result == 'success' &&
       (needs.preflight.outputs.run_full_duplex == 'true' ||
        needs.preflight.outputs.run_turn_based == 'true' ||
        needs.preflight.outputs.run_cascaded == 'true')
