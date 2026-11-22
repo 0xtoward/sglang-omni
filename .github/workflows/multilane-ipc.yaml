@@ -47,6 +47,7 @@ jobs:
             sleep 1
           done
           echo "ipc_barrier_peers $(ls "$B" | tr '\n' ' ')"
+          echo "ipc_pytest_basetemps_before $(ls -d /tmp/pytest-of-*/pytest-* 2>/dev/null | tr '\n' ' ')"
           echo "ipc_test_start $(date -u +%FT%T.%3NZ)"
           t0=${EPOCHREALTIME/,/.}
           $VENV -m pytest tests/unit_test/pipeline/test_ipc.py -q -p no:cacheprovider \
@@ -55,5 +56,7 @@ jobs:
           t1=${EPOCHREALTIME/,/.}
           echo "ipc_test_seconds $(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')"
           echo "ipc_test_rc $rc"
+          echo "ipc_pytest_basetemps_after $(ls -d /tmp/pytest-of-*/pytest-* 2>/dev/null | tr '\n' ' ')"
+          echo "ipc_sglang_omni_tmp $(ls -d /tmp/sglang_omni 2>/dev/null || echo '<absent>')"
           echo "ipc_test_end $(date -u +%FT%T.%3NZ)"
           exit $rc
