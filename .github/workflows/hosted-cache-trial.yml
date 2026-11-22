@@ -11,12 +11,12 @@ name: Hosted Cache Trial
 # this branch only.
 
 on:
-  workflow_dispatch:
-    inputs:
-      run_tests:
-        description: Also run CPU partition 0/3 inside the built image (slow)
-        type: boolean
-        default: false
+  push:
+    branches: [ci-hosted-trial-2]
+    # workflow_dispatch needs the workflow file on the default branch before
+    # it is dispatchable at all; a second trial branch avoids re-triggering
+    # hosted-docker-trial.yml's push trigger (its 46-minute main-image
+    # build) on every commit made for this trial instead.
 
 permissions:
   contents: read
@@ -58,7 +58,7 @@ jobs:
           cat numbers.txt >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run CPU partition 0 of 3 inside the built image
-        if: inputs.run_tests == 'true'
+        if: contains(github.event.head_commit.message, '[run-tests]')
         run: |
           set +e
           start=$(date +%s)

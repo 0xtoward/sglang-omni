@@ -9,17 +9,19 @@ name: Hosted Replay Trial
 #              does the same CPU partition pass or fail the same way here?
 
 on:
-  workflow_dispatch:
-    inputs:
-      targets_json:
-        description: JSON array of {label, ref} commits to replay
-        type: string
-        default: >-
-          [{"label":"fail-3936","ref":"trial/replay-fail-3936"},
-          {"label":"pass-nov14","ref":"trial/replay-pass-nov14"},
-          {"label":"pass-nov08","ref":"trial/replay-pass-nov08"},
-          {"label":"pass-oct31","ref":"trial/replay-pass-oct31"},
-          {"label":"pass-oct24","ref":"trial/replay-pass-oct24"}]
+  push:
+    branches: [ci-hosted-trial-2]
+
+env:
+  # workflow_dispatch needs the workflow file on the default branch before
+  # it is dispatchable at all; push needs no such registration, so the
+  # replay list is fixed here instead of taken as a dispatch input.
+  TARGETS_JSON: >-
+    [{"label":"fail-3936","ref":"trial/replay-fail-3936"},
+    {"label":"pass-nov14","ref":"trial/replay-pass-nov14"},
+    {"label":"pass-nov08","ref":"trial/replay-pass-nov08"},
+    {"label":"pass-oct31","ref":"trial/replay-pass-oct31"},
+    {"label":"pass-oct24","ref":"trial/replay-pass-oct24"}]
 
 permissions:
   contents: read
@@ -61,8 +63,6 @@ jobs:
       count: ${{ steps.build.outputs.count }}
     steps:
       - id: build
-        env:
-          TARGETS_JSON: ${{ inputs.targets_json }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
