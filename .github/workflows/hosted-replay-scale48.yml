@@ -96,6 +96,12 @@ jobs:
             .uv-python
           key: hosted-replay-venv-v1-${{ hashFiles('pyproject.toml') }}
 
+      - name: Install system packages every run (apt is not part of the venv cache)
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg sox
+
       - name: Install environment (cache miss only)
         if: steps.cache.outputs.cache-hit != 'true'
         env:
@@ -103,8 +109,6 @@ jobs:
           UV_TORCH_BACKEND: cpu
         run: |
           set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg sox
           uv venv .venv -p 3.12
           uv pip install --python .venv/bin/python -e '.[minicpm-o,fun-cosyvoice3]'
           uv pip install --python .venv/bin/python \
