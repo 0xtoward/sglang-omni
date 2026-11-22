@@ -1,0 +1,49 @@
+# Trial only: measure how many concurrent lanes N runner agents really give,
+# and read back the cpuset each lane lands on.
+name: multilane-trial
+
+on:
+  push:
+    branches: ['trial/multilane']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    runs-on: [self-hosted, multilane-trial]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Pin to the lane cpuset, then burn a fixed amount of CPU work
+        run: |
+          set -uo pipefail
+          echo "probe_run_id ${{ github.run_id }}"
+          echo "probe_shard ${{ matrix.shard }}"
+          echo "probe_runner_name ${RUNNER_NAME}"
+          echo "probe_runner_workspace ${RUNNER_WORKSPACE}"
+          echo "probe_runner_temp ${RUNNER_TEMP}"
+          echo "probe_tmpdir ${TMPDIR:-<unset>}"
+          echo "probe_lane_id ${OMNI_LANE_ID:-<unset>}"
+          echo "probe_cpuset_env ${OMNI_CI_CPUSET:-<unset>}"
+          echo "probe_mask_before $(taskset -pc $$ | awk '{print $NF}')"
+          source .github/scripts/pin_to_ci_cpuset.sh
+          echo "probe_mask_after $(taskset -pc $$ | awk '{print $NF}')"
+          echo "probe_nproc_after_pin $(nproc)"
+          echo "probe_start $(date -u +%FT%T.%3NZ)"
+          t0=${EPOCHREALTIME/,/.}
+          for _ in $(seq 1 16); do
+            awk 'BEGIN{for(i=0;i<900000000;i++)x+=i}' &
+          done
+          wait
+          t1=${EPOCHREALTIME/,/.}
+          echo "probe_payload_seconds $(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')"
+          echo "probe_end $(date -u +%FT%T.%3NZ)"

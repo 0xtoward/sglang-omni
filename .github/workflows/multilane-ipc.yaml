@@ -1,0 +1,59 @@
+# Trial only: two lanes run tests/unit_test/pipeline/test_ipc.py at the same
+# time, to see whether lane isolation beats pytest-xdist's shared-worker state.
+name: multilane-ipc
+
+on:
+  push:
+    branches: ['trial/multilane-ipc']
+
+permissions:
+  contents: read
+
+jobs:
+  ipc:
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [a, b]
+    runs-on: [self-hosted, multilane-trial]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run test_ipc.py while the other lane runs it too
+        run: |
+          set -uo pipefail
+          VENV=$HOME/omni-env/venv/bin/python
+          export CUDA_HOME=$HOME/omni-env/venv/lib/python3.12/site-packages/nvidia/cu13
+          echo "ipc_arm ${{ matrix.arm }}"
+          echo "ipc_runner_name ${RUNNER_NAME}"
+          echo "ipc_runner_temp ${RUNNER_TEMP}"
+          echo "ipc_runner_workspace ${RUNNER_WORKSPACE}"
+          echo "ipc_tmpdir ${TMPDIR:-<unset>}"
+          echo "ipc_lane_id ${OMNI_LANE_ID:-<unset>}"
+          source .github/scripts/pin_to_ci_cpuset.sh
+          echo "ipc_mask_after $(taskset -pc $$ | awk '{print $NF}')"
+          $VENV -c 'import tempfile, sys; print("ipc_gettempdir", tempfile.gettempdir()); print("ipc_python", sys.executable)'
+          $VENV -c 'import sglang_omni, os; print("ipc_pkg_file", os.path.dirname(sglang_omni.__file__))'
+          $VENV -c 'from sglang_omni.config.schema import EndpointsConfig; print("ipc_default_base_path", EndpointsConfig().base_path)'
+
+          # Barrier: both arms must really overlap, not merely both be queued.
+          B=/tmp/ml-ipc-barrier-${{ github.run_id }}
+          mkdir -p "$B"
+          touch "$B/${{ matrix.arm }}.ready"
+          for _ in $(seq 1 120); do
+            n=$(ls "$B" | grep -c '\.ready$' || true)
+            [ "$n" -ge 2 ] && break
+            sleep 1
+          done
+          echo "ipc_barrier_peers $(ls "$B" | tr '\n' ' ')"
+          echo "ipc_test_start $(date -u +%FT%T.%3NZ)"
+          t0=${EPOCHREALTIME/,/.}
+          $VENV -m pytest tests/unit_test/pipeline/test_ipc.py -q -p no:cacheprovider \
+            -o cache_dir=$RUNNER_TEMP/pytest-cache 2>&1 | tail -40
+          rc=${PIPESTATUS[0]}
+          t1=${EPOCHREALTIME/,/.}
+          echo "ipc_test_seconds $(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')"
+          echo "ipc_test_rc $rc"
+          echo "ipc_test_end $(date -u +%FT%T.%3NZ)"
+          exit $rc
