@@ -55,6 +55,8 @@ The matched comparison ran on that same test host, holding hardware constant.
 
 That is **2.57x**. Moving one partition from 16 physical cores to two cost **+3.6%** on the same host. Serial pytest schedules one test at a time, so a wide mask sits mostly idle: the penalty for narrowing a lane is an order of magnitude smaller than the gain from running three lanes at once. This is the economic case for the proposition.
 
+The same comparison through registered runner agents, rather than containers driven by hand, gives **2.84x**: 1,066 s for three lanes against 3,026 s for one wide agent, on the same machine and the same merge commit, with every job green on its first attempt. It lands higher than the container-direct figure because a single agent also pays the gap between jobs — 42 s and 117 s here — which three lanes do not. Per partition the two widths are nearly identical: 982, 995 and 890 s on sixteen physical cores against 879 to 1,066 s on two, which is the single-threaded ceiling showing up from the other direction.
+
 Do not derive the narrowing penalty by comparing a lane time against upstream's own duration for the same partition. That is a cross-machine comparison, and it put the penalty at +26% to +37% instead of +3.6%.
 
 ## Rollout pitfalls
@@ -128,7 +130,7 @@ The CPU job bind-mounts host `/dev/shm`. CPU relay tests create, access and unli
 
 ### 6. Host B has room for two tested CPU lanes
 
-Start host A with **one GPU + three CPU agents**. Start host B with **one GPU + two CPU agents**. Allocate eight physical cores on A and seven on B to GPU data loading and replica processes. With two cores per host set aside for headroom, A has six cores for a 2/2/2 CPU split. B has five for a 2/2/1 split. Leave the one-core lane disabled, giving B three unallocated cores at rollout.
+Start host A with **one GPU + three CPU agents**. Start host B with **one GPU + two CPU agents**, and pilot its third. Allocate eight physical cores on A and seven on B to GPU data loading and replica processes. With two cores per host set aside for headroom, A has six cores for a 2/2/2 CPU split. B has five for a 2/2/1 split. The one-core lane is no longer a guess: it cost 3.1% against two cores in a paired run, so enable it as a pilot rather than leaving it off, and watch host B's flake rate, which is the part still unmeasured.
 
 | Allocation | Host A logical CPU IDs | Physical cores | Host B logical CPU IDs | Physical cores |
 |---|---|---:|---|---:|
@@ -138,7 +140,13 @@ Start host A with **one GPU + three CPU agents**. Start host B with **one GPU + 
 | CPU lane 3 | `28,29,92,93` | 2 | Disabled (candidate `13,77`) | 0 |
 | Unallocated at rollout | `30,31,94,95` | 2 | `13,14,15,77,78,79` | 3 |
 
-Each row keeps SMT siblings together. On unpatched main, enter the long GPU masks as `16-23,80-87` and `2-8,66-72`. The owner must confirm CPU/core/NUMA numbering and GPU PCI locality on each host. MPS DP2 derives replica blocks from the intersection of the GPU's NUMA CPUs and `sched_getaffinity(0)`. Its minimum is four allowed logical CPU IDs. MPS job options at this revision forward `NVIDIA_VISIBLE_DEVICES` but omit `OMNI_CI_CPUSET`. Verify the actual GPU job's affinity and enforce the mask in the job container before measuring DP2 with the CPU lanes busy. [tts_mps_runtime.py:21–27](../tests/utils/tts_mps_runtime.py#L21-L27) · [NUMA intersection:158–177](../tests/utils/tts_mps_runtime.py#L158-L177) · [test-mps-ci.yaml:41–52](../.github/workflows/test-mps-ci.yaml#L41-L52)
+Each row keeps SMT siblings together. On unpatched main, enter the long GPU masks as `16-23,80-87` and `2-8,66-72`. The owner must confirm CPU/core/NUMA numbering and GPU PCI locality on each host, and this is not advisory: copying host A's GPU mask verbatim onto a machine whose card sits on the other NUMA node fails outright with
+
+```
+MPS DP2 requires 4 allowed CPU cores on the GPU NUMA node, found 0
+```
+
+MPS DP2 refuses rather than degrading, so a GPU lane's cpuset has to be chosen for NUMA adjacency to the card and not for width. An equal-width remap onto the correct node produced working replica blocks, with the second block drawing the other SMT threads of four cores the first block already used — so replica blocks can overlap SMT siblings, which the table above does not model. MPS DP2 derives replica blocks from the intersection of the GPU's NUMA CPUs and `sched_getaffinity(0)`. Its minimum is four allowed logical CPU IDs. MPS job options at this revision forward `NVIDIA_VISIBLE_DEVICES` but omit `OMNI_CI_CPUSET`. Verify the actual GPU job's affinity and enforce the mask in the job container before measuring DP2 with the CPU lanes busy. [tts_mps_runtime.py:21–27](../tests/utils/tts_mps_runtime.py#L21-L27) · [NUMA intersection:158–177](../tests/utils/tts_mps_runtime.py#L158-L177) · [test-mps-ci.yaml:41–52](../.github/workflows/test-mps-ci.yaml#L41-L52)
 
 ### 7. A listener container and its job container are siblings
 
@@ -195,8 +203,8 @@ The proposed CPU job’s `runs-on` expression is `${{ fromJSON(vars.OMNI_CI_CPU_
 
 | Question | Status | Measurement that settles it |
 |---|---|---|
-| Speedup through real runner agents | not measured | The 2,599 s and 1,012 s arms both drove pytest directly in containers. Register the agents, dispatch one workflow run, and take the overlap and durations from the Actions API rather than from local wall clock. |
-| Host shared-memory collisions | not measured | Run two CPU lanes through the shared-memory tests concurrently with the host bind. Record created names, unlink/open failures and peak bytes. Repeat with private shared memory to size `--shm-size`. |
-| One-core lane on B | not measured | Pin the third CPU job to `13,77`. Run the timeout-sensitive partitions beside the other lanes. Compare first-attempt verdicts, retries and wall time with the two-core result before enabling it. |
+| Speedup through real runner agents | **measured: 2.84x** | Three registered agents, each listener in its own container, against one wide agent on the same host and the same merge commit, both through Actions. Narrow span 1,066 s with a 879 s three-way overlap; wide span 3,026 s with the partitions strictly sequential at 982, 995 and 890 s. Removing the wide arm's two 42 s and 117 s replacement gaps still leaves 2.69x. Runs [45058163756](https://github.com/0xtoward/sglang-omni-ci-sandbox/actions/runs/45058163756) and [45060106617](https://github.com/0xtoward/sglang-omni-ci-sandbox/actions/runs/45060106617). |
+| Host shared-memory collisions | **measured: none observed** | Two lanes ran the seven relay tests concurrently, 14 of 14 both with the host bind and with a private 64 MiB mount. Each pair created 18 distinctly named objects with zero open or unlink failures, and the private mount peaked at 73,728 bytes. That peak is this test file's, not a general figure. |
+| One-core lane on B | **measured: +3.1%, worth piloting** | The full timeout-sensitive partition took 931 s on `13,77` against 903 s on two cores, both first attempt, RC 0, zero retries, each with the other two partitions running alongside throughout. `child_ownership[True]`, the test that timed out upstream, passed in both arms. This is one pairing on a lease machine; host B's long-run flake rate remains unmeasured. |
 | GPU lane under concurrent CPU load | not measured | Run MPS DP2 and a representative GPU stage with CPU lanes idle and busy. Compare replica core blocks, dataloading time, performance gates and foreign-load samples. |
 | Image cost with one daemon per lane | not measured | Compare a shared daemon and independent empty daemon stores on the same host. Record pull time, transferred bytes and on-disk layer bytes after each lane's first real job. A shared daemon can reuse the digest's layers. |
