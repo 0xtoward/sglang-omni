@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Set up Python
         id: python
@@ -45,6 +47,38 @@ jobs:
         if: ${{ github.event_name == 'push' }}
         run: pre-commit install-hooks
 
+      - name: Identify the Black environment
+        id: environment
+        run: |
+          python - <<'PYTHON'
+          import os
+          from importlib.metadata import version
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              print(f"tools={version('pre-commit')}-{version('identify')}", file=out)
+          PYTHON
+
+      - name: Check Black on the default branch
+        if: github.event_name == 'push'
+        run: pre-commit run black-jupyter --all-files --show-diff-on-failure
+
+      - name: Record clean Black baseline
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: .pre-commit-config.yaml
+          key: black-clean-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.python.outputs.python-version }}-${{ steps.environment.outputs.tools }}-${{ github.sha }}
+
+      - name: Look up the base commit's full Black result
+        if: github.event_name == 'pull_request'
+        id: baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: .pre-commit-config.yaml
+          key: black-clean-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.python.outputs.python-version }}-${{ steps.environment.outputs.tools }}-${{ github.event.pull_request.base.sha }}
+          lookup-only: true
+
       - name: Linting
-        if: ${{ github.event_name != 'push' }}
-        run: pre-commit run --all-files --show-diff-on-failure
+        if: github.event_name != 'push'
+        env:
+          CLEAN_BASE: ${{ steps.baseline.outputs.cache-hit == 'true' && github.event.pull_request.base.sha || '' }}
+        run: bash .github/scripts/lint_with_scoped_black.sh "$CLEAN_BASE"
