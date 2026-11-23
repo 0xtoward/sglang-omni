@@ -27,7 +27,11 @@ env:
 jobs:
   unit-test:
     name: unit-test
-    if: inputs.self_hosted_cpu
+    needs: unit-test-accelerator
+    if: always() && !cancelled() && inputs.self_hosted_cpu
+    concurrency:
+      group: omni-h100-cpu-unit-tests
+      queue: max
     runs-on: [self-hosted, h100]
     timeout-minutes: 50
     steps:

@@ -373,7 +373,7 @@ Relevant model CI ownership:
   benchmarks retain concurrency 32.
 - CI env alignment on the H100 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
-  Omni CI (`omni-ci.yaml`) starts eight hosted CPU partitions after preflight.
+  Omni CI (`omni-ci.yaml`) chooses the CPU pool after preflight: eight hosted partitions or six containers on an H100 runner.
   The H100 unit tests wait for shared setup. When both unit suites finish, ASR CI, TTS CI and Omni model CI start
   together and their stages run in parallel; MPS CI runs after them. Any CI
   stage label except `run-mac-ci` runs PR Test; each other suite runs only when its stage is

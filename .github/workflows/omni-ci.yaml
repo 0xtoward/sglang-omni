@@ -1,7 +1,8 @@
 name: Omni CI
 
 # DAG:
-#   preflight -> hosted-cpu and (setup -> pr-test)
+#   preflight -> setup and select-cpu-pool in parallel
+#   select-cpu-pool -> hosted-cpu or the CPU job in pr-test
 #   both unit suites -> {asr-ci, tts-ci, qwen3-omni-ci, duplex-ci, mps-ci}
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
@@ -38,10 +39,6 @@ on:
       - ".github/workflows/voxt*.yaml"
   workflow_dispatch:
     inputs:
-      self_hosted_cpu:
-        description: Run CPU unit tests in six containers on an H100 runner.
-        type: boolean
-        default: false
       ci_labels:
         description: "Space-separated CI labels, resolved like PR labels (e.g. 'run-tts-ci run-moss-tts-local-transformer-v1.5')."
         required: true
@@ -343,20 +340,42 @@ jobs:
             || format('/data/omni-ci/run-{0}', github.run_id) }}
     secrets: inherit
 
+  select-cpu-pool:
+    name: Select CPU unit-test pool
+    needs: preflight
+    if: needs.preflight.outputs.run_self_hosted == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      pool: ${{ steps.route.outputs.pool }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check H100 demand
+        id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/select_cpu_pool.py
+
   hosted-cpu:
     name: CPU unit tests
-    needs: preflight
-    if: needs.preflight.outputs.run_self_hosted == 'true' && !inputs.self_hosted_cpu
+    needs: [preflight, select-cpu-pool]
+    if: >-
+      always() && !cancelled() && needs.preflight.result == 'success' &&
+      needs.preflight.outputs.run_self_hosted == 'true' &&
+      !(needs.select-cpu-pool.result == 'success' && needs.select-cpu-pool.outputs.pool == 'self-hosted')
     uses: ./.github/workflows/test-hosted-cpu.yaml
 
   pr-test:
     name: PR Test
-    needs: setup
-    if: >-
-      needs.setup.result == 'success'
+    needs: [setup, select-cpu-pool]
+    if: always() && !cancelled() && needs.setup.result == 'success'
     uses: ./.github/workflows/test.yaml
     with:
-      self_hosted_cpu: ${{ inputs.self_hosted_cpu || false }}
+      self_hosted_cpu: ${{ needs.select-cpu-pool.result == 'success' && needs.select-cpu-pool.outputs.pool == 'self-hosted' }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
