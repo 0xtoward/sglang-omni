@@ -3,6 +3,10 @@ name: PR Test
 on:
   workflow_call:
     inputs:
+      self_hosted_cpu:
+        description: Run the six CPU partitions on the H100 runner.
+        type: boolean
+        default: true
       omni_ci_home:
         description: PR-scoped CI home from the parent omni-ci workflow.
         type: string
@@ -23,6 +27,11 @@ env:
 jobs:
   unit-test:
     name: unit-test
+    needs: unit-test-accelerator
+    if: always() && !cancelled() && inputs.self_hosted_cpu
+    concurrency:
+      group: omni-h100-cpu-unit-tests
+      queue: max
     runs-on: [self-hosted, h100]
     timeout-minutes: 50
     steps:

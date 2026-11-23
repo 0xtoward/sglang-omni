@@ -377,16 +377,6 @@ up() {
       || die "could not resolve max_total_tokens from $config"
     engine_stage=${resolved_stage_and_tokens%% *}
     expected_max_total_tokens=${resolved_stage_and_tokens##* }
-    # Note (Aditya Vaid Sharma): nvidia-smi resolves GPU_ID physically, so the
-    # budget helper runs in a single-UUID namespace and queries logical GPU 0.
-    uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
-    local budget_args=("$config" --print-mps-memory-budget --gpu-id 0 --replicas "$n")
-    if [ "$weight_share" = 1 ]; then
-      budget_args+=(--weight-share)
-    fi
-    mps_budget_manifest=$(env CUDA_VISIBLE_DEVICES="$uuid" \
-      "$PYTHON_BIN" "$SCRIPT_DIR/config.py" "${budget_args[@]}") \
-      || die "could not resolve MPS memory budget from $config"
   else
     # Note (Jiaxin Deng): without a pipeline config the supported-model check
     # cannot run until engine startup, which is after the MPS daemon and state
@@ -449,8 +439,15 @@ up() {
   done
 
   local node run state
-  if [ -z "$uuid" ]; then
-    uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
+  uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
+  if [ -n "$config" ]; then
+    local budget_args=("$config" --print-mps-memory-budget --gpu-id 0 --replicas "$n")
+    if [ "$weight_share" = 1 ]; then
+      budget_args+=(--weight-share)
+    fi
+    mps_budget_manifest=$(env CUDA_VISIBLE_DEVICES="$uuid" \
+      "$PYTHON_BIN" "$SCRIPT_DIR/config.py" "${budget_args[@]}") \
+      || die "could not resolve MPS memory budget from $config"
   fi
   node=$(resolve_numa "$gpu")
   # Note (Jiaxin Deng): a caller (autodp) may pin RUN_ID so it can tear down exactly
