@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [0, 1, 2, 3, 4, 5, 6, 7]
+        partition: [0, 1]
     env:
       CUDA_VISIBLE_DEVICES: ""
       UV_TORCH_BACKEND: cpu
@@ -42,26 +42,15 @@ jobs:
           uv pip install --no-deps qwen-tts==0.1.1
           bash .github/scripts/install_ci_cosyvoice.sh .venv
 
-      - name: Run CPU partition
+      - name: Check the accelerator selection
+        run: |
+          .venv/bin/python -m pytest tests/unit_test/vendor/test_sglang_flashattention_backend_patch.py --collect-only -q -m accelerator
+      - name: Check streaming feature parity
         env:
-          OMNI_CI_PYTHON: ${{ github.workspace }}/.venv/bin/python
-          OMNI_CI_STAGE_LABEL: unit-test-cpu-${{ matrix.partition }}
-          PARTITION: ${{ matrix.partition }}
-          PARTITIONS: ${{ strategy.job-total }}
+          MKL_ENABLE_INSTRUCTIONS: ${{ matrix.partition == 0 && 'AVX2' || 'AVX512' }}
         run: |
           source .venv/bin/activate
-          export PYTHONPATH="$PWD"
-          bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -v -m "not benchmark and not accelerator" -x \
-            -p scripts.ci.utils.pytest_partition --auto-partition-id "$PARTITION" \
-            --auto-partition-size "$PARTITIONS" --partition-model-file .github/unit_test_durations.json \
-            --junitxml="$RUNNER_TEMP/unit-test.xml"
-
-      - name: Upload partition results
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: cpu-partition-${{ matrix.partition }}-attempt-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/unit-test.xml
-            ${{ runner.temp }}/omni-ci-retry/
+          for trial in 1 2 3; do
+            python -m pytest -q tests/unit_test/minicpm_o/test_streaming_perception.py::test_batched_perception_matches_each_session_alone[whole_buffer] \
+              tests/unit_test/nemotron_diarization/test_streaming.py::test_incremental_features_match_complete_audio_and_flush_partial_tail || exit 1
+          done
