@@ -1,7 +1,8 @@
 name: Omni CI
 
 # DAG:
-#   preflight -> setup -> pr-test -> {asr-ci, tts-ci, qwen3-omni-ci, duplex-ci, mps-ci}
+#   preflight -> hosted-cpu and (setup -> pr-test)
+#   both unit suites -> {asr-ci, tts-ci, qwen3-omni-ci, duplex-ci, mps-ci}
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
@@ -37,6 +38,10 @@ on:
       - ".github/workflows/voxt*.yaml"
   workflow_dispatch:
     inputs:
+      self_hosted_cpu:
+        description: Run CPU unit tests in six containers on an H100 runner.
+        type: boolean
+        default: false
       ci_labels:
         description: "Space-separated CI labels, resolved like PR labels (e.g. 'run-tts-ci run-moss-tts-local-transformer-v1.5')."
         required: true
@@ -250,7 +255,7 @@ jobs:
 
   asr-ci:
     name: ASR CI
-    needs: [preflight, setup, pr-test]
+    needs: [preflight, setup, hosted-cpu, pr-test]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -269,7 +274,7 @@ jobs:
 
   tts-ci:
     name: TTS CI
-    needs: [preflight, setup, pr-test]
+    needs: [preflight, setup, hosted-cpu, pr-test]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -286,7 +291,7 @@ jobs:
 
   mps-ci:
     name: MPS CI
-    needs: [preflight, setup, pr-test]
+    needs: [preflight, setup, hosted-cpu, pr-test]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -304,7 +309,7 @@ jobs:
 
   qwen3-omni-ci:
     name: Omni model CI (${{ needs.preflight.outputs.omni_ci_model }})
-    needs: [preflight, setup, pr-test]
+    needs: [preflight, setup, hosted-cpu, pr-test]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -320,7 +325,7 @@ jobs:
 
   duplex-ci:
     name: Duplex CI
-    needs: [preflight, setup, pr-test]
+    needs: [preflight, setup, hosted-cpu, pr-test]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -338,13 +343,20 @@ jobs:
             || format('/data/omni-ci/run-{0}', github.run_id) }}
     secrets: inherit
 
+  hosted-cpu:
+    name: CPU unit tests
+    needs: preflight
+    if: needs.preflight.outputs.run_self_hosted == 'true' && !inputs.self_hosted_cpu
+    uses: ./.github/workflows/test.yaml
+
   pr-test:
     name: PR Test
     needs: setup
     if: >-
       needs.setup.result == 'success'
-    uses: ./.github/workflows/test.yaml
+    uses: ./.github/workflows/test-h100.yaml
     with:
+      self_hosted_cpu: ${{ inputs.self_hosted_cpu || false }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
@@ -353,7 +365,7 @@ jobs:
 
   cleanup:
     name: cleanup - reclaim ephemeral run home
-    needs: [setup, pr-test, asr-ci, tts-ci, mps-ci, qwen3-omni-ci, duplex-ci]
+    needs: [setup, hosted-cpu, pr-test, asr-ci, tts-ci, mps-ci, qwen3-omni-ci, duplex-ci]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
