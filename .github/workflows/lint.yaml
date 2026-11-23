@@ -1,50 +1,86 @@
-name: Lint
-
-# Runs on every pull request without CI labels, and is a required check on
-# main. The self-hosted CI gates (.github/scripts/pr_ci_gate.py) wait for the
-# lint job on the same commit, so keep this workflow fast. Pushes to main only
-# refresh the pre-commit cache that pull requests read.
-on:
-  pull_request:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-concurrency:
-  group: lint-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
+name: Black diff trial
+on: workflow_dispatch
 permissions:
   contents: read
-
 jobs:
-  lint:
+  certify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        sample:
+          - {pr: '4489', head: c15bfc80bf873fb339dfc576658d060412653cb5, base: 5906e32279f9308564d97e334368172345cf2fa9}
+          - {pr: '3828', head: a7355ccfb81afaebbea598da997c45568aad5e61, base: f8370db15e5f4c3b09c17d365fa4438da613af87}
+          - {pr: '4473', head: ab4d0dd73916e914a71f1c7ceff0c5d3374437ac, base: 02e5103ce0428b8a37e2339116b96a516c0eb36f}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
+        with:
+          repository: sgl-project/sglang-omni
+          ref: ${{ matrix.sample.base }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
         id: python
-        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Cache pre-commit environments
-        uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - run: python -m pip install pre-commit
+      - name: Full Black on base
+        run: pre-commit run black-jupyter --all-files
+      - uses: actions/cache/save@v4
+        with:
+          path: .pre-commit-config.yaml
+          key: black-trial-${{ github.run_id }}-${{ matrix.sample.base }}
 
-      - name: Install pre-commit
-        run: python -m pip install pre-commit
-
-      # note (chenyang): no-commit-to-branch fails on main by design, so a
-      # push only builds the hook environments for the cache.
-      - name: Warm pre-commit cache
-        if: ${{ github.event_name == 'push' }}
-        run: pre-commit install-hooks
-
-      - name: Linting
-        if: ${{ github.event_name != 'push' }}
-        run: pre-commit run --all-files --show-diff-on-failure
+  replay:
+    needs: certify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        order: [full-scoped, scoped-full]
+        sample:
+          - {pr: '4489', head: c15bfc80bf873fb339dfc576658d060412653cb5, base: 5906e32279f9308564d97e334368172345cf2fa9}
+          - {pr: '3828', head: a7355ccfb81afaebbea598da997c45568aad5e61, base: f8370db15e5f4c3b09c17d365fa4438da613af87}
+          - {pr: '4473', head: ab4d0dd73916e914a71f1c7ceff0c5d3374437ac, base: 02e5103ce0428b8a37e2339116b96a516c0eb36f}
+    name: PR ${{ matrix.sample.pr }} / ${{ matrix.order }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: cp -R .github/black-trial "$RUNNER_TEMP/black-trial"
+      - uses: actions/checkout@v4
+        with:
+          repository: sgl-project/sglang-omni
+          ref: ${{ matrix.sample.head }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.11'
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - run: python -m pip install pre-commit
+      - id: cert
+        uses: actions/cache/restore@v4
+        with:
+          path: .pre-commit-config.yaml
+          key: black-trial-${{ github.run_id }}-${{ matrix.sample.base }}
+          lookup-only: true
+      - run: pre-commit install-hooks
+      - name: Compare complete lint
+        env:
+          CERTIFIED: ${{ steps.cert.outputs.cache-hit }}
+          ORDER: ${{ matrix.order }}
+          PR: ${{ matrix.sample.pr }}
+          EXPECTED_BASE: ${{ matrix.sample.base }}
+        run: python "$RUNNER_TEMP/black-trial/measure.py"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: times-${{ matrix.sample.pr }}-${{ matrix.order }}
+          path: ${{ runner.temp }}/timings.json
