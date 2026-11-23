@@ -1,11 +1,11 @@
 """Pass only owned test filenames as positional pytest arguments."""
 
 import json
+import os
 import sys
 from pathlib import Path
 from zlib import crc32
 
-import pytest
 from sglang.test.ci.ci_register import CIRegistry, HWBackend, auto_partition
 
 part, total = map(int, sys.argv[1:3])
@@ -30,4 +30,4 @@ paths = [
     if p in owned or (p not in weights and crc32(p.encode()) % total == part)
 ]
 assert paths, "empty shards must never fall back to pytest's default discovery"
-sys.exit(pytest.main([*sys.argv[3:], *paths]))
+os.execv(sys.executable, [sys.executable, "-m", "pytest", *sys.argv[3:], *paths])
