@@ -1,6 +1,6 @@
 # Fork advisory bot E2E verification log
 
-Repository: [fengxiaohu/sglang-omni](https://github.com/fengxiaohu/sglang-omni)  
+Repository: [fengxiaohu/sglang-omni](https://github.com/fengxiaohu/sglang-omni)
 Date: 2026-11-16 (UTC+8)
 
 `ADVISORY_REVIEW_ENABLED` is **false** again after the kill-switch check.

@@ -12,7 +12,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, Field, ValidationError
+
+from pydantic import BaseModel, Field
 
 from scripts.docs_review.github import (
     fetch_pull_request,
@@ -75,9 +76,7 @@ class GitHubContent(BaseModel):
     encoding: Literal["base64"]
 
 
-def github_api(
-    endpoint: str, *, body: str | None = None, method: str = "GET"
-) -> str:
+def github_api(endpoint: str, *, body: str | None = None, method: str = "GET") -> str:
     arguments = ["gh", "api", endpoint]
     input_text: str | None = None
     if body is not None:
@@ -208,9 +207,7 @@ def save_reservation_with_retry(
 ) -> None:
     for attempt in range(LEDGER_WRITE_ATTEMPTS):
         reservations, content_sha = load_reservations(repository_name)
-        authorize_reservation(
-            reservations, reservation, budget, follow_up_authorized
-        )
+        authorize_reservation(reservations, reservation, budget, follow_up_authorized)
         reservations.reservations.append(reservation)
         try:
             write_reservations(repository_name, reservations, content_sha)
@@ -304,8 +301,7 @@ def list_changed_paths(
 def detect_review_scopes(changed_paths: list[str]) -> list[ReviewScope]:
     scopes: list[ReviewScope] = []
     if any(
-        path.startswith("docs/")
-        or path in {"README.md", "CONTRIBUTING.md"}
+        path.startswith("docs/") or path in {"README.md", "CONTRIBUTING.md"}
         for path in changed_paths
     ):
         scopes.append("docs")
@@ -315,8 +311,7 @@ def detect_review_scopes(changed_paths: list[str]) -> list[ReviewScope]:
         path.startswith("tests/unit_test/")
         and path.endswith(".py")
         and (
-            Path(path).name.startswith("test_")
-            or Path(path).name.endswith("_test.py")
+            Path(path).name.startswith("test_") or Path(path).name.endswith("_test.py")
         )
         for path in changed_paths
     ):
@@ -354,8 +349,7 @@ def model_settings_for_scope(
         pass
     if review_scope == "unit_tests":
         raw = (
-            os.environ.get("UNIT_TEST_REVIEW_MODEL")
-            or os.environ["DOCS_REVIEW_MODEL"]
+            os.environ.get("UNIT_TEST_REVIEW_MODEL") or os.environ["DOCS_REVIEW_MODEL"]
         )
     else:
         raw = os.environ["DOCS_REVIEW_MODEL"]
@@ -458,9 +452,7 @@ def review_one_scope(
         )
     result = run_review(request, None, SystemClock(), prepared=prepared)
     if reservation is not None:
-        finish_reservation(
-            repository_name, reservation, result.report.execution
-        )
+        finish_reservation(repository_name, reservation, result.report.execution)
     else:
         pass
     reviewed_merge_base = result.bundle.merge_base_commit_sha

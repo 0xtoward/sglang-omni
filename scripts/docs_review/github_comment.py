@@ -5,11 +5,10 @@ from __future__ import annotations
 
 import html
 import json
-import re
 from urllib.parse import quote
 
 from scripts.docs_review.github_pilot import PilotError, github_api
-from scripts.docs_review.models import Finding, Report, ReviewArtifact
+from scripts.docs_review.models import Finding, ReviewArtifact
 from scripts.docs_review.policy import STYLE_GUIDE_PATH
 
 ADVISORY_REVIEW_MARKER = "<!-- sglang-omni-advisory-review -->"
@@ -123,7 +122,9 @@ def section_title_for_scope(review_scope: str) -> str:
         return "### Advisory documentation review"
 
 
-def list_issue_comments(repository_name: str, issue_number: int) -> list[dict[str, object]]:
+def list_issue_comments(
+    repository_name: str, issue_number: int
+) -> list[dict[str, object]]:
     comments: list[dict[str, object]] = []
     page = 1
     while True:
