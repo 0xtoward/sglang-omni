@@ -1,14 +1,17 @@
 name: Lint
 
 # Runs on every pull request without CI labels, and is a required check on
-# main. The self-hosted CI gates (.github/scripts/pr_ci_gate.py) wait for the
-# lint job on the same commit, so keep this workflow fast. Pushes to main only
-# refresh the pre-commit cache that pull requests read.
+# main. Pushes to main certify the tree for subsequent incremental Black checks.
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [codex/black-proof-base]
   workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Base of the synthetic PR merge
+        type: string
+        required: true
 
 concurrency:
   group: lint-${{ github.event.pull_request.number || github.ref }}
@@ -16,6 +19,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   lint:
@@ -23,6 +27,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Set up Python
         id: python
@@ -45,6 +51,47 @@ jobs:
         if: ${{ github.event_name == 'push' }}
         run: pre-commit install-hooks
 
+      - name: Identify the Black environment
+        id: environment
+        shell: bash
+        run: |
+          shopt -s nullglob
+          black=(~/.cache/pre-commit/repo*/py_env-*/bin/black)
+          if (( ${#black[@]} == 1 )); then
+            tools=$(
+              {
+                echo "$RUNNER_OS $RUNNER_ARCH ${ImageVersion:-} ${{ steps.python.outputs.python-version }}"
+                python -c 'from importlib.metadata import version; print(version("pre-commit"), version("identify"))'
+                "${black[0]%/black}/python" -m pip --disable-pip-version-check list --format=freeze
+              } | sha256sum | cut -d' ' -f1
+            )
+            echo "id=$tools" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Full Black (${{ steps.environment.outputs.id }})
+        if: github.event_name == 'push'
+        run: pre-commit run black-jupyter --all-files --show-diff-on-failure
+
+      - name: Verify the base commit passed full Black
+        if: github.event_name != 'push' && steps.environment.outputs.id != ''
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: codex/black-proof-base
+          BASE_SHA: ${{ inputs.base_sha || github.event.pull_request.base.sha }}
+          BLACK_ENV: ${{ steps.environment.outputs.id }}
+        run: |
+          run_id=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/lint.yaml/runs" \
+            -f event=push -f branch="$BASE_REF" -f head_sha="$BASE_SHA" -f status=success \
+            -F per_page=1 --jq '.workflow_runs[0].id // empty') || exit 0
+          if [[ -n "$run_id" ]] && gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs" \
+            --jq '.jobs[] | select(.name == "lint" and .conclusion == "success") | .steps[] | select(.conclusion == "success") | .name' \
+            | grep -Fxq "Full Black ($BLACK_ENV)"; then
+            echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Linting
-        if: ${{ github.event_name != 'push' }}
-        run: pre-commit run --all-files --show-diff-on-failure
+        if: github.event_name != 'push'
+        env:
+          CLEAN_BASE: ${{ steps.baseline.outputs.base }}
+        run: bash .github/scripts/lint_with_scoped_black.sh "$CLEAN_BASE"
