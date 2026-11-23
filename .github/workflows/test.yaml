@@ -1,4 +1,4 @@
-name: Compare file partition before and after pytest collection
+name: Compare full CPU tests with the same assigned files
 
 on:
   workflow_dispatch:
@@ -8,14 +8,29 @@ permissions:
 
 jobs:
   unit-test:
-    name: ${{ matrix.order }} / shard ${{ matrix.partition }}
+    name: Fixed assignment / shard ${{ matrix.partition }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        order: [late-early, early-late]
-        partition: [0, 1, 2, 3, 4, 5, 6, 7]
+        include:
+          - partition: 0
+            order: fixed-explicit
+          - partition: 1
+            order: explicit-fixed
+          - partition: 2
+            order: fixed-explicit
+          - partition: 3
+            order: explicit-fixed
+          - partition: 4
+            order: fixed-explicit
+          - partition: 5
+            order: explicit-fixed
+          - partition: 6
+            order: fixed-explicit
+          - partition: 7
+            order: explicit-fixed
     env:
       CUDA_VISIBLE_DEVICES: ""
       UV_TORCH_BACKEND: cpu
@@ -53,7 +68,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ${{ matrix.order }}-part-${{ matrix.partition }}
+          name: explicit-part-${{ matrix.partition }}
           path: |
             ${{ runner.temp }}/evidence/*/*.json
             ${{ runner.temp }}/evidence/*/*.xml
