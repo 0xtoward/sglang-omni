@@ -49,6 +49,21 @@ def collect(
         command.append("--collect-other-partitions")
     else:
         pass
+    if arm == "explicit":
+        command = [
+            sys.executable,
+            ".github/early-collect/explicit_files.py",
+            str(part),
+            str(total),
+            "-q",
+            "-m",
+            marker,
+            "--collect-only",
+            "-p",
+            "scripts.ci.utils.pytest_partition_measure",
+        ]
+    else:
+        pass
     started = time.monotonic()
     with (folder / "pytest.log").open("w") as log:
         result = subprocess.run(
@@ -79,3 +94,8 @@ for total, part in ((3, lane), (6, lane), (6, lane + 3)):
     a, b = [collect(arm, part, total) for arm in arms]
     assert len(a["items"]) == len(set(a["items"]))
     assert set(a["items"]) == set(b["items"])
+    explicit = collect("explicit", part, total)
+    assert sorted(a["items"]) == sorted(explicit["items"])
+
+for part in range(lane, 8, 3):
+    collect("explicit", part, 8)
