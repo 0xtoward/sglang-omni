@@ -28,10 +28,11 @@ def test_unweighted_accelerator():
 )
 # Each VM runs two complete suites in reverse order on its paired VM.
 full_arms = order.split("-")
+explicit_trial = "explicit" in full_arms
 collect_arms = ["fixed", "early"] if order == "late-early" else ["early", "fixed"]
 verdicts = []
 for mode, arm in [("full", a) for a in full_arms] + [
-    ("collect", a) for a in collect_arms
+    ("collect", a) for a in collect_arms if not explicit_trial
 ]:
     out = root / f"{mode}-{arm}"
     out.mkdir()
@@ -63,6 +64,23 @@ for mode, arm in [("full", a) for a in full_arms] + [
         args.append(f"--junitxml={out}/junit.xml")
     if arm == "fixed":
         args.append("--collect-other-partitions")
+    else:
+        pass
+    if arm == "explicit":
+        args = [
+            sys.executable,
+            ".github/early-collect/explicit_files.py",
+            part,
+            "8",
+            "-q",
+            "-m",
+            "not benchmark and not accelerator",
+            "-p",
+            "scripts.ci.utils.pytest_partition_measure",
+            "-o",
+            f"cache_dir={out}/cache",
+            f"--junitxml={out}/junit.xml",
+        ]
     else:
         pass
     start = time.monotonic()
