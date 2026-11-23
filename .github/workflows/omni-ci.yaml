@@ -347,14 +347,14 @@ jobs:
     name: CPU unit tests
     needs: preflight
     if: needs.preflight.outputs.run_self_hosted == 'true' && !inputs.self_hosted_cpu
-    uses: ./.github/workflows/test.yaml
+    uses: ./.github/workflows/test-hosted-cpu.yaml
 
   pr-test:
     name: PR Test
     needs: setup
     if: >-
       needs.setup.result == 'success'
-    uses: ./.github/workflows/test-h100.yaml
+    uses: ./.github/workflows/test.yaml
     with:
       self_hosted_cpu: ${{ inputs.self_hosted_cpu || false }}
       omni_ci_home: >-

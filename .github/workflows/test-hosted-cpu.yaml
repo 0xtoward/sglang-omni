@@ -1,0 +1,67 @@
+name: Hosted CPU unit tests
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-test:
+    name: unit-test-cpu-${{ matrix.partition }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      UV_TORCH_BACKEND: cpu
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      SGLANG_OMNI_TORCH_COMPILE_DEFAULT: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+
+      - name: Install CPU test dependencies
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update -qq
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends ffmpeg sox
+          uv venv --python 3.12
+          python3 -c 'import tomllib; print("\n".join(tomllib.load(open("pyproject.toml", "rb"))["tool"]["uv"]["override-dependencies"]))' > "$RUNNER_TEMP/omni-overrides.txt"
+          uv pip install --overrides "$RUNNER_TEMP/omni-overrides.txt" --find-links https://abetlen.github.io/llama-cpp-python/whl/cpu/llama-cpp-python/ \
+            -e '.[audar-tts,fishaudio,fun-cosyvoice3,minicpm-o]'
+          uv pip install --no-deps qwen-tts==0.1.1
+          bash .github/scripts/install_ci_cosyvoice.sh .venv
+
+      - name: Run CPU partition
+        env:
+          OMNI_CI_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          OMNI_CI_STAGE_LABEL: unit-test-cpu-${{ matrix.partition }}
+          PARTITION: ${{ matrix.partition }}
+          PARTITIONS: ${{ strategy.job-total }}
+        run: |
+          source .venv/bin/activate
+          export PYTHONPATH="$PWD"
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/ -v -m "not benchmark and not accelerator" -x \
+            -p scripts.ci.utils.pytest_partition --auto-partition-id "$PARTITION" \
+            --auto-partition-size "$PARTITIONS" --partition-model-file .github/unit_test_durations.json \
+            --junitxml="$RUNNER_TEMP/unit-test.xml"
+
+      - name: Upload partition results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-partition-${{ matrix.partition }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/unit-test.xml
+            ${{ runner.temp }}/omni-ci-retry/
