@@ -23,7 +23,7 @@ env:
 jobs:
   unit-test:
     name: ${{ matrix.name }}
-    runs-on: [self-hosted, h100]
+    runs-on: [self-hosted, omni-cpu]
     env:
       # note (Jingwen): Tests that need an accelerator belong in the
       # unit-test-accelerator job below. CPU partitions own no GPU during setup or retries.
