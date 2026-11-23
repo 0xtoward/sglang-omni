@@ -31,13 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: unit-test-a
-            partition: 0
-          - name: unit-test-b
-            partition: 1
-          - name: unit-test-c
-            partition: 2
+        name: [unit-test-a, unit-test-b, unit-test-c]
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
@@ -67,8 +61,8 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/ -v -m "not benchmark and not accelerator" -x \
             -p scripts.ci.utils.pytest_partition \
-            --auto-partition-id "${{ matrix.partition }}" \
-            --auto-partition-size 3 \
+            --auto-partition-id "${{ strategy.job-index }}" \
+            --auto-partition-size "${{ strategy.job-total }}" \
             --partition-model-file .github/unit_test_durations.json
 
   unit-test-accelerator:
